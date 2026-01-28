@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["pip install aiogram==3.4.1 sqlalchemy[asyncio]==2.0.25 asyncpg==0.29.0 greenlet==3.0.3"]
+
+[start]
+cmd = "python main.py"
