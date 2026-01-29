@@ -36,11 +36,23 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8309573885:AAEOEdMajLBLDKxvqNrcckxpPkSVSFtQ2ek")
 ADMIN_IDS = [942180996]
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/railway")
 
-# Fix for Railway DATABASE_URL format
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+# Get DATABASE_URL from environment
+_raw_db_url = os.getenv("DATABASE_URL")
+print(f"[DEBUG] Raw DATABASE_URL from env: {_raw_db_url[:50] if _raw_db_url else 'None'}...")
+
+if _raw_db_url:
+    # Railway gives postgresql:// but asyncpg needs postgresql+asyncpg://
+    if _raw_db_url.startswith("postgres://"):
+        DATABASE_URL = _raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif _raw_db_url.startswith("postgresql://") and "+asyncpg" not in _raw_db_url:
+        DATABASE_URL = _raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    else:
+        DATABASE_URL = _raw_db_url
+else:
+    DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/railway"
+
+print(f"[DEBUG] Final DATABASE_URL: {DATABASE_URL[:50]}...")
 
 SLOT_TIMES = [time(9, 0), time(18, 0)]
 RESERVATION_MINUTES = 15
