@@ -1,4 +1,3 @@
-"""
 Telegram CRM Bot для продажи рекламы
 Версия: 1.0 (single-file)
 """
@@ -79,12 +78,23 @@ class Channel(Base):
     name = Column(String(255), nullable=False)
     username = Column(String(255))
     description = Column(Text)
+    # Цены по форматам размещения (JSON: {"1/24": 1000, "1/48": 800, "2/48": 1500, "native": 3000})
+    prices = Column(JSON, default={"1/24": 0, "1/48": 0, "2/48": 0, "native": 0})
+    # Старые поля для совместимости
     price_morning = Column(Numeric(12, 2), default=0)
     price_evening = Column(Numeric(12, 2), default=0)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     slots = relationship("Slot", back_populates="channel", cascade="all, delete-orphan")
+
+# Форматы размещения
+PLACEMENT_FORMATS = {
+    "1/24": {"name": "1/24", "hours": 24, "description": "Пост на 24 часа (удаляется)"},
+    "1/48": {"name": "1/48", "hours": 48, "description": "Пост на 48 часов (удаляется)"},
+    "2/48": {"name": "2/48", "hours": 48, "description": "2 поста на 48 часов"},
+    "native": {"name": "Нативный", "hours": 0, "description": "Навсегда в канале"}
+}
 
 class Slot(Base):
     __tablename__ = "slots"
@@ -121,11 +131,13 @@ class Order(Base):
     slot_id = Column(Integer, ForeignKey("slots.id"), nullable=False)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
     status = Column(String(30), default="awaiting_payment")
+    placement_format = Column(String(20), default="1/24")  # 1/24, 1/48, 2/48, native
     ad_content = Column(Text)
     ad_format = Column(String(20))  # text, photo, video
     ad_file_id = Column(String(255))
     final_price = Column(Numeric(12, 2), nullable=False)
     payment_screenshot_file_id = Column(String(255))
+    delete_at = Column(DateTime)  # Когда удалить пост (для 1/24, 1/48)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     slot = relationship("Slot", back_populates="order")
@@ -146,7 +158,8 @@ class BookingStates(StatesGroup):
     selecting_channel = State()
     selecting_date = State()
     selecting_time = State()
-    selecting_format = State()
+    selecting_placement = State()  # Новый: выбор формата 1/24, 1/48 и т.д.
+    selecting_format = State()  # Формат контента: text, photo, video
     waiting_content = State()
     confirming = State()
     waiting_payment = State()
@@ -155,8 +168,10 @@ class BookingStates(StatesGroup):
 class AdminChannelStates(StatesGroup):
     waiting_channel_forward = State()
     waiting_channel_name = State()
-    waiting_price_morning = State()
-    waiting_price_evening = State()
+    waiting_price_1_24 = State()
+    waiting_price_1_48 = State()
+    waiting_price_2_48 = State()
+    waiting_price_native = State()
 
 # ==================== ФИЛЬТРЫ ====================
 
@@ -186,9 +201,11 @@ def get_admin_menu() -> ReplyKeyboardMarkup:
 def get_channels_keyboard(channels: List[Channel]) -> InlineKeyboardMarkup:
     buttons = []
     for ch in channels:
-        price = min(ch.price_morning or 0, ch.price_evening or 0)
+        # Минимальная цена из всех форматов
+        prices = ch.prices or {"1/24": 0}
+        min_price = min(p for p in prices.values() if p > 0) if any(p > 0 for p in prices.values()) else 0
         buttons.append([InlineKeyboardButton(
-            text=f"{ch.name} — от {price:,.0f}₽",
+            text=f"{ch.name} — от {min_price:,.0f}₽",
             callback_data=f"channel:{ch.id}"
         )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -204,21 +221,45 @@ def get_dates_keyboard(slots: List[Slot]) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_channels")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_slots_keyboard(slots: List[Slot], channel: Channel) -> InlineKeyboardMarkup:
+def get_times_keyboard(slots: List[Slot]) -> InlineKeyboardMarkup:
+    """Клавиатура выбора времени (без цен — цены зависят от формата)"""
     buttons = []
     for slot in slots:
-        if slot.slot_time.hour < 12:
-            price = channel.price_morning
-            emoji = "🌅"
-        else:
-            price = channel.price_evening
-            emoji = "🌆"
+        emoji = "🌅" if slot.slot_time.hour < 12 else "🌆"
+        time_str = slot.slot_time.strftime('%H:%M')
         buttons.append([InlineKeyboardButton(
-            text=f"{emoji} {slot.slot_time.strftime('%H:%M')} — {price:,.0f}₽",
+            text=f"{emoji} {time_str}",
             callback_data=f"slot:{slot.id}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_dates")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_placement_keyboard(channel: Channel) -> InlineKeyboardMarkup:
+    """Клавиатура выбора формата размещения 1/24, 1/48 и т.д."""
+    prices = channel.prices or {}
+    buttons = []
+    
+    format_info = {
+        "1/24": "📌 1/24 (на 24 часа)",
+        "1/48": "📌 1/48 (на 48 часов)",
+        "2/48": "📌 2/48 (2 поста на 48ч)",
+        "native": "⭐ Навсегда"
+    }
+    
+    for fmt, label in format_info.items():
+        price = prices.get(fmt, 0)
+        if price > 0:
+            buttons.append([InlineKeyboardButton(
+                text=f"{label} — {price:,.0f}₽",
+                callback_data=f"placement:{fmt}"
+            )])
+    
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_times")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_slots_keyboard(slots: List[Slot], channel: Channel) -> InlineKeyboardMarkup:
+    """Старая клавиатура для совместимости — теперь используем get_times_keyboard"""
+    return get_times_keyboard(slots)
 
 def get_format_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -374,14 +415,88 @@ async def select_slot(callback: CallbackQuery, state: FSMContext):
         await session.commit()
         
         channel = await session.get(Channel, slot.channel_id)
-        price = channel.price_morning if slot.slot_time.hour < 12 else channel.price_evening
     
-    await state.update_data(slot_id=slot_id, price=float(price))
+    await state.update_data(slot_id=slot_id, slot_time=slot.slot_time.strftime('%H:%M'))
     
     await callback.message.edit_text(
         f"✅ Слот зарезервирован на {RESERVATION_MINUTES} минут!\n\n"
-        f"Выберите формат рекламы:",
-        reply_markup=get_format_keyboard()
+        f"📌 **Выберите формат размещения:**",
+        reply_markup=get_placement_keyboard(channel),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(BookingStates.selecting_placement)
+
+# --- Кнопка назад к выбору времени ---
+@router.callback_query(F.data == "back_to_times")
+async def back_to_times(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    
+    # Освобождаем зарезервированный слот
+    if "slot_id" in data:
+        async with async_session_maker() as session:
+            slot = await session.get(Slot, data["slot_id"])
+            if slot and slot.status == "reserved":
+                slot.status = "available"
+                slot.reserved_by = None
+                slot.reserved_until = None
+                await session.commit()
+    
+    # Возвращаемся к выбору времени
+    channel_id = data.get("channel_id")
+    date_str = data.get("selected_date")
+    
+    if channel_id and date_str:
+        selected_date = date.fromisoformat(date_str)
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            result = await session.execute(
+                select(Slot).where(
+                    Slot.channel_id == channel_id,
+                    Slot.slot_date == selected_date,
+                    Slot.status == "available"
+                ).order_by(Slot.slot_time)
+            )
+            slots = result.scalars().all()
+        
+        await callback.message.edit_text(
+            f"📅 **{selected_date.strftime('%d.%m.%Y')}**\n\n"
+            f"Выберите время:",
+            reply_markup=get_times_keyboard(slots),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await state.set_state(BookingStates.selecting_time)
+    else:
+        await callback.message.edit_text("❌ Ошибка. Начните заново с /start")
+
+# --- Выбор формата размещения (1/24, 1/48 и т.д.) ---
+@router.callback_query(F.data.startswith("placement:"), BookingStates.selecting_placement)
+async def select_placement(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    placement = callback.data.split(":")[1]  # 1/24, 1/48, 2/48, native
+    
+    data = await state.get_data()
+    channel_id = data.get("channel_id")
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        prices = channel.prices or {}
+        price = prices.get(placement, 0)
+    
+    await state.update_data(placement_format=placement, price=float(price))
+    
+    placement_names = {
+        "1/24": "1/24 (24 часа)",
+        "1/48": "1/48 (48 часов)",
+        "2/48": "2/48 (2 поста)",
+        "native": "Навсегда"
+    }
+    
+    await callback.message.edit_text(
+        f"📌 Формат: **{placement_names.get(placement, placement)}** — {price:,.0f}₽\n\n"
+        f"Выберите тип контента:",
+        reply_markup=get_format_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
     )
     await state.set_state(BookingStates.selecting_format)
 
@@ -430,12 +545,23 @@ async def receive_content(message: Message, state: FSMContext):
     price = data["price"]
     channel_name = data["channel_name"]
     selected_date = data["selected_date"]
+    slot_time = data.get("slot_time", "")
+    placement_format = data.get("placement_format", "1/24")
+    
+    placement_names = {
+        "1/24": "1/24 (на 24 часа)",
+        "1/48": "1/48 (на 48 часов)",
+        "2/48": "2/48 (2 поста)",
+        "native": "Навсегда"
+    }
     
     await message.answer(
         f"📋 **Подтверждение заказа**\n\n"
         f"📢 Канал: {channel_name}\n"
         f"📅 Дата: {selected_date}\n"
-        f"📝 Формат: {ad_format}\n"
+        f"🕐 Время: {slot_time}\n"
+        f"📌 Размещение: {placement_names.get(placement_format, placement_format)}\n"
+        f"📝 Контент: {ad_format}\n"
         f"💰 Цена: **{price:,.0f}₽**\n\n"
         f"Подтвердите заказ:",
         reply_markup=get_confirm_keyboard(),
@@ -469,14 +595,24 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         slot = await session.get(Slot, data["slot_id"])
         slot.status = "booked"
         
+        # Вычисляем время удаления поста
+        placement = data.get("placement_format", "1/24")
+        delete_at = None
+        if placement in PLACEMENT_FORMATS:
+            hours = PLACEMENT_FORMATS[placement]["hours"]
+            if hours > 0:
+                delete_at = datetime.utcnow() + timedelta(hours=hours)
+        
         # Создаём заказ
         order = Order(
             slot_id=data["slot_id"],
             client_id=client.id,
+            placement_format=placement,
             ad_content=data.get("ad_content"),
             ad_format=data["ad_format"],
             ad_file_id=data.get("ad_file_id"),
-            final_price=Decimal(str(data["price"]))
+            final_price=Decimal(str(data["price"])),
+            delete_at=delete_at
         )
         session.add(order)
         await session.commit()
@@ -629,7 +765,11 @@ async def admin_channels(message: Message, state: FSMContext):
         text = "📢 **Каналы:**\n\n"
         for ch in channels:
             status = "✅" if ch.is_active else "❌"
-            text += f"{status} {ch.name}\n   🌅 {ch.price_morning:,.0f}₽ | 🌆 {ch.price_evening:,.0f}₽\n\n"
+            prices = ch.prices or {}
+            price_str = " | ".join([f"{k}: {v:,.0f}₽" for k, v in prices.items() if v > 0])
+            if not price_str:
+                price_str = "Цены не установлены"
+            text += f"{status} **{ch.name}**\n   {price_str}\n\n"
     else:
         text = "📢 Каналов пока нет\n\n"
     
@@ -662,40 +802,83 @@ async def receive_channel_forward(message: Message, state: FSMContext):
     
     await message.answer(
         f"✅ Канал: **{chat.title}**\n\n"
-        f"Введите цену за утренний слот (9:00) в рублях:",
+        f"📌 Введите цену за формат **1/24** (пост на 24 часа):\n"
+        f"(введите 0 если не нужен этот формат)",
         parse_mode=ParseMode.MARKDOWN
     )
-    await state.set_state(AdminChannelStates.waiting_price_morning)
+    await state.set_state(AdminChannelStates.waiting_price_1_24)
 
-@router.message(AdminChannelStates.waiting_price_morning)
-async def receive_price_morning(message: Message, state: FSMContext):
+@router.message(AdminChannelStates.waiting_price_1_24)
+async def receive_price_1_24(message: Message, state: FSMContext):
     try:
-        price = Decimal(message.text.strip())
+        price = int(message.text.strip())
     except:
         await message.answer("❌ Введите число")
         return
     
-    await state.update_data(price_morning=str(price))
-    await message.answer("Введите цену за вечерний слот (18:00):")
-    await state.set_state(AdminChannelStates.waiting_price_evening)
+    await state.update_data(price_1_24=price)
+    await message.answer(
+        "📌 Введите цену за формат **1/48** (пост на 48 часов):\n"
+        "(введите 0 если не нужен)",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_price_1_48)
 
-@router.message(AdminChannelStates.waiting_price_evening)
-async def receive_price_evening(message: Message, state: FSMContext):
+@router.message(AdminChannelStates.waiting_price_1_48)
+async def receive_price_1_48(message: Message, state: FSMContext):
     try:
-        price = Decimal(message.text.strip())
+        price = int(message.text.strip())
+    except:
+        await message.answer("❌ Введите число")
+        return
+    
+    await state.update_data(price_1_48=price)
+    await message.answer(
+        "📌 Введите цену за формат **2/48** (2 поста на 48 часов):\n"
+        "(введите 0 если не нужен)",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_price_2_48)
+
+@router.message(AdminChannelStates.waiting_price_2_48)
+async def receive_price_2_48(message: Message, state: FSMContext):
+    try:
+        price = int(message.text.strip())
+    except:
+        await message.answer("❌ Введите число")
+        return
+    
+    await state.update_data(price_2_48=price)
+    await message.answer(
+        "📌 Введите цену за **нативный** формат (навсегда):\n"
+        "(введите 0 если не нужен)",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_price_native)
+
+@router.message(AdminChannelStates.waiting_price_native)
+async def receive_price_native(message: Message, state: FSMContext):
+    try:
+        price = int(message.text.strip())
     except:
         await message.answer("❌ Введите число")
         return
     
     data = await state.get_data()
     
+    prices = {
+        "1/24": data.get("price_1_24", 0),
+        "1/48": data.get("price_1_48", 0),
+        "2/48": data.get("price_2_48", 0),
+        "native": price
+    }
+    
     async with async_session_maker() as session:
         channel = Channel(
             telegram_id=data["telegram_id"],
             name=data["name"],
             username=data.get("username"),
-            price_morning=Decimal(data["price_morning"]),
-            price_evening=price
+            prices=prices
         )
         session.add(channel)
         await session.flush()
@@ -714,11 +897,12 @@ async def receive_price_evening(message: Message, state: FSMContext):
         
         await session.commit()
     
+    price_str = " | ".join([f"{k}: {v:,.0f}₽" for k, v in prices.items() if v > 0])
+    
     await message.answer(
         f"✅ **Канал добавлен!**\n\n"
         f"📢 {data['name']}\n"
-        f"🌅 Утро: {data['price_morning']}₽\n"
-        f"🌆 Вечер: {price}₽\n"
+        f"💰 {price_str}\n"
         f"📅 Создано 60 слотов",
         reply_markup=get_admin_menu(),
         parse_mode=ParseMode.MARKDOWN
