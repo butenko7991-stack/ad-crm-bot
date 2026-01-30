@@ -31,6 +31,7 @@ from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
 import os
+import aiohttp
 
 # ==================== КОНФИГУРАЦИЯ ====================
 
@@ -57,6 +58,10 @@ print(f"[DEBUG] Final DATABASE_URL: {DATABASE_URL[:50]}...")
 SLOT_TIMES = [time(9, 0), time(18, 0)]
 RESERVATION_MINUTES = 15
 
+# TGStat API для аналитики охватов
+TGSTAT_API_TOKEN = os.getenv("TGSTAT_API_TOKEN", "")  # Получить на tgstat.ru/api
+TGSTAT_API_URL = "https://api.tgstat.ru"
+
 # ==================== ЛОГИРОВАНИЕ ====================
 
 logging.basicConfig(
@@ -79,8 +84,17 @@ class Channel(Base):
     name = Column(String(255), nullable=False)
     username = Column(String(255))
     description = Column(Text)
+    category = Column(String(100))  # Тематика канала
     # Цены по форматам размещения (JSON: {"1/24": 1000, "1/48": 800, "2/48": 1500, "native": 3000})
     prices = Column(JSON, default={"1/24": 0, "1/48": 0, "2/48": 0, "native": 0})
+    # Аналитика охватов
+    subscribers = Column(Integer, default=0)  # Подписчики
+    avg_reach = Column(Integer, default=0)  # Средний охват поста
+    avg_reach_24h = Column(Integer, default=0)  # Охват за 24 часа
+    err_percent = Column(Numeric(5, 2), default=0)  # ERR (вовлечённость)
+    ci_index = Column(Numeric(8, 2), default=0)  # Индекс цитирования
+    cpm = Column(Numeric(10, 2), default=0)  # Установленный CPM
+    analytics_updated = Column(DateTime)  # Когда обновлялась аналитика
     # Старые поля для совместимости
     price_morning = Column(Numeric(12, 2), default=0)
     price_evening = Column(Numeric(12, 2), default=0)
@@ -88,6 +102,27 @@ class Channel(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     slots = relationship("Slot", back_populates="channel", cascade="all, delete-orphan")
+
+# Тематики каналов с рекомендуемым CPM (руб/1000 просмотров)
+CHANNEL_CATEGORIES = {
+    "it_b2b": {"name": "IT (B2B)", "cpm": 16200},
+    "realty": {"name": "Недвижимость", "cpm": 5900},
+    "marketing": {"name": "Маркетинг и PR", "cpm": 5100},
+    "invest": {"name": "Инвестиции", "cpm": 4600},
+    "trading": {"name": "Трейдинг", "cpm": 4500},
+    "business": {"name": "Бизнес и стартапы", "cpm": 3900},
+    "crypto": {"name": "Криптовалюта", "cpm": 2500},
+    "it_reloc": {"name": "IT / Релокация", "cpm": 1500},
+    "education": {"name": "Образование", "cpm": 1200},
+    "news": {"name": "Новости", "cpm": 1000},
+    "lifestyle": {"name": "Лайфстайл", "cpm": 800},
+    "music": {"name": "Музыка", "cpm": 632},
+    "cinema": {"name": "Кино", "cpm": 603},
+    "entertainment": {"name": "Развлечения", "cpm": 588},
+    "animals": {"name": "Животные", "cpm": 584},
+    "memes": {"name": "Мемы", "cpm": 250},
+    "other": {"name": "Другое", "cpm": 500},
+}
 
 # Форматы размещения
 PLACEMENT_FORMATS = {
@@ -429,6 +464,168 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database initialized")
 
+# ==================== СЕРВИС АНАЛИТИКИ TGSTAT ====================
+
+class TGStatService:
+    """Сервис для получения аналитики каналов через TGStat API"""
+    
+    def __init__(self, api_token: str):
+        self.api_token = api_token
+        self.base_url = TGSTAT_API_URL
+    
+    async def get_channel_stat(self, channel_username: str) -> Optional[dict]:
+        """Получить статистику канала по username"""
+        if not self.api_token:
+            logger.warning("TGStat API token not configured")
+            return None
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/channels/stat",
+                    params={
+                        "token": self.api_token,
+                        "channelId": f"@{channel_username.lstrip('@')}"
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("status") == "ok":
+                            return data.get("response", {})
+                    logger.error(f"TGStat API error: {resp.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"TGStat API request failed: {e}")
+            return None
+    
+    async def get_channel_by_id(self, telegram_id: int) -> Optional[dict]:
+        """Получить информацию о канале по Telegram ID"""
+        if not self.api_token:
+            return None
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/channels/get",
+                    params={
+                        "token": self.api_token,
+                        "channelId": str(telegram_id)
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("status") == "ok":
+                            return data.get("response", {})
+                    return None
+        except Exception as e:
+            logger.error(f"TGStat API request failed: {e}")
+            return None
+
+# Глобальный экземпляр сервиса
+tgstat_service = TGStatService(TGSTAT_API_TOKEN)
+
+def calculate_recommended_price(
+    avg_reach: int,
+    category: str,
+    err_percent: float = 0,
+    format_type: str = "1/24"
+) -> int:
+    """
+    Рассчитать рекомендуемую цену размещения
+    
+    Args:
+        avg_reach: Средний охват поста
+        category: Тематика канала (ключ из CHANNEL_CATEGORIES)
+        err_percent: ERR (вовлечённость) в процентах
+        format_type: Формат размещения (1/24, 1/48, 2/48, native)
+    
+    Returns:
+        Рекомендуемая цена в рублях
+    """
+    # Базовый CPM по тематике
+    category_data = CHANNEL_CATEGORIES.get(category, CHANNEL_CATEGORIES["other"])
+    base_cpm = category_data["cpm"]
+    
+    # Базовая цена = (охват × CPM) / 1000
+    base_price = (avg_reach * base_cpm) / 1000
+    
+    # Корректировка по ERR
+    if err_percent > 20:
+        base_price *= 1.3  # +30% за высокую вовлечённость
+    elif err_percent > 15:
+        base_price *= 1.15  # +15%
+    elif err_percent < 10 and err_percent > 0:
+        base_price *= 0.8  # -20% за низкую вовлечённость
+    
+    # Корректировка по формату
+    format_multipliers = {
+        "1/24": 1.0,
+        "1/48": 0.8,  # -20% (дольше висит, но меньше охват в час)
+        "2/48": 1.6,  # +60% (два поста)
+        "native": 2.5  # +150% (навсегда)
+    }
+    base_price *= format_multipliers.get(format_type, 1.0)
+    
+    return int(base_price)
+
+def format_analytics_report(channel, recommended_prices: dict = None) -> str:
+    """Форматировать отчёт по аналитике канала"""
+    
+    lines = [
+        f"📊 **Аналитика канала**",
+        f"",
+        f"📢 **{channel.name}**",
+        f"🔗 @{channel.username}" if channel.username else "",
+        f"",
+    ]
+    
+    # Основные метрики
+    if channel.subscribers:
+        lines.append(f"👥 Подписчики: **{channel.subscribers:,}**")
+    if channel.avg_reach:
+        lines.append(f"👁 Средний охват: **{channel.avg_reach:,}**")
+    if channel.avg_reach_24h:
+        lines.append(f"📈 Охват 24ч: **{channel.avg_reach_24h:,}**")
+    if channel.err_percent:
+        err = float(channel.err_percent)
+        err_emoji = "🔥" if err > 15 else "✅" if err > 10 else "⚠️"
+        lines.append(f"{err_emoji} ERR: **{err:.1f}%**")
+    if channel.ci_index:
+        lines.append(f"📊 Индекс цитирования: **{float(channel.ci_index):.1f}**")
+    
+    # Тематика
+    if channel.category:
+        cat_data = CHANNEL_CATEGORIES.get(channel.category, {})
+        cat_name = cat_data.get("name", channel.category)
+        cat_cpm = cat_data.get("cpm", 0)
+        lines.append(f"")
+        lines.append(f"🏷 Тематика: **{cat_name}**")
+        lines.append(f"💰 Рыночный CPM: **{cat_cpm:,}₽**/1000 просм.")
+    
+    # Рекомендуемые цены
+    if recommended_prices:
+        lines.append(f"")
+        lines.append(f"💡 **Рекомендуемые цены:**")
+        for fmt, price in recommended_prices.items():
+            if price > 0:
+                lines.append(f"   • {fmt}: **{price:,}₽**")
+    
+    # Текущие цены
+    if channel.prices:
+        active_prices = {k: v for k, v in channel.prices.items() if v > 0}
+        if active_prices:
+            lines.append(f"")
+            lines.append(f"✅ **Установленные цены:**")
+            for fmt, price in active_prices.items():
+                lines.append(f"   • {fmt}: **{price:,}₽**")
+    
+    # Дата обновления
+    if channel.analytics_updated:
+        lines.append(f"")
+        lines.append(f"🕐 Обновлено: {channel.analytics_updated.strftime('%d.%m.%Y %H:%M')}")
+    
+    return "\n".join(filter(None, lines))
+
 # ==================== FSM СОСТОЯНИЯ ====================
 
 class BookingStates(StatesGroup):
@@ -449,6 +646,12 @@ class AdminChannelStates(StatesGroup):
     waiting_price_1_48 = State()
     waiting_price_2_48 = State()
     waiting_price_native = State()
+    # Аналитика
+    waiting_category = State()
+    waiting_manual_subscribers = State()
+    waiting_manual_reach = State()
+    waiting_manual_err = State()
+    waiting_cpm = State()
 
 class ManagerStates(StatesGroup):
     # Регистрация
@@ -490,8 +693,8 @@ def get_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
 
 def get_admin_menu() -> ReplyKeyboardMarkup:
     buttons = [
-        [KeyboardButton(text="📢 Каналы"), KeyboardButton(text="💳 Оплаты")],
-        [KeyboardButton(text="📊 Статистика")],
+        [KeyboardButton(text="📢 Каналы"), KeyboardButton(text="📊 Аналитика")],
+        [KeyboardButton(text="💳 Оплаты"), KeyboardButton(text="📈 Статистика")],
         [KeyboardButton(text="◀️ Главное меню")],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -1263,12 +1466,13 @@ async def admin_channels(message: Message, state: FSMContext):
             prices = ch.prices or {}
             price_str = " | ".join([f"{k}: {v:,.0f}₽" for k, v in prices.items() if v > 0])
             if not price_str:
-                price_str = "Цены не установлены"
-            text += f"{status} **{ch.name}**\n   {price_str}\n\n"
+                price_str = "💰 Цены не установлены"
+            text += f"{status} **{ch.name}** (ID: {ch.id})\n   {price_str}\n\n"
     else:
         text = "📢 Каналов пока нет\n\n"
     
-    text += "Чтобы добавить канал, отправьте /add\\_channel"
+    text += "➕ Добавить: /add\\_channel\n"
+    text += "💰 Установить цены: /set\\_prices <ID>"
     await message.answer(text, parse_mode=ParseMode.MARKDOWN)
 
 # --- Добавление канала ---
@@ -1289,16 +1493,102 @@ async def receive_channel_forward(message: Message, state: FSMContext):
         return
     
     chat = message.forward_from_chat
-    await state.update_data(
-        telegram_id=chat.id,
-        username=chat.username,
-        name=chat.title
-    )
+    
+    # Сразу сохраняем канал с нулевыми ценами
+    async with async_session_maker() as session:
+        # Проверяем, не добавлен ли уже
+        existing = await session.execute(
+            select(Channel).where(Channel.telegram_id == chat.id)
+        )
+        if existing.scalar_one_or_none():
+            await message.answer(
+                f"❌ Канал **{chat.title}** уже добавлен!",
+                reply_markup=get_admin_menu(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            await state.clear()
+            return
+        
+        channel = Channel(
+            telegram_id=chat.id,
+            name=chat.title,
+            username=chat.username,
+            prices={"1/24": 0, "1/48": 0, "2/48": 0, "native": 0}
+        )
+        session.add(channel)
+        await session.flush()
+        
+        # Создаём слоты на 30 дней
+        today = date.today()
+        for i in range(30):
+            slot_date = today + timedelta(days=i)
+            for slot_time in SLOT_TIMES:
+                slot = Slot(
+                    channel_id=channel.id,
+                    slot_date=slot_date,
+                    slot_time=slot_time
+                )
+                session.add(slot)
+        
+        await session.commit()
+        channel_id = channel.id
     
     await message.answer(
-        f"✅ Канал: **{chat.title}**\n\n"
+        f"✅ **Канал добавлен!**\n\n"
+        f"📢 {chat.title}\n"
+        f"🆔 ID: {channel_id}\n"
+        f"📅 Создано 60 слотов\n\n"
+        f"💰 Цены не установлены\n"
+        f"Для установки цен: /set\\_prices {channel_id}",
+        reply_markup=get_admin_menu(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.clear()
+
+# --- Установка цен канала ---
+@router.message(Command("set_prices"), IsAdmin())
+async def start_set_prices(message: Message, state: FSMContext):
+    args = message.text.split()
+    if len(args) < 2:
+        # Показываем список каналов
+        async with async_session_maker() as session:
+            result = await session.execute(select(Channel).where(Channel.is_active == True))
+            channels = result.scalars().all()
+        
+        if not channels:
+            await message.answer("❌ Нет каналов")
+            return
+        
+        text = "📢 **Выберите канал для установки цен:**\n\n"
+        for ch in channels:
+            prices = ch.prices or {}
+            price_str = " | ".join([f"{k}: {v}₽" for k, v in prices.items() if v > 0]) or "не установлены"
+            text += f"• **{ch.name}** (ID: {ch.id})\n  💰 {price_str}\n\n"
+        text += "Используйте: /set\\_prices <ID>"
+        
+        await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    try:
+        channel_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID канала")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    if not channel:
+        await message.answer("❌ Канал не найден")
+        return
+    
+    await state.update_data(price_channel_id=channel_id, price_channel_name=channel.name)
+    await message.answer(
+        f"💰 **Установка цен для {channel.name}**\n\n"
         f"📌 Введите цену за формат **1/24** (пост на 24 часа):\n"
-        f"(введите 0 если не нужен этот формат)",
+        f"(введите 0 если формат не нужен)",
+        reply_markup=get_cancel_keyboard(),
         parse_mode=ParseMode.MARKDOWN
     )
     await state.set_state(AdminChannelStates.waiting_price_1_24)
@@ -1368,41 +1658,495 @@ async def receive_price_native(message: Message, state: FSMContext):
         "native": price
     }
     
+    channel_id = data.get("price_channel_id")
+    channel_name = data.get("price_channel_name", "Канал")
+    
     async with async_session_maker() as session:
-        channel = Channel(
-            telegram_id=data["telegram_id"],
-            name=data["name"],
-            username=data.get("username"),
-            prices=prices
+        await session.execute(
+            update(Channel).where(Channel.id == channel_id).values(prices=prices)
         )
-        session.add(channel)
-        await session.flush()
-        
-        # Создаём слоты на 30 дней
-        today = date.today()
-        for i in range(30):
-            slot_date = today + timedelta(days=i)
-            for slot_time in SLOT_TIMES:
-                slot = Slot(
-                    channel_id=channel.id,
-                    slot_date=slot_date,
-                    slot_time=slot_time
-                )
-                session.add(slot)
-        
         await session.commit()
     
-    price_str = " | ".join([f"{k}: {v:,.0f}₽" for k, v in prices.items() if v > 0])
+    price_str = " | ".join([f"{k}: {v:,.0f}₽" for k, v in prices.items() if v > 0]) or "все форматы отключены"
     
     await message.answer(
-        f"✅ **Канал добавлен!**\n\n"
-        f"📢 {data['name']}\n"
-        f"💰 {price_str}\n"
-        f"📅 Создано 60 слотов",
+        f"✅ **Цены обновлены!**\n\n"
+        f"📢 {channel_name}\n"
+        f"💰 {price_str}",
         reply_markup=get_admin_menu(),
         parse_mode=ParseMode.MARKDOWN
     )
     await state.clear()
+
+# --- Аналитика каналов ---
+@router.message(Command("analytics"), IsAdmin())
+async def cmd_analytics(message: Message, state: FSMContext):
+    """Показать меню аналитики"""
+    args = message.text.split()
+    
+    if len(args) < 2:
+        # Показываем список каналов
+        async with async_session_maker() as session:
+            result = await session.execute(select(Channel).where(Channel.is_active == True))
+            channels = result.scalars().all()
+        
+        if not channels:
+            await message.answer("❌ Нет каналов")
+            return
+        
+        text = "📊 **Аналитика каналов**\n\n"
+        for ch in channels:
+            subs = f"{ch.subscribers:,}" if ch.subscribers else "—"
+            reach = f"{ch.avg_reach:,}" if ch.avg_reach else "—"
+            err = f"{float(ch.err_percent):.1f}%" if ch.err_percent else "—"
+            cat = CHANNEL_CATEGORIES.get(ch.category, {}).get("name", "—") if ch.category else "—"
+            text += f"• **{ch.name}** (ID: {ch.id})\n"
+            text += f"  👥 {subs} | 👁 {reach} | ERR: {err} | 🏷 {cat}\n\n"
+        
+        text += "**Команды:**\n"
+        text += "/analytics <ID> — детали канала\n"
+        text += "/update\\_stats <ID> — обновить через TGStat\n"
+        text += "/set\\_category <ID> — установить тематику\n"
+        text += "/manual\\_stats <ID> — ввести данные вручную"
+        
+        await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    # Показываем детали канала
+    try:
+        channel_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    if not channel:
+        await message.answer("❌ Канал не найден")
+        return
+    
+    # Рассчитываем рекомендуемые цены
+    recommended = {}
+    if channel.avg_reach and channel.category:
+        for fmt in ["1/24", "1/48", "2/48", "native"]:
+            recommended[fmt] = calculate_recommended_price(
+                channel.avg_reach,
+                channel.category,
+                float(channel.err_percent or 0),
+                fmt
+            )
+    
+    report = format_analytics_report(channel, recommended)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Обновить TGStat", callback_data=f"update_stats:{channel_id}"),
+            InlineKeyboardButton(text="✏️ Ввести вручную", callback_data=f"manual_stats:{channel_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🏷 Тематика", callback_data=f"set_category:{channel_id}"),
+            InlineKeyboardButton(text="💰 Установить цены", callback_data=f"apply_prices:{channel_id}")
+        ]
+    ])
+    
+    await message.answer(report, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@router.callback_query(F.data.startswith("update_stats:"), IsAdmin())
+async def cb_update_stats(callback: CallbackQuery):
+    """Обновить статистику через TGStat API"""
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    if not channel:
+        await callback.answer("Канал не найден", show_alert=True)
+        return
+    
+    if not channel.username:
+        await callback.answer("У канала нет username — введите данные вручную", show_alert=True)
+        return
+    
+    if not TGSTAT_API_TOKEN:
+        await callback.answer("TGStat API не настроен. Добавьте TGSTAT_API_TOKEN в переменные окружения", show_alert=True)
+        return
+    
+    await callback.answer("⏳ Загружаю данные из TGStat...")
+    
+    # Запрашиваем данные
+    stats = await tgstat_service.get_channel_stat(channel.username)
+    
+    if not stats:
+        await callback.message.edit_text(
+            f"❌ Не удалось получить данные для @{channel.username}\n\n"
+            "Возможные причины:\n"
+            "• Канал не найден в TGStat\n"
+            "• Превышен лимит API\n"
+            "• Неверный API токен\n\n"
+            "Введите данные вручную: /manual\\_stats " + str(channel_id),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Обновляем данные в БД
+    async with async_session_maker() as session:
+        await session.execute(
+            update(Channel).where(Channel.id == channel_id).values(
+                subscribers=stats.get("participants_count", 0),
+                avg_reach=stats.get("avg_post_reach", 0),
+                avg_reach_24h=stats.get("adv_post_reach_24h", stats.get("avg_post_reach", 0)),
+                err_percent=stats.get("err_percent", 0),
+                ci_index=stats.get("ci_index", 0),
+                analytics_updated=datetime.utcnow()
+            )
+        )
+        await session.commit()
+        
+        # Перечитываем для отчёта
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    # Формируем отчёт
+    recommended = {}
+    if channel.avg_reach and channel.category:
+        for fmt in ["1/24", "1/48", "2/48", "native"]:
+            recommended[fmt] = calculate_recommended_price(
+                channel.avg_reach,
+                channel.category,
+                float(channel.err_percent or 0),
+                fmt
+            )
+    
+    report = "✅ **Данные обновлены из TGStat!**\n\n" + format_analytics_report(channel, recommended)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🏷 Тематика", callback_data=f"set_category:{channel_id}"),
+            InlineKeyboardButton(text="💰 Применить цены", callback_data=f"apply_prices:{channel_id}")
+        ]
+    ])
+    
+    await callback.message.edit_text(report, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@router.callback_query(F.data.startswith("set_category:"), IsAdmin())
+async def cb_set_category(callback: CallbackQuery, state: FSMContext):
+    """Выбрать тематику канала"""
+    channel_id = int(callback.data.split(":")[1])
+    
+    # Создаём клавиатуру с категориями
+    buttons = []
+    row = []
+    for key, data in CHANNEL_CATEGORIES.items():
+        row.append(InlineKeyboardButton(
+            text=f"{data['name']} ({data['cpm']}₽)",
+            callback_data=f"category:{channel_id}:{key}"
+        ))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback.message.edit_text(
+        "🏷 **Выберите тематику канала:**\n\n"
+        "(в скобках указан средний CPM по рынку)",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data.startswith("category:"), IsAdmin())
+async def cb_category_selected(callback: CallbackQuery):
+    """Сохранить выбранную тематику"""
+    parts = callback.data.split(":")
+    channel_id = int(parts[1])
+    category = parts[2]
+    
+    async with async_session_maker() as session:
+        await session.execute(
+            update(Channel).where(Channel.id == channel_id).values(category=category)
+        )
+        await session.commit()
+        
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    cat_name = CHANNEL_CATEGORIES.get(category, {}).get("name", category)
+    
+    # Рассчитываем рекомендуемые цены
+    recommended = {}
+    if channel.avg_reach:
+        for fmt in ["1/24", "1/48", "2/48", "native"]:
+            recommended[fmt] = calculate_recommended_price(
+                channel.avg_reach,
+                category,
+                float(channel.err_percent or 0),
+                fmt
+            )
+    
+    report = f"✅ Тематика установлена: **{cat_name}**\n\n" + format_analytics_report(channel, recommended)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Применить рекомендуемые цены", callback_data=f"apply_prices:{channel_id}")]
+    ])
+    
+    await callback.message.edit_text(report, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@router.callback_query(F.data.startswith("apply_prices:"), IsAdmin())
+async def cb_apply_prices(callback: CallbackQuery):
+    """Применить рекомендуемые цены к каналу"""
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    if not channel:
+        await callback.answer("Канал не найден", show_alert=True)
+        return
+    
+    if not channel.avg_reach or not channel.category:
+        await callback.answer("Сначала укажите охват и тематику канала", show_alert=True)
+        return
+    
+    # Рассчитываем цены
+    new_prices = {}
+    for fmt in ["1/24", "1/48", "2/48", "native"]:
+        new_prices[fmt] = calculate_recommended_price(
+            channel.avg_reach,
+            channel.category,
+            float(channel.err_percent or 0),
+            fmt
+        )
+    
+    # Сохраняем
+    async with async_session_maker() as session:
+        await session.execute(
+            update(Channel).where(Channel.id == channel_id).values(prices=new_prices)
+        )
+        await session.commit()
+    
+    price_str = "\n".join([f"• {k}: **{v:,}₽**" for k, v in new_prices.items()])
+    
+    await callback.message.edit_text(
+        f"✅ **Цены применены!**\n\n"
+        f"📢 {channel.name}\n\n"
+        f"{price_str}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data.startswith("manual_stats:"), IsAdmin())
+async def cb_manual_stats(callback: CallbackQuery, state: FSMContext):
+    """Начать ввод статистики вручную"""
+    channel_id = int(callback.data.split(":")[1])
+    
+    await state.update_data(manual_channel_id=channel_id)
+    await state.set_state(AdminChannelStates.waiting_manual_subscribers)
+    
+    await callback.message.edit_text(
+        "✏️ **Ввод статистики вручную**\n\n"
+        "Введите количество подписчиков:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(Command("manual_stats"), IsAdmin())
+async def cmd_manual_stats(message: Message, state: FSMContext):
+    """Команда для ввода статистики вручную"""
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Использование: /manual\\_stats <ID канала>", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    try:
+        channel_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    if not channel:
+        await message.answer("❌ Канал не найден")
+        return
+    
+    await state.update_data(manual_channel_id=channel_id)
+    await state.set_state(AdminChannelStates.waiting_manual_subscribers)
+    
+    await message.answer(
+        f"✏️ **Ввод статистики для {channel.name}**\n\n"
+        "Введите количество подписчиков:",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(AdminChannelStates.waiting_manual_subscribers)
+async def receive_manual_subscribers(message: Message, state: FSMContext):
+    try:
+        subscribers = int(message.text.strip().replace(" ", "").replace(",", ""))
+    except:
+        await message.answer("❌ Введите число")
+        return
+    
+    await state.update_data(manual_subscribers=subscribers)
+    await state.set_state(AdminChannelStates.waiting_manual_reach)
+    
+    await message.answer(
+        f"✅ Подписчики: {subscribers:,}\n\n"
+        "Введите средний охват поста:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(AdminChannelStates.waiting_manual_reach)
+async def receive_manual_reach(message: Message, state: FSMContext):
+    try:
+        reach = int(message.text.strip().replace(" ", "").replace(",", ""))
+    except:
+        await message.answer("❌ Введите число")
+        return
+    
+    await state.update_data(manual_reach=reach)
+    await state.set_state(AdminChannelStates.waiting_manual_err)
+    
+    await message.answer(
+        f"✅ Охват: {reach:,}\n\n"
+        "Введите ERR (вовлечённость) в процентах (например: 15):\n"
+        "(или 0 если не знаете)",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(AdminChannelStates.waiting_manual_err)
+async def receive_manual_err(message: Message, state: FSMContext):
+    try:
+        err = float(message.text.strip().replace(",", ".").replace("%", ""))
+    except:
+        await message.answer("❌ Введите число")
+        return
+    
+    data = await state.get_data()
+    channel_id = data["manual_channel_id"]
+    subscribers = data["manual_subscribers"]
+    reach = data["manual_reach"]
+    
+    # Сохраняем данные
+    async with async_session_maker() as session:
+        await session.execute(
+            update(Channel).where(Channel.id == channel_id).values(
+                subscribers=subscribers,
+                avg_reach=reach,
+                avg_reach_24h=reach,
+                err_percent=err,
+                analytics_updated=datetime.utcnow()
+            )
+        )
+        await session.commit()
+        
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    await state.clear()
+    
+    # Формируем отчёт
+    recommended = {}
+    if channel.category:
+        for fmt in ["1/24", "1/48", "2/48", "native"]:
+            recommended[fmt] = calculate_recommended_price(reach, channel.category, err, fmt)
+    
+    report = "✅ **Статистика сохранена!**\n\n" + format_analytics_report(channel, recommended)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🏷 Тематика", callback_data=f"set_category:{channel_id}"),
+            InlineKeyboardButton(text="💰 Применить цены", callback_data=f"apply_prices:{channel_id}")
+        ]
+    ])
+    
+    await message.answer(report, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@router.message(Command("set_category"), IsAdmin())
+async def cmd_set_category(message: Message, state: FSMContext):
+    """Команда для установки тематики"""
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Использование: /set\\_category <ID канала>", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    try:
+        channel_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    
+    # Создаём клавиатуру с категориями
+    buttons = []
+    row = []
+    for key, data in CHANNEL_CATEGORIES.items():
+        row.append(InlineKeyboardButton(
+            text=f"{data['name']} ({data['cpm']}₽)",
+            callback_data=f"category:{channel_id}:{key}"
+        ))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await message.answer(
+        "🏷 **Выберите тематику канала:**\n\n"
+        "(в скобках указан средний CPM по рынку)",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(Command("update_stats"), IsAdmin())
+async def cmd_update_stats(message: Message):
+    """Команда для обновления статистики через TGStat"""
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Использование: /update\\_stats <ID канала>", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    try:
+        channel_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+    
+    if not channel:
+        await message.answer("❌ Канал не найден")
+        return
+    
+    if not channel.username:
+        await message.answer("❌ У канала нет username — введите данные вручную: /manual\\_stats " + str(channel_id), parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    if not TGSTAT_API_TOKEN:
+        await message.answer("❌ TGStat API не настроен\n\nДобавьте TGSTAT\\_API\\_TOKEN в переменные окружения Railway", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    msg = await message.answer("⏳ Загружаю данные из TGStat...")
+    
+    # Имитируем callback для переиспользования логики
+    class FakeCallback:
+        data = f"update_stats:{channel_id}"
+        message = msg
+        async def answer(self, text, show_alert=False):
+            await msg.edit_text(text)
+    
+    await cb_update_stats(FakeCallback())
 
 # --- Проверка оплат ---
 @router.message(F.text == "💳 Оплаты", IsAdmin())
@@ -1566,8 +2310,38 @@ async def reject_payment(callback: CallbackQuery, bot: Bot):
         callback.message.caption + "\n\n❌ ОТКЛОНЕНО"
     )
 
+# --- Аналитика (кнопка) ---
+@router.message(F.text == "📊 Аналитика", IsAdmin())
+async def admin_analytics_button(message: Message, state: FSMContext):
+    """Обработчик кнопки Аналитика — вызывает команду /analytics"""
+    # Показываем список каналов с аналитикой
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.is_active == True))
+        channels = result.scalars().all()
+    
+    if not channels:
+        await message.answer("❌ Нет каналов")
+        return
+    
+    text = "📊 **Аналитика каналов**\n\n"
+    for ch in channels:
+        subs = f"{ch.subscribers:,}" if ch.subscribers else "—"
+        reach = f"{ch.avg_reach:,}" if ch.avg_reach else "—"
+        err = f"{float(ch.err_percent):.1f}%" if ch.err_percent else "—"
+        cat = CHANNEL_CATEGORIES.get(ch.category, {}).get("name", "—") if ch.category else "—"
+        text += f"• **{ch.name}** (ID: {ch.id})\n"
+        text += f"  👥 {subs} | 👁 {reach} | ERR: {err} | 🏷 {cat}\n\n"
+    
+    text += "**Команды:**\n"
+    text += "/analytics <ID> — детали канала\n"
+    text += "/update\\_stats <ID> — обновить через TGStat\n"
+    text += "/set\\_category <ID> — установить тематику\n"
+    text += "/manual\\_stats <ID> — ввести данные вручную"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
 # --- Статистика ---
-@router.message(F.text == "📊 Статистика", IsAdmin())
+@router.message(F.text == "📈 Статистика", IsAdmin())
 async def admin_stats(message: Message):
     async with async_session_maker() as session:
         # Всего заказов
