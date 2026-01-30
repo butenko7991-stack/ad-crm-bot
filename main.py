@@ -24,7 +24,7 @@ from aiogram.enums import ParseMode
 
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, DateTime, Date, Time,
-    ForeignKey, Boolean, Numeric, JSON, Index, select, func, update
+    ForeignKey, Boolean, Numeric, JSON, Index, select, func, update, text
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -463,6 +463,31 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database initialized")
+
+async def migrate_db():
+    """Добавляет новые колонки в существующие таблицы"""
+    async with engine.begin() as conn:
+        # Проверяем и добавляем новые колонки для Channel
+        new_columns = [
+            ("category", "VARCHAR(100)"),
+            ("subscribers", "INTEGER DEFAULT 0"),
+            ("avg_reach", "INTEGER DEFAULT 0"),
+            ("avg_reach_24h", "INTEGER DEFAULT 0"),
+            ("err_percent", "NUMERIC(5,2) DEFAULT 0"),
+            ("ci_index", "NUMERIC(8,2) DEFAULT 0"),
+            ("cpm", "NUMERIC(10,2) DEFAULT 0"),
+            ("analytics_updated", "TIMESTAMP"),
+        ]
+        
+        for col_name, col_type in new_columns:
+            try:
+                await conn.execute(
+                    text(f"ALTER TABLE channels ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                )
+            except Exception as e:
+                logger.debug(f"Column {col_name} may already exist: {e}")
+        
+        logger.info("Database migration completed")
 
 # ==================== СЕРВИС АНАЛИТИКИ TGSTAT ====================
 
@@ -2910,6 +2935,7 @@ async def manager_back(callback: CallbackQuery, state: FSMContext):
 
 async def on_startup(bot: Bot):
     await init_db()
+    await migrate_db()  # Добавляем новые колонки если их нет
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
     
