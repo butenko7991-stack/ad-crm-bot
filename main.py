@@ -467,8 +467,14 @@ async def init_db():
 async def migrate_db():
     """Добавляет новые колонки в существующие таблицы"""
     async with engine.begin() as conn:
-        # Проверяем и добавляем новые колонки для Channel
-        new_columns = [
+        # Все колонки которые могут отсутствовать в channels
+        channel_columns = [
+            ("username", "VARCHAR(255)"),
+            ("description", "TEXT"),
+            ("prices", "JSON DEFAULT '{}'"),
+            ("price_morning", "NUMERIC(12,2) DEFAULT 0"),
+            ("price_evening", "NUMERIC(12,2) DEFAULT 0"),
+            ("is_active", "BOOLEAN DEFAULT TRUE"),
             ("category", "VARCHAR(100)"),
             ("subscribers", "INTEGER DEFAULT 0"),
             ("avg_reach", "INTEGER DEFAULT 0"),
@@ -479,13 +485,14 @@ async def migrate_db():
             ("analytics_updated", "TIMESTAMP"),
         ]
         
-        for col_name, col_type in new_columns:
+        for col_name, col_type in channel_columns:
             try:
                 await conn.execute(
                     text(f"ALTER TABLE channels ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
                 )
+                logger.info(f"Added/checked column: channels.{col_name}")
             except Exception as e:
-                logger.debug(f"Column {col_name} may already exist: {e}")
+                logger.warning(f"Column channels.{col_name}: {e}")
         
         logger.info("Database migration completed")
 
