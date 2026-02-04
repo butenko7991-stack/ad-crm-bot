@@ -556,6 +556,78 @@ class TGStatService:
 # Глобальный экземпляр сервиса
 tgstat_service = TGStatService(TGSTAT_API_TOKEN)
 
+async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]:
+    """
+    Получить статистику канала через Telegram Bot API.
+    Бот должен быть админом канала.
+    
+    Returns:
+        dict с полями: subscribers, title, username, description
+        или None если нет доступа
+    """
+    try:
+        # Получаем информацию о чате
+        chat = await bot.get_chat(channel_id)
+        
+        # Получаем количество подписчиков
+        members_count = await bot.get_chat_member_count(channel_id)
+        
+        return {
+            "subscribers": members_count,
+            "title": chat.title,
+            "username": chat.username,
+            "description": chat.description or "",
+            "photo": chat.photo is not None,
+        }
+    except Exception as e:
+        logger.warning(f"Cannot get stats for channel {channel_id}: {e}")
+        return None
+
+async def get_recent_posts_views(bot: Bot, channel_id: int, limit: int = 10) -> Optional[dict]:
+    """
+    Попытка получить просмотры последних постов.
+    ВАЖНО: Bot API НЕ даёт доступ к просмотрам постов напрямую.
+    Этот метод работает только если пересылать посты боту.
+    
+    Возвращает None — охваты нужно вводить вручную или через TGStat.
+    """
+    # К сожалению, Telegram Bot API не предоставляет доступ к просмотрам постов.
+    # Для получения охватов нужен либо TGStat API, либо userbot через Telethon.
+    return None
+
+async def update_channel_from_bot(bot: Bot, channel_db_id: int) -> tuple[bool, str]:
+    """
+    Обновить статистику канала через Bot API.
+    
+    Returns:
+        (success: bool, message: str)
+    """
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_db_id))
+        channel = result.scalar_one_or_none()
+        
+        if not channel:
+            return False, "Канал не найден в базе"
+        
+        stats = await get_channel_stats_via_bot(bot, channel.telegram_id)
+        
+        if not stats:
+            return False, "Нет доступа к каналу. Убедитесь что бот добавлен как администратор."
+        
+        # Обновляем данные
+        await session.execute(
+            update(Channel).where(Channel.id == channel_db_id).values(
+                name=stats["title"],
+                username=stats.get("username"),
+                description=stats.get("description"),
+                subscribers=stats["subscribers"],
+                analytics_updated=datetime.utcnow()
+            )
+        )
+        await session.commit()
+        
+        return True, f"Обновлено: {stats['subscribers']:,} подписчиков"
+
 def calculate_recommended_price(
     avg_reach: int,
     category: str,
@@ -1519,7 +1591,7 @@ async def start_add_channel(message: Message, state: FSMContext):
     await state.set_state(AdminChannelStates.waiting_channel_forward)
 
 @router.message(AdminChannelStates.waiting_channel_forward)
-async def receive_channel_forward(message: Message, state: FSMContext):
+async def receive_channel_forward(message: Message, state: FSMContext, bot: Bot):
     logger.info(f"[ADD_CHANNEL] Received message from {message.from_user.id}")
     
     if not message.forward_from_chat:
@@ -1532,6 +1604,10 @@ async def receive_channel_forward(message: Message, state: FSMContext):
     
     # Сразу сохраняем канал с нулевыми ценами
     try:
+        # Пробуем получить статистику если бот админ
+        bot_stats = await get_channel_stats_via_bot(bot, chat.id)
+        subscribers = bot_stats["subscribers"] if bot_stats else 0
+        
         async with async_session_maker() as session:
             # Проверяем, не добавлен ли уже
             existing = await session.execute(
@@ -1551,7 +1627,9 @@ async def receive_channel_forward(message: Message, state: FSMContext):
                 telegram_id=chat.id,
                 name=chat.title,
                 username=chat.username,
-                prices={"1/24": 0, "1/48": 0, "2/48": 0, "native": 0}
+                subscribers=subscribers,
+                prices={"1/24": 0, "1/48": 0, "2/48": 0, "native": 0},
+                analytics_updated=datetime.utcnow() if bot_stats else None
             )
             session.add(channel)
             await session.flush()
@@ -1573,13 +1651,24 @@ async def receive_channel_forward(message: Message, state: FSMContext):
             channel_id = channel.id
             logger.info(f"[ADD_CHANNEL] Success! Channel ID: {channel_id}, slots created")
         
+        # Формируем ответ
+        stats_info = ""
+        if bot_stats:
+            stats_info = f"👥 Подписчиков: **{subscribers:,}**\n"
+            stats_info += "✅ Бот имеет доступ к статистике\n\n"
+        else:
+            stats_info = "⚠️ Бот не админ — добавьте для авто-статистики\n\n"
+        
         await message.answer(
             f"✅ **Канал добавлен!**\n\n"
             f"📢 {chat.title}\n"
             f"🆔 ID: {channel_id}\n"
+            f"{stats_info}"
             f"📅 Создано 60 слотов\n\n"
-            f"💰 Цены не установлены\n"
-            f"Для установки цен: /set\\_prices {channel_id}",
+            f"**Следующие шаги:**\n"
+            f"• /analytics {channel_id} — посмотреть статистику\n"
+            f"• /set\\_category {channel_id} — выбрать тематику\n"
+            f"• /set\\_prices {channel_id} — установить цены",
             reply_markup=get_admin_menu(),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -1801,8 +1890,8 @@ async def cmd_analytics(message: Message, state: FSMContext):
     await message.answer(report, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 @router.callback_query(F.data.startswith("update_stats:"), IsAdmin())
-async def cb_update_stats(callback: CallbackQuery):
-    """Обновить статистику через TGStat API"""
+async def cb_update_stats(callback: CallbackQuery, bot: Bot):
+    """Обновить статистику — сначала через Bot API, потом TGStat"""
     channel_id = int(callback.data.split(":")[1])
     
     async with async_session_maker() as session:
@@ -1813,32 +1902,117 @@ async def cb_update_stats(callback: CallbackQuery):
         await callback.answer("Канал не найден", show_alert=True)
         return
     
+    await callback.answer("⏳ Загружаю статистику...")
+    
+    # 1. Пробуем через Bot API (бот должен быть админом)
+    bot_stats = await get_channel_stats_via_bot(bot, channel.telegram_id)
+    
+    if bot_stats:
+        # Обновляем подписчиков через Bot API
+        async with async_session_maker() as session:
+            await session.execute(
+                update(Channel).where(Channel.id == channel_id).values(
+                    name=bot_stats["title"],
+                    username=bot_stats.get("username"),
+                    subscribers=bot_stats["subscribers"],
+                    analytics_updated=datetime.utcnow()
+                )
+            )
+            await session.commit()
+        
+        # 2. Пробуем получить охваты через TGStat (если есть токен)
+        tgstat_stats = None
+        if TGSTAT_API_TOKEN and (channel.username or bot_stats.get("username")):
+            username = bot_stats.get("username") or channel.username
+            tgstat_stats = await tgstat_service.get_channel_stat(username)
+            
+            if tgstat_stats:
+                async with async_session_maker() as session:
+                    await session.execute(
+                        update(Channel).where(Channel.id == channel_id).values(
+                            avg_reach=tgstat_stats.get("avg_post_reach", 0),
+                            avg_reach_24h=tgstat_stats.get("adv_post_reach_24h", tgstat_stats.get("avg_post_reach", 0)),
+                            err_percent=tgstat_stats.get("err_percent", 0),
+                            ci_index=tgstat_stats.get("ci_index", 0),
+                        )
+                    )
+                    await session.commit()
+        
+        # Перечитываем для отчёта
+        async with async_session_maker() as session:
+            result = await session.execute(select(Channel).where(Channel.id == channel_id))
+            channel = result.scalar_one_or_none()
+        
+        # Формируем отчёт
+        recommended = {}
+        if channel.avg_reach and channel.category:
+            for fmt in ["1/24", "1/48", "2/48", "native"]:
+                recommended[fmt] = calculate_recommended_price(
+                    channel.avg_reach,
+                    channel.category,
+                    float(channel.err_percent or 0),
+                    fmt
+                )
+        
+        source = "Bot API"
+        if tgstat_stats:
+            source += " + TGStat"
+        
+        report = f"✅ **Данные обновлены!** ({source})\n\n" + format_analytics_report(channel, recommended)
+        
+        if not tgstat_stats and not channel.avg_reach:
+            report += "\n\n⚠️ _Охваты недоступны через Bot API. Введите вручную или подключите TGStat._"
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🏷 Тематика", callback_data=f"set_category:{channel_id}"),
+                InlineKeyboardButton(text="✏️ Ввести охват", callback_data=f"manual_stats:{channel_id}")
+            ],
+            [
+                InlineKeyboardButton(text="💰 Применить цены", callback_data=f"apply_prices:{channel_id}")
+            ]
+        ])
+        
+        await callback.message.edit_text(report, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    # Бот не админ — пробуем только TGStat
     if not channel.username:
-        await callback.answer("У канала нет username — введите данные вручную", show_alert=True)
-        return
-    
-    if not TGSTAT_API_TOKEN:
-        await callback.answer("TGStat API не настроен. Добавьте TGSTAT_API_TOKEN в переменные окружения", show_alert=True)
-        return
-    
-    await callback.answer("⏳ Загружаю данные из TGStat...")
-    
-    # Запрашиваем данные
-    stats = await tgstat_service.get_channel_stat(channel.username)
-    
-    if not stats:
         await callback.message.edit_text(
-            f"❌ Не удалось получить данные для @{channel.username}\n\n"
-            "Возможные причины:\n"
-            "• Канал не найден в TGStat\n"
-            "• Превышен лимит API\n"
-            "• Неверный API токен\n\n"
-            "Введите данные вручную: /manual\\_stats " + str(channel_id),
+            f"❌ **Нет доступа к каналу**\n\n"
+            f"Бот не является администратором канала и у канала нет username.\n\n"
+            f"**Решения:**\n"
+            f"1. Добавьте бота администратором в канал\n"
+            f"2. Или введите данные вручную: /manual\\_stats {channel_id}",
             parse_mode=ParseMode.MARKDOWN
         )
         return
     
-    # Обновляем данные в БД
+    if not TGSTAT_API_TOKEN:
+        await callback.message.edit_text(
+            f"❌ **Нет доступа к каналу**\n\n"
+            f"Бот не является администратором канала.\n\n"
+            f"**Решения:**\n"
+            f"1. Добавьте бота администратором в канал\n"
+            f"2. Или введите данные вручную: /manual\\_stats {channel_id}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Пробуем TGStat
+    stats = await tgstat_service.get_channel_stat(channel.username)
+    
+    if not stats:
+        await callback.message.edit_text(
+            f"❌ Не удалось получить данные\n\n"
+            f"• Бот не админ канала\n"
+            f"• TGStat не нашёл @{channel.username}\n\n"
+            f"Введите данные вручную: /manual\\_stats {channel_id}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Обновляем данные из TGStat
     async with async_session_maker() as session:
         await session.execute(
             update(Channel).where(Channel.id == channel_id).values(
@@ -1852,11 +2026,9 @@ async def cb_update_stats(callback: CallbackQuery):
         )
         await session.commit()
         
-        # Перечитываем для отчёта
         result = await session.execute(select(Channel).where(Channel.id == channel_id))
         channel = result.scalar_one_or_none()
     
-    # Формируем отчёт
     recommended = {}
     if channel.avg_reach and channel.category:
         for fmt in ["1/24", "1/48", "2/48", "native"]:
@@ -2155,8 +2327,8 @@ async def cmd_set_category(message: Message, state: FSMContext):
     )
 
 @router.message(Command("update_stats"), IsAdmin())
-async def cmd_update_stats(message: Message):
-    """Команда для обновления статистики через TGStat"""
+async def cmd_update_stats(message: Message, bot: Bot):
+    """Команда для обновления статистики"""
     args = message.text.split()
     if len(args) < 2:
         await message.answer("Использование: /update\\_stats <ID канала>", parse_mode=ParseMode.MARKDOWN)
@@ -2176,24 +2348,19 @@ async def cmd_update_stats(message: Message):
         await message.answer("❌ Канал не найден")
         return
     
-    if not channel.username:
-        await message.answer("❌ У канала нет username — введите данные вручную: /manual\\_stats " + str(channel_id), parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    if not TGSTAT_API_TOKEN:
-        await message.answer("❌ TGStat API не настроен\n\nДобавьте TGSTAT\\_API\\_TOKEN в переменные окружения Railway", parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    msg = await message.answer("⏳ Загружаю данные из TGStat...")
+    msg = await message.answer("⏳ Загружаю статистику...")
     
     # Имитируем callback для переиспользования логики
     class FakeCallback:
         data = f"update_stats:{channel_id}"
-        message = msg
+        
+        def __init__(self, msg):
+            self.message = msg
+        
         async def answer(self, text, show_alert=False):
-            await msg.edit_text(text)
+            pass  # Игнорируем answer для команды
     
-    await cb_update_stats(FakeCallback())
+    await cb_update_stats(FakeCallback(msg), bot)
 
 # --- Проверка оплат ---
 @router.message(F.text == "💳 Оплаты", IsAdmin())
