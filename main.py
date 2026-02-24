@@ -62,6 +62,10 @@ RESERVATION_MINUTES = 15
 TGSTAT_API_TOKEN = os.getenv("TGSTAT_API_TOKEN", "")  # Получить на tgstat.ru/api
 TGSTAT_API_URL = "https://api.tgstat.ru"
 
+# Telemetr API для аналитики (как Trustat)
+TELEMETR_API_TOKEN = os.getenv("TELEMETR_API_TOKEN", "yeWKeyjhJkwAZCWkciIyDFfG5RVRYsIS")  # Получить через @telemetrio_api_bot
+TELEMETR_API_URL = "https://api.telemetr.io"
+
 # ==================== ЛОГИРОВАНИЕ ====================
 
 logging.basicConfig(
@@ -87,13 +91,17 @@ class Channel(Base):
     category = Column(String(100))  # Тематика канала
     # Цены по форматам размещения (JSON: {"1/24": 1000, "1/48": 800, "2/48": 1500, "native": 3000})
     prices = Column(JSON, default={"1/24": 0, "1/48": 0, "2/48": 0, "native": 0})
-    # Аналитика охватов
+    # Аналитика охватов (как Trustat)
     subscribers = Column(Integer, default=0)  # Подписчики
     avg_reach = Column(Integer, default=0)  # Средний охват поста
     avg_reach_24h = Column(Integer, default=0)  # Охват за 24 часа
+    avg_reach_48h = Column(Integer, default=0)  # Охват за 48 часов
+    avg_reach_72h = Column(Integer, default=0)  # Охват за 72 часа
     err_percent = Column(Numeric(5, 2), default=0)  # ERR (вовлечённость)
+    err24_percent = Column(Numeric(5, 2), default=0)  # ER24 (вовлечённость за 24ч)
     ci_index = Column(Numeric(8, 2), default=0)  # Индекс цитирования
     cpm = Column(Numeric(10, 2), default=0)  # Установленный CPM
+    telemetr_id = Column(String(20))  # Internal ID в Telemetr.io
     analytics_updated = Column(DateTime)  # Когда обновлялась аналитика
     # Старые поля для совместимости
     price_morning = Column(Numeric(12, 2), default=0)
@@ -526,9 +534,13 @@ async def migrate_db():
             ("subscribers", "INTEGER DEFAULT 0"),
             ("avg_reach", "INTEGER DEFAULT 0"),
             ("avg_reach_24h", "INTEGER DEFAULT 0"),
+            ("avg_reach_48h", "INTEGER DEFAULT 0"),
+            ("avg_reach_72h", "INTEGER DEFAULT 0"),
             ("err_percent", "NUMERIC(5,2) DEFAULT 0"),
+            ("err24_percent", "NUMERIC(5,2) DEFAULT 0"),
             ("ci_index", "NUMERIC(8,2) DEFAULT 0"),
             ("cpm", "NUMERIC(10,2) DEFAULT 0"),
+            ("telemetr_id", "VARCHAR(20)"),
             ("analytics_updated", "TIMESTAMP"),
         ]
         
@@ -649,6 +661,133 @@ class TGStatService:
 
 # Глобальный экземпляр сервиса
 tgstat_service = TGStatService(TGSTAT_API_TOKEN)
+
+# ==================== СЕРВИС АНАЛИТИКИ TELEMETR ====================
+
+class TelemetrService:
+    """Сервис для получения аналитики каналов через Telemetr API (как Trustat)"""
+    
+    def __init__(self, api_token: str):
+        self.api_token = api_token
+        self.base_url = TELEMETR_API_URL
+    
+    async def _request(self, endpoint: str, params: dict = None) -> Optional[dict]:
+        """Выполнить запрос к API"""
+        if not self.api_token:
+            logger.warning("Telemetr API token not configured")
+            return None
+        
+        try:
+            headers = {
+                "x-api-key": self.api_token,
+                "accept": "application/json"
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}{endpoint}",
+                    headers=headers,
+                    params=params
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+                    elif resp.status == 426:
+                        logger.warning("Telemetr API quota reached")
+                    else:
+                        logger.error(f"Telemetr API error: {resp.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Telemetr API request failed: {e}")
+            return None
+    
+    async def resolve_telegram_id(self, telegram_id: int) -> Optional[str]:
+        """Конвертировать Telegram ID в internal_id Telemetr"""
+        # Убираем минус для каналов (Telegram даёт отрицательные ID)
+        clean_id = abs(telegram_id)
+        # Убираем префикс -100 если есть
+        if clean_id > 1000000000000:
+            clean_id = clean_id - 1000000000000
+        
+        data = await self._request("/v1/utils/resolve_telegram_id", {"telegram_id": clean_id})
+        if data and "internal_id" in data:
+            return data["internal_id"]
+        return None
+    
+    async def search_channel(self, username: str) -> Optional[dict]:
+        """Найти канал по username"""
+        data = await self._request("/v1/channels/search", {"term": username.lstrip("@"), "limit": 1})
+        if data and isinstance(data, list) and len(data) > 0:
+            return data[0]
+        return None
+    
+    async def get_channel_stats(self, internal_id: str) -> Optional[dict]:
+        """Получить статистику канала по internal_id"""
+        data = await self._request("/v1/channel/stats", {"internal_id": internal_id})
+        if data and isinstance(data, list) and len(data) > 0:
+            return data[0]
+        return data
+    
+    async def get_channel_info(self, internal_id: str) -> Optional[dict]:
+        """Получить информацию о канале по internal_id"""
+        data = await self._request("/v1/channel/info", {"internal_id": internal_id})
+        if data and isinstance(data, list) and len(data) > 0:
+            return data[0]
+        return data
+    
+    async def get_full_stats(self, telegram_id: int = None, username: str = None) -> Optional[dict]:
+        """
+        Получить полную статистику канала (как Trustat).
+        
+        Возвращает:
+        {
+            "internal_id": "xxx",
+            "subscribers": 6384,
+            "avg_views_24h": 527,
+            "avg_views_48h": 638,
+            "avg_views_72h": 780,  # Рассчитываем из avg_views
+            "err_percent": 8.26,
+            "err24_percent": 8.26,
+            "title": "Пока муж не видит"
+        }
+        """
+        internal_id = None
+        
+        # Пробуем найти internal_id
+        if telegram_id:
+            internal_id = await self.resolve_telegram_id(telegram_id)
+        
+        if not internal_id and username:
+            channel = await self.search_channel(username)
+            if channel:
+                internal_id = channel.get("internal_id")
+        
+        if not internal_id:
+            logger.warning(f"Could not find channel in Telemetr: tg_id={telegram_id}, username={username}")
+            return None
+        
+        # Получаем статистику
+        stats = await self.get_channel_stats(internal_id)
+        if not stats:
+            return None
+        
+        # Парсим данные
+        avg_post_views = stats.get("avg_post_views", {})
+        
+        result = {
+            "internal_id": internal_id,
+            "title": stats.get("title", ""),
+            "subscribers": stats.get("members_count", 0),
+            "avg_views": avg_post_views.get("avg_post_views", 0),
+            "avg_views_24h": avg_post_views.get("avg_post_views_24h", 0),
+            "avg_views_48h": avg_post_views.get("avg_post_views_48h", 0),
+            "avg_views_72h": avg_post_views.get("avg_post_views", 0),  # Используем общий как 72h
+            "err_percent": stats.get("err_percent", 0),
+            "err24_percent": stats.get("err24_percent", 0),
+        }
+        
+        return result
+
+# Глобальный экземпляр сервиса Telemetr
+telemetr_service = TelemetrService(TELEMETR_API_TOKEN)
 
 async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]:
     """
@@ -806,38 +945,53 @@ def calculate_recommended_price(
     return int(base_price)
 
 def format_analytics_report(channel, recommended_prices: dict = None) -> str:
-    """Форматировать отчёт по аналитике канала"""
+    """Форматировать отчёт по аналитике канала (как Trustat)"""
     
     lines = [
         f"📊 **Аналитика канала**",
         f"",
         f"📢 **{channel.name}**",
-        f"🔗 @{channel.username}" if channel.username else "",
-        f"",
     ]
     
-    # Основные метрики
+    if channel.username:
+        lines.append(f"🔗 @{channel.username}")
+    
+    lines.append("")
+    
+    # Подписчики
     if channel.subscribers:
         lines.append(f"👥 Подписчики: **{channel.subscribers:,}**")
-    if channel.avg_reach:
-        lines.append(f"👁 Средний охват: **{channel.avg_reach:,}**")
+    
+    # Охваты как в Trustat: 24ч | 48ч | 72ч
+    views_parts = []
     if channel.avg_reach_24h:
-        lines.append(f"📈 Охват 24ч: **{channel.avg_reach_24h:,}**")
-    if channel.err_percent:
+        views_parts.append(f"24ч: {channel.avg_reach_24h:,}")
+    if channel.avg_reach_48h:
+        views_parts.append(f"48ч: {channel.avg_reach_48h:,}")
+    if channel.avg_reach_72h:
+        views_parts.append(f"72ч: {channel.avg_reach_72h:,}")
+    elif channel.avg_reach:
+        views_parts.append(f"avg: {channel.avg_reach:,}")
+    
+    if views_parts:
+        lines.append(f"👁 Охваты: **{' | '.join(views_parts)}**")
+    
+    # ER24 как в Trustat
+    if channel.err24_percent and float(channel.err24_percent) > 0:
+        err = float(channel.err24_percent)
+        err_emoji = "🔥" if err > 15 else "✅" if err > 10 else "⚠️"
+        lines.append(f"{err_emoji} ER24: **{err:.2f}%**")
+    elif channel.err_percent and float(channel.err_percent) > 0:
         err = float(channel.err_percent)
         err_emoji = "🔥" if err > 15 else "✅" if err > 10 else "⚠️"
-        lines.append(f"{err_emoji} ERR: **{err:.1f}%**")
-    if channel.ci_index:
-        lines.append(f"📊 Индекс цитирования: **{float(channel.ci_index):.1f}**")
+        lines.append(f"{err_emoji} ER: **{err:.2f}%**")
     
-    # Тематика
+    # Тематика и CPM
     if channel.category:
         cat_data = CHANNEL_CATEGORIES.get(channel.category, {})
         cat_name = cat_data.get("name", channel.category)
         cat_cpm = cat_data.get("cpm", 0)
-        lines.append(f"")
-        lines.append(f"🏷 Тематика: **{cat_name}**")
-        lines.append(f"💰 Рыночный CPM: **{cat_cpm:,}₽**/1000 просм.")
+        lines.append(f"🏷 **{cat_name}** (CPM: {cat_cpm:,}₽)")
     
     # Рекомендуемые цены
     if recommended_prices:
@@ -862,6 +1016,33 @@ def format_analytics_report(channel, recommended_prices: dict = None) -> str:
         lines.append(f"🕐 Обновлено: {channel.analytics_updated.strftime('%d.%m.%Y %H:%M')}")
     
     return "\n".join(filter(None, lines))
+
+def format_analytics_short(channel) -> str:
+    """Короткий формат аналитики для списка (как Trustat)"""
+    parts = [f"**{channel.name}**"]
+    
+    # Подписчики
+    if channel.subscribers:
+        parts.append(f"👥 {channel.subscribers:,}")
+    
+    # Охваты 24/48/72
+    views = []
+    if channel.avg_reach_24h:
+        views.append(f"24ч: {channel.avg_reach_24h:,}")
+    if channel.avg_reach_48h:
+        views.append(f"48ч: {channel.avg_reach_48h:,}")
+    if channel.avg_reach_72h:
+        views.append(f"72ч: {channel.avg_reach_72h:,}")
+    if views:
+        parts.append(f"👁 {' | '.join(views)}")
+    
+    # ER24
+    if channel.err24_percent and float(channel.err24_percent) > 0:
+        parts.append(f"📈 ER24: {float(channel.err24_percent):.2f}%")
+    elif channel.err_percent and float(channel.err_percent) > 0:
+        parts.append(f"📈 ER: {float(channel.err_percent):.2f}%")
+    
+    return " | ".join(parts)
 
 # ==================== FSM СОСТОЯНИЯ ====================
 
@@ -2024,7 +2205,7 @@ async def cmd_analytics(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("update_stats:"), IsAdmin())
 async def cb_update_stats(callback: CallbackQuery, bot: Bot):
-    """Обновить статистику — сначала через Bot API, потом TGStat"""
+    """Обновить статистику — Bot API + Telemetr (как Trustat)"""
     channel_id = int(callback.data.split(":")[1])
     
     async with async_session_maker() as session:
@@ -2037,146 +2218,93 @@ async def cb_update_stats(callback: CallbackQuery, bot: Bot):
     
     await callback.answer("⏳ Загружаю статистику...")
     
-    # 1. Пробуем через Bot API (бот должен быть админом)
-    bot_stats = await get_channel_stats_via_bot(bot, channel.telegram_id)
+    update_data = {"analytics_updated": datetime.utcnow()}
+    source_parts = []
     
+    # 1. Получаем подписчиков через Bot API (если бот админ)
+    bot_stats = await get_channel_stats_via_bot(bot, channel.telegram_id)
     if bot_stats:
-        # Обновляем подписчиков через Bot API
+        update_data["name"] = bot_stats["title"]
+        update_data["username"] = bot_stats.get("username")
+        update_data["subscribers"] = bot_stats["subscribers"]
+        source_parts.append("Bot API")
+    
+    # 2. Получаем охваты через Telemetr API (как Trustat)
+    telemetr_stats = None
+    if TELEMETR_API_TOKEN:
+        telemetr_stats = await telemetr_service.get_full_stats(
+            telegram_id=channel.telegram_id,
+            username=channel.username or (bot_stats.get("username") if bot_stats else None)
+        )
+        
+        if telemetr_stats:
+            update_data["telemetr_id"] = telemetr_stats.get("internal_id")
+            update_data["avg_reach"] = telemetr_stats.get("avg_views", 0)
+            update_data["avg_reach_24h"] = telemetr_stats.get("avg_views_24h", 0)
+            update_data["avg_reach_48h"] = telemetr_stats.get("avg_views_48h", 0)
+            update_data["avg_reach_72h"] = telemetr_stats.get("avg_views_72h", 0)
+            update_data["err_percent"] = telemetr_stats.get("err_percent", 0)
+            update_data["err24_percent"] = telemetr_stats.get("err24_percent", 0)
+            
+            # Если не получили подписчиков через Bot API
+            if "subscribers" not in update_data and telemetr_stats.get("subscribers"):
+                update_data["subscribers"] = telemetr_stats["subscribers"]
+            
+            source_parts.append("Telemetr")
+    
+    # 3. Fallback на TGStat если нет Telemetr
+    if not telemetr_stats and TGSTAT_API_TOKEN:
+        username = update_data.get("username") or channel.username
+        if username:
+            tgstat_stats = await tgstat_service.get_channel_stat(username)
+            if tgstat_stats:
+                update_data["avg_reach"] = tgstat_stats.get("avg_post_reach", 0)
+                update_data["avg_reach_24h"] = tgstat_stats.get("adv_post_reach_24h", 0)
+                update_data["err_percent"] = tgstat_stats.get("err_percent", 0)
+                source_parts.append("TGStat")
+    
+    # Сохраняем данные
+    if update_data:
         async with async_session_maker() as session:
             await session.execute(
-                update(Channel).where(Channel.id == channel_id).values(
-                    name=bot_stats["title"],
-                    username=bot_stats.get("username"),
-                    subscribers=bot_stats["subscribers"],
-                    analytics_updated=datetime.utcnow()
-                )
+                update(Channel).where(Channel.id == channel_id).values(**update_data)
             )
             await session.commit()
-        
-        # 2. Пробуем получить охваты через TGStat (если есть токен)
-        tgstat_stats = None
-        if TGSTAT_API_TOKEN and (channel.username or bot_stats.get("username")):
-            username = bot_stats.get("username") or channel.username
-            tgstat_stats = await tgstat_service.get_channel_stat(username)
-            
-            if tgstat_stats:
-                async with async_session_maker() as session:
-                    await session.execute(
-                        update(Channel).where(Channel.id == channel_id).values(
-                            avg_reach=tgstat_stats.get("avg_post_reach", 0),
-                            avg_reach_24h=tgstat_stats.get("adv_post_reach_24h", tgstat_stats.get("avg_post_reach", 0)),
-                            err_percent=tgstat_stats.get("err_percent", 0),
-                            ci_index=tgstat_stats.get("ci_index", 0),
-                        )
-                    )
-                    await session.commit()
-        
-        # Перечитываем для отчёта
-        async with async_session_maker() as session:
-            result = await session.execute(select(Channel).where(Channel.id == channel_id))
-            channel = result.scalar_one_or_none()
-        
-        # Формируем отчёт
-        recommended = {}
-        if channel.avg_reach and channel.category:
-            for fmt in ["1/24", "1/48", "2/48", "native"]:
-                recommended[fmt] = calculate_recommended_price(
-                    channel.avg_reach,
-                    channel.category,
-                    float(channel.err_percent or 0),
-                    fmt
-                )
-        
-        source = "Bot API"
-        if tgstat_stats:
-            source += " + TGStat"
-        
-        report = f"✅ **Данные обновлены!** ({source})\n\n" + format_analytics_report(channel, recommended)
-        
-        if not tgstat_stats and not channel.avg_reach:
-            report += "\n\n⚠️ _Охваты недоступны через Bot API. Введите вручную или подключите TGStat._"
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🏷 Тематика", callback_data=f"set_category:{channel_id}"),
-                InlineKeyboardButton(text="✏️ Ввести охват", callback_data=f"manual_stats:{channel_id}")
-            ],
-            [
-                InlineKeyboardButton(text="💰 Применить цены", callback_data=f"apply_prices:{channel_id}")
-            ]
-        ])
-        
-        await callback.message.edit_text(report, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-        return
     
-    # Бот не админ — пробуем только TGStat
-    if not channel.username:
-        await callback.message.edit_text(
-            f"❌ **Нет доступа к каналу**\n\n"
-            f"Бот не является администратором канала и у канала нет username.\n\n"
-            f"**Решения:**\n"
-            f"1. Добавьте бота администратором в канал\n"
-            f"2. Или введите данные вручную: /manual\\_stats {channel_id}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    
-    if not TGSTAT_API_TOKEN:
-        await callback.message.edit_text(
-            f"❌ **Нет доступа к каналу**\n\n"
-            f"Бот не является администратором канала.\n\n"
-            f"**Решения:**\n"
-            f"1. Добавьте бота администратором в канал\n"
-            f"2. Или введите данные вручную: /manual\\_stats {channel_id}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    
-    # Пробуем TGStat
-    stats = await tgstat_service.get_channel_stat(channel.username)
-    
-    if not stats:
-        await callback.message.edit_text(
-            f"❌ Не удалось получить данные\n\n"
-            f"• Бот не админ канала\n"
-            f"• TGStat не нашёл @{channel.username}\n\n"
-            f"Введите данные вручную: /manual\\_stats {channel_id}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    
-    # Обновляем данные из TGStat
+    # Перечитываем для отчёта
     async with async_session_maker() as session:
-        await session.execute(
-            update(Channel).where(Channel.id == channel_id).values(
-                subscribers=stats.get("participants_count", 0),
-                avg_reach=stats.get("avg_post_reach", 0),
-                avg_reach_24h=stats.get("adv_post_reach_24h", stats.get("avg_post_reach", 0)),
-                err_percent=stats.get("err_percent", 0),
-                ci_index=stats.get("ci_index", 0),
-                analytics_updated=datetime.utcnow()
-            )
-        )
-        await session.commit()
-        
         result = await session.execute(select(Channel).where(Channel.id == channel_id))
         channel = result.scalar_one_or_none()
     
+    # Формируем отчёт
     recommended = {}
-    if channel.avg_reach and channel.category:
+    reach_for_calc = channel.avg_reach_24h or channel.avg_reach
+    if reach_for_calc and channel.category:
         for fmt in ["1/24", "1/48", "2/48", "native"]:
             recommended[fmt] = calculate_recommended_price(
-                channel.avg_reach,
+                reach_for_calc,
                 channel.category,
                 float(channel.err_percent or 0),
                 fmt
             )
     
-    report = "✅ **Данные обновлены из TGStat!**\n\n" + format_analytics_report(channel, recommended)
+    source = " + ".join(source_parts) if source_parts else "нет данных"
+    report = f"✅ **Данные обновлены!** ({source})\n\n" + format_analytics_report(channel, recommended)
+    
+    # Предупреждение если нет охватов
+    if not channel.avg_reach_24h and not channel.avg_reach:
+        if not TELEMETR_API_TOKEN:
+            report += "\n\n⚠️ _Для охватов добавьте TELEMETR\\_API\\_TOKEN (получить: @telemetrio\\_api\\_bot)_"
+        else:
+            report += "\n\n⚠️ _Охваты не найдены. Введите вручную._"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🏷 Тематика", callback_data=f"set_category:{channel_id}"),
+            InlineKeyboardButton(text="✏️ Ввести охват", callback_data=f"manual_stats:{channel_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data=f"update_stats:{channel_id}"),
             InlineKeyboardButton(text="💰 Применить цены", callback_data=f"apply_prices:{channel_id}")
         ]
     ])
