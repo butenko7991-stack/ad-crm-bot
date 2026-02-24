@@ -876,13 +876,12 @@ async def calculate_recommended_price_async(
     # Базовая цена = (охват × CPM) / 1000
     base_price = (avg_reach * base_cpm) / 1000
     
-    # Корректировка по ERR
+    # Корректировка по ERR (только бонус за высокую вовлечённость)
     if err_percent > 20:
-        base_price *= 1.3  # +30% за высокую вовлечённость
+        base_price *= 1.2  # +20% за очень высокую вовлечённость
     elif err_percent > 15:
-        base_price *= 1.15  # +15%
-    elif err_percent < 10 and err_percent > 0:
-        base_price *= 0.8  # -20% за низкую вовлечённость
+        base_price *= 1.1  # +10% за высокую вовлечённость
+    # Не штрафуем за низкий ERR — это просто среднее значение
     
     # Корректировка по формату
     format_multipliers = {
@@ -925,15 +924,14 @@ def calculate_recommended_price(
     # Базовая цена = (охват × CPM) / 1000
     base_price = (avg_reach * base_cpm) / 1000
     
-    # Корректировка по ERR
+    # Корректировка по ERR (только бонус за высокую вовлечённость)
     if err_percent > 20:
-        base_price *= 1.3  # +30% за высокую вовлечённость
+        base_price *= 1.2  # +20% за очень высокую вовлечённость
     elif err_percent > 15:
-        base_price *= 1.15  # +15%
-    elif err_percent < 10 and err_percent > 0:
-        base_price *= 0.8  # -20% за низкую вовлечённость
+        base_price *= 1.1  # +10% за высокую вовлечённость
+    # Не штрафуем за низкий ERR
     
-    # Корректировка по формату
+    # Корректировка по формату (уже учтено в охвате для каждого формата)
     format_multipliers = {
         "1/24": 1.0,
         "1/48": 0.8,  # -20% (дольше висит, но меньше охват в час)
@@ -991,7 +989,18 @@ def format_analytics_report(channel, recommended_prices: dict = None) -> str:
         cat_data = CHANNEL_CATEGORIES.get(channel.category, {})
         cat_name = cat_data.get("name", channel.category)
         cat_cpm = cat_data.get("cpm", 0)
-        lines.append(f"🏷 **{cat_name}** (CPM: {cat_cpm:,}₽)")
+        
+        # Показываем свой CPM если установлен
+        if channel.cpm and float(channel.cpm) > 0:
+            custom_cpm = int(channel.cpm)
+            lines.append(f"🏷 **{cat_name}**")
+            lines.append(f"💰 CPM: **{custom_cpm:,}₽** _(свой)_ | рынок: {cat_cpm:,}₽")
+        else:
+            lines.append(f"🏷 **{cat_name}** (CPM: {cat_cpm:,}₽)")
+    elif channel.cpm and float(channel.cpm) > 0:
+        # Только свой CPM без тематики
+        custom_cpm = int(channel.cpm)
+        lines.append(f"💰 CPM: **{custom_cpm:,}₽** _(свой)_")
     
     # Рекомендуемые цены
     if recommended_prices:
@@ -2278,15 +2287,24 @@ async def cb_update_stats(callback: CallbackQuery, bot: Bot):
     
     # Формируем отчёт
     recommended = {}
-    reach_for_calc = channel.avg_reach_24h or channel.avg_reach
-    if reach_for_calc and channel.category:
-        for fmt in ["1/24", "1/48", "2/48", "native"]:
-            recommended[fmt] = calculate_recommended_price(
-                reach_for_calc,
-                channel.category,
-                float(channel.err_percent or 0),
-                fmt
-            )
+    if channel.category:
+        # Для каждого формата используем соответствующий охват
+        reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
+        reach_48h = channel.avg_reach_48h or reach_24h
+        reach_72h = channel.avg_reach_72h or channel.avg_reach or reach_48h
+        
+        err = float(channel.err24_percent or channel.err_percent or 0)
+        
+        # Используем CPM канала если установлен, иначе CPM тематики
+        custom_cpm = int(channel.cpm) if channel.cpm and float(channel.cpm) > 0 else None
+        
+        if reach_24h:
+            recommended["1/24"] = calculate_recommended_price(reach_24h, channel.category, err, "1/24", custom_cpm)
+        if reach_48h:
+            recommended["1/48"] = calculate_recommended_price(reach_48h, channel.category, err, "1/48", custom_cpm)
+            recommended["2/48"] = calculate_recommended_price(reach_48h, channel.category, err, "2/48", custom_cpm)
+        if reach_72h:
+            recommended["native"] = calculate_recommended_price(reach_72h, channel.category, err, "native", custom_cpm)
     
     source = " + ".join(source_parts) if source_parts else "нет данных"
     report = f"✅ **Данные обновлены!** ({source})\n\n" + format_analytics_report(channel, recommended)
@@ -2797,6 +2815,76 @@ async def cmd_del_cpm(message: Message):
         await session.commit()
     
     await message.answer(f"✅ Тематика **{name}** удалена", parse_mode=ParseMode.MARKDOWN)
+
+@router.message(Command("set_channel_cpm"), IsAdmin())
+async def cmd_set_channel_cpm(message: Message):
+    """Установить свой CPM для конкретного канала: /set_channel_cpm 1 1500"""
+    args = message.text.split()
+    
+    if len(args) < 3:
+        await message.answer(
+            "**Установка CPM для канала**\n\n"
+            "Использование: `/set_channel_cpm <ID> <CPM>`\n\n"
+            "**Пример:**\n"
+            "`/set_channel_cpm 1 1500`\n\n"
+            "Это переопределит CPM тематики для расчёта рекомендуемых цен.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    try:
+        channel_id = int(args[1])
+        new_cpm = int(args[2])
+    except:
+        await message.answer("❌ ID канала и CPM должны быть числами")
+        return
+    
+    if new_cpm < 0 or new_cpm > 50000:
+        await message.answer("❌ CPM должен быть от 0 до 50000")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = result.scalar_one_or_none()
+        
+        if not channel:
+            await message.answer("❌ Канал не найден")
+            return
+        
+        old_cpm = channel.cpm or 0
+        
+        await session.execute(
+            update(Channel).where(Channel.id == channel_id).values(cpm=new_cpm)
+        )
+        await session.commit()
+    
+    # Рассчитываем новые рекомендуемые цены
+    reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
+    reach_48h = channel.avg_reach_48h or reach_24h
+    reach_72h = channel.avg_reach_72h or channel.avg_reach or reach_48h
+    
+    prices_text = ""
+    if reach_24h:
+        price_124 = int((reach_24h * new_cpm) / 1000)
+        price_148 = int((reach_48h * new_cpm) / 1000 * 0.8)
+        price_248 = int((reach_48h * new_cpm) / 1000 * 1.6)
+        price_native = int((reach_72h * new_cpm) / 1000 * 2.5)
+        
+        prices_text = (
+            f"\n\n**Новые рекомендуемые цены:**\n"
+            f"• 1/24: **{price_124:,}₽**\n"
+            f"• 1/48: **{price_148:,}₽**\n"
+            f"• 2/48: **{price_248:,}₽**\n"
+            f"• native: **{price_native:,}₽**"
+        )
+    
+    await message.answer(
+        f"✅ **CPM канала обновлён!**\n\n"
+        f"📢 {channel.name}\n"
+        f"Было: {int(old_cpm):,}₽ → Стало: **{new_cpm:,}₽**"
+        f"{prices_text}",
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 # --- Проверка оплат ---
 @router.message(F.text == "💳 Оплаты", IsAdmin())
