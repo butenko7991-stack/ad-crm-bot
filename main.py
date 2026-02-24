@@ -105,23 +105,59 @@ class Channel(Base):
 
 # Тематики каналов с рекомендуемым CPM (руб/1000 просмотров)
 CHANNEL_CATEGORIES = {
-    "it_b2b": {"name": "IT (B2B)", "cpm": 16200},
-    "realty": {"name": "Недвижимость", "cpm": 5900},
-    "marketing": {"name": "Маркетинг и PR", "cpm": 5100},
-    "invest": {"name": "Инвестиции", "cpm": 4600},
-    "trading": {"name": "Трейдинг", "cpm": 4500},
-    "business": {"name": "Бизнес и стартапы", "cpm": 3900},
-    "crypto": {"name": "Криптовалюта", "cpm": 2500},
-    "it_reloc": {"name": "IT / Релокация", "cpm": 1500},
-    "education": {"name": "Образование", "cpm": 1200},
-    "news": {"name": "Новости", "cpm": 1000},
-    "lifestyle": {"name": "Лайфстайл", "cpm": 800},
-    "music": {"name": "Музыка", "cpm": 632},
-    "cinema": {"name": "Кино", "cpm": 603},
-    "entertainment": {"name": "Развлечения", "cpm": 588},
-    "animals": {"name": "Животные", "cpm": 584},
-    "memes": {"name": "Мемы", "cpm": 250},
-    "other": {"name": "Другое", "cpm": 500},
+    # === Данные с Telega.in (актуальные) ===
+    # Дорогие (от 3000₽)
+    "real_estate": {"name": "🏠 Недвижимость", "cpm": 7061},
+    "marketing": {"name": "📢 Маркетинг и PR", "cpm": 4680},
+    "crypto": {"name": "🪙 Криптовалюты", "cpm": 4547},
+    "business": {"name": "💼 Бизнес и стартапы", "cpm": 4823},
+    "trading": {"name": "📈 Трейдинг", "cpm": 4163},
+    "investments": {"name": "💰 Инвестиции", "cpm": 4058},
+    "job_listings": {"name": "💼 Работа и вакансии", "cpm": 3651},
+    "economy": {"name": "📊 Экономика и Финансы", "cpm": 3167},
+    "jurisprudence": {"name": "⚖️ Юриспруденция", "cpm": 2947},
+    "fashion": {"name": "👗 Мода и стиль", "cpm": 2828},
+    
+    # Средние (1500-3000₽)
+    "it": {"name": "💻 Интернет технологии", "cpm": 2480},
+    "culture": {"name": "🎭 Культура и события", "cpm": 2416},
+    "blogs": {"name": "✍️ Блоги", "cpm": 2257},
+    "education": {"name": "🎓 Образование", "cpm": 2249},
+    "beauty": {"name": "💄 Красота и уход", "cpm": 2082},
+    "kids": {"name": "👶 Дети и родители", "cpm": 2067},
+    "travel": {"name": "✈️ Путешествия", "cpm": 2016},
+    "fitness": {"name": "💪 Фитнес", "cpm": 2011},
+    "science": {"name": "🔬 Наука и технологии", "cpm": 1824},
+    "health": {"name": "🏥 Здоровье и медицина", "cpm": 1706},
+    "art": {"name": "🎨 Искусство и дизайн", "cpm": 1698},
+    "languages": {"name": "🌍 Иностранные языки", "cpm": 1605},
+    "psychology": {"name": "🧠 Психология и отношения", "cpm": 1595},
+    "music": {"name": "🎵 Музыка", "cpm": 1520},
+    
+    # Средние (1000-1500₽)
+    "construction": {"name": "🏗 Строительство и ремонт", "cpm": 1461},
+    "discounts": {"name": "🏷 Скидки и акции", "cpm": 1333},
+    "religion": {"name": "🙏 Религия и духовность", "cpm": 1307},
+    "auto": {"name": "🚗 Авто и мото", "cpm": 1232},
+    "books": {"name": "📚 Книги и Подкасты", "cpm": 1241},
+    "esoteric": {"name": "🔮 Эзотерика и Астрология", "cpm": 1193},
+    "selfdev": {"name": "📈 Мотивация и саморазвитие", "cpm": 1170},
+    "cooking": {"name": "🍳 Еда и кулинария", "cpm": 1047},
+    "history": {"name": "📜 История", "cpm": 1025},
+    "sport": {"name": "⚽ Спорт", "cpm": 1017},
+    "news": {"name": "📰 Новости и СМИ", "cpm": 1005},
+    "facts": {"name": "💡 Любопытные факты", "cpm": 945},
+    "hobbies": {"name": "🎯 Хобби и деятельность", "cpm": 943},
+    
+    # Дешёвые (до 1000₽)
+    "humor": {"name": "😂 Юмор и мемы", "cpm": 865},
+    "animals": {"name": "🐱 Животные", "cpm": 861},
+    "games": {"name": "🎮 Видеоигры", "cpm": 832},
+    "cinema": {"name": "🎬 Кино", "cpm": 822},
+    "celebrities": {"name": "⭐ Знаменитости", "cpm": 752},
+    "entertainment": {"name": "🎉 Отдых и развлечения", "cpm": 639},
+    "other": {"name": "📁 Другое", "cpm": 517},
+    "uzbek": {"name": "🇺🇿 Узбекские каналы", "cpm": 452},
 }
 
 # Форматы размещения
@@ -131,6 +167,17 @@ PLACEMENT_FORMATS = {
     "2/48": {"name": "2/48", "hours": 48, "description": "2 поста на 48 часов"},
     "native": {"name": "Нативный", "hours": 0, "description": "Навсегда в канале"}
 }
+
+class CategoryCPM(Base):
+    """Хранение актуальных CPM по тематикам (редактируется через бота)"""
+    __tablename__ = "category_cpm"
+    
+    id = Column(Integer, primary_key=True)
+    category_key = Column(String(50), unique=True, nullable=False)  # psychology, finance и т.д.
+    name = Column(String(100), nullable=False)  # 🧠 Психология
+    cpm = Column(Integer, default=0)  # CPM в рублях
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_by = Column(BigInteger)  # Кто обновил
 
 class Slot(Base):
     __tablename__ = "slots"
@@ -496,6 +543,53 @@ async def migrate_db():
         
         logger.info("Database migration completed")
 
+async def init_category_cpm():
+    """Инициализирует таблицу CPM из CHANNEL_CATEGORIES если она пустая"""
+    async with async_session_maker() as session:
+        # Проверяем есть ли записи
+        result = await session.execute(select(func.count(CategoryCPM.id)))
+        count = result.scalar()
+        
+        if count == 0:
+            # Заполняем из CHANNEL_CATEGORIES
+            for key, data in CHANNEL_CATEGORIES.items():
+                cpm_entry = CategoryCPM(
+                    category_key=key,
+                    name=data["name"],
+                    cpm=data["cpm"]
+                )
+                session.add(cpm_entry)
+            await session.commit()
+            logger.info(f"Initialized {len(CHANNEL_CATEGORIES)} CPM categories")
+        else:
+            logger.info(f"CPM categories already exist: {count} entries")
+
+async def get_category_cpm(category_key: str) -> int:
+    """Получить CPM для тематики из базы данных"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+        )
+        cpm_entry = result.scalar_one_or_none()
+        
+        if cpm_entry:
+            return cpm_entry.cpm
+        
+        # Fallback на CHANNEL_CATEGORIES
+        return CHANNEL_CATEGORIES.get(category_key, {}).get("cpm", 500)
+
+async def get_all_categories_cpm() -> dict:
+    """Получить все тематики с CPM из базы"""
+    async with async_session_maker() as session:
+        result = await session.execute(select(CategoryCPM).order_by(CategoryCPM.cpm.desc()))
+        categories = result.scalars().all()
+        
+        if categories:
+            return {c.category_key: {"name": c.name, "cpm": c.cpm} for c in categories}
+        
+        # Fallback
+        return CHANNEL_CATEGORIES
+
 # ==================== СЕРВИС АНАЛИТИКИ TGSTAT ====================
 
 class TGStatService:
@@ -628,27 +722,66 @@ async def update_channel_from_bot(bot: Bot, channel_db_id: int) -> tuple[bool, s
         
         return True, f"Обновлено: {stats['subscribers']:,} подписчиков"
 
-def calculate_recommended_price(
+async def calculate_recommended_price_async(
     avg_reach: int,
     category: str,
     err_percent: float = 0,
     format_type: str = "1/24"
 ) -> int:
     """
-    Рассчитать рекомендуемую цену размещения
+    Рассчитать рекомендуемую цену размещения (асинхронная версия с CPM из БД)
+    """
+    # Получаем CPM из базы данных
+    base_cpm = await get_category_cpm(category)
+    
+    # Базовая цена = (охват × CPM) / 1000
+    base_price = (avg_reach * base_cpm) / 1000
+    
+    # Корректировка по ERR
+    if err_percent > 20:
+        base_price *= 1.3  # +30% за высокую вовлечённость
+    elif err_percent > 15:
+        base_price *= 1.15  # +15%
+    elif err_percent < 10 and err_percent > 0:
+        base_price *= 0.8  # -20% за низкую вовлечённость
+    
+    # Корректировка по формату
+    format_multipliers = {
+        "1/24": 1.0,
+        "1/48": 0.8,  # -20% (дольше висит, но меньше охват в час)
+        "2/48": 1.6,  # +60% (два поста)
+        "native": 2.5  # +150% (навсегда)
+    }
+    base_price *= format_multipliers.get(format_type, 1.0)
+    
+    return int(base_price)
+
+def calculate_recommended_price(
+    avg_reach: int,
+    category: str,
+    err_percent: float = 0,
+    format_type: str = "1/24",
+    cpm_override: int = None
+) -> int:
+    """
+    Рассчитать рекомендуемую цену размещения (синхронная версия)
     
     Args:
         avg_reach: Средний охват поста
         category: Тематика канала (ключ из CHANNEL_CATEGORIES)
         err_percent: ERR (вовлечённость) в процентах
         format_type: Формат размещения (1/24, 1/48, 2/48, native)
+        cpm_override: Переопределить CPM (если передан)
     
     Returns:
         Рекомендуемая цена в рублях
     """
     # Базовый CPM по тематике
-    category_data = CHANNEL_CATEGORIES.get(category, CHANNEL_CATEGORIES["other"])
-    base_cpm = category_data["cpm"]
+    if cpm_override:
+        base_cpm = cpm_override
+    else:
+        category_data = CHANNEL_CATEGORIES.get(category, CHANNEL_CATEGORIES.get("other", {"cpm": 500}))
+        base_cpm = category_data["cpm"]
     
     # Базовая цена = (охват × CPM) / 1000
     base_price = (avg_reach * base_cpm) / 1000
@@ -2055,10 +2188,16 @@ async def cb_set_category(callback: CallbackQuery, state: FSMContext):
     """Выбрать тематику канала"""
     channel_id = int(callback.data.split(":")[1])
     
+    # Получаем категории из базы данных
+    categories = await get_all_categories_cpm()
+    
+    # Сортируем по CPM (дорогие сверху)
+    sorted_cats = sorted(categories.items(), key=lambda x: x[1]["cpm"], reverse=True)
+    
     # Создаём клавиатуру с категориями
     buttons = []
     row = []
-    for key, data in CHANNEL_CATEGORIES.items():
+    for key, data in sorted_cats:
         row.append(InlineKeyboardButton(
             text=f"{data['name']} ({data['cpm']}₽)",
             callback_data=f"category:{channel_id}:{key}"
@@ -2074,7 +2213,7 @@ async def cb_set_category(callback: CallbackQuery, state: FSMContext):
     
     await callback.message.edit_text(
         "🏷 **Выберите тематику канала:**\n\n"
-        "(в скобках указан средний CPM по рынку)",
+        "(в скобках указан CPM — редактируется через /cpm)",
         reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -2361,6 +2500,175 @@ async def cmd_update_stats(message: Message, bot: Bot):
             pass  # Игнорируем answer для команды
     
     await cb_update_stats(FakeCallback(msg), bot)
+
+# --- Управление CPM тематик ---
+@router.message(Command("cpm"), IsAdmin())
+async def cmd_cpm_list(message: Message):
+    """Показать все тематики с CPM"""
+    categories = await get_all_categories_cpm()
+    
+    # Сортируем по CPM
+    sorted_cats = sorted(categories.items(), key=lambda x: x[1]["cpm"], reverse=True)
+    
+    text = "📊 **CPM по тематикам**\n"
+    text += "_(источник: @CPM\\_TG)_\n\n"
+    
+    # Группируем по ценовым категориям
+    expensive = [(k, v) for k, v in sorted_cats if v["cpm"] >= 800]
+    medium = [(k, v) for k, v in sorted_cats if 400 <= v["cpm"] < 800]
+    cheap = [(k, v) for k, v in sorted_cats if v["cpm"] < 400]
+    
+    if expensive:
+        text += "💎 **Дорогие (от 800₽):**\n"
+        for key, data in expensive:
+            text += f"  `{key}`: {data['name']} — **{data['cpm']}₽**\n"
+        text += "\n"
+    
+    if medium:
+        text += "📊 **Средние (400-800₽):**\n"
+        for key, data in medium:
+            text += f"  `{key}`: {data['name']} — **{data['cpm']}₽**\n"
+        text += "\n"
+    
+    if cheap:
+        text += "💵 **Дешёвые (до 400₽):**\n"
+        for key, data in cheap:
+            text += f"  `{key}`: {data['name']} — **{data['cpm']}₽**\n"
+    
+    text += "\n**Редактировать:**\n"
+    text += "`/set_cpm psychology 1500` — изменить CPM\n"
+    text += "`/add_cpm newcat Название 600` — добавить тематику"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+@router.message(Command("set_cpm"), IsAdmin())
+async def cmd_set_cpm(message: Message):
+    """Изменить CPM для тематики: /set_cpm psychology 1500"""
+    args = message.text.split()
+    
+    if len(args) < 3:
+        await message.answer(
+            "**Использование:**\n"
+            "`/set_cpm <ключ> <cpm>`\n\n"
+            "**Пример:**\n"
+            "`/set_cpm psychology 1500`\n\n"
+            "Список тематик: /cpm",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    category_key = args[1].lower()
+    try:
+        new_cpm = int(args[2])
+    except:
+        await message.answer("❌ CPM должен быть числом")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+        )
+        cpm_entry = result.scalar_one_or_none()
+        
+        if not cpm_entry:
+            await message.answer(f"❌ Тематика `{category_key}` не найдена\n\nСписок: /cpm", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        old_cpm = cpm_entry.cpm
+        cpm_entry.cpm = new_cpm
+        cpm_entry.updated_at = datetime.utcnow()
+        cpm_entry.updated_by = message.from_user.id
+        await session.commit()
+    
+    await message.answer(
+        f"✅ **CPM обновлён!**\n\n"
+        f"{cpm_entry.name}\n"
+        f"Было: {old_cpm}₽ → Стало: **{new_cpm}₽**",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(Command("add_cpm"), IsAdmin())
+async def cmd_add_cpm(message: Message):
+    """Добавить новую тематику: /add_cpm newcat 🆕 Название 600"""
+    args = message.text.split(maxsplit=3)
+    
+    if len(args) < 4:
+        await message.answer(
+            "**Использование:**\n"
+            "`/add_cpm <ключ> <название> <cpm>`\n\n"
+            "**Пример:**\n"
+            "`/add_cpm travel ✈️ Путешествия 800`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    category_key = args[1].lower()
+    
+    # Парсим название и CPM
+    rest = args[3] if len(args) > 3 else args[2]
+    parts = rest.rsplit(" ", 1)
+    
+    if len(parts) < 2:
+        await message.answer("❌ Укажите название и CPM")
+        return
+    
+    name = parts[0]
+    try:
+        cpm = int(parts[1])
+    except:
+        await message.answer("❌ CPM должен быть числом")
+        return
+    
+    async with async_session_maker() as session:
+        # Проверяем существование
+        result = await session.execute(
+            select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+        )
+        if result.scalar_one_or_none():
+            await message.answer(f"❌ Тематика `{category_key}` уже существует", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        new_cat = CategoryCPM(
+            category_key=category_key,
+            name=name,
+            cpm=cpm,
+            updated_by=message.from_user.id
+        )
+        session.add(new_cat)
+        await session.commit()
+    
+    await message.answer(
+        f"✅ **Тематика добавлена!**\n\n"
+        f"`{category_key}`: {name} — **{cpm}₽**",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(Command("del_cpm"), IsAdmin())
+async def cmd_del_cpm(message: Message):
+    """Удалить тематику: /del_cpm category_key"""
+    args = message.text.split()
+    
+    if len(args) < 2:
+        await message.answer("Использование: `/del_cpm <ключ>`", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    category_key = args[1].lower()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+        )
+        cpm_entry = result.scalar_one_or_none()
+        
+        if not cpm_entry:
+            await message.answer(f"❌ Тематика `{category_key}` не найдена", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        name = cpm_entry.name
+        await session.delete(cpm_entry)
+        await session.commit()
+    
+    await message.answer(f"✅ Тематика **{name}** удалена", parse_mode=ParseMode.MARKDOWN)
 
 # --- Проверка оплат ---
 @router.message(F.text == "💳 Оплаты", IsAdmin())
@@ -3125,6 +3433,7 @@ async def manager_back(callback: CallbackQuery, state: FSMContext):
 async def on_startup(bot: Bot):
     await init_db()
     await migrate_db()  # Добавляем новые колонки если их нет
+    await init_category_cpm()  # Инициализируем CPM тематик
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
     
