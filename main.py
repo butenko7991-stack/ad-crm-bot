@@ -66,6 +66,18 @@ TGSTAT_API_URL = "https://api.tgstat.ru"
 TELEMETR_API_TOKEN = os.getenv("TELEMETR_API_TOKEN", "yeWKeyjhJkwAZCWkciIyDFfG5RVRYsIS")  # Получить через @telemetrio_api_bot
 TELEMETR_API_URL = "https://api.telemetr.io"
 
+# Claude API для AI-тренера менеджеров
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "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")
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
+
+# Claude API для AI-тренера менеджеров
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Получить на console.anthropic.com
+CLAUDE_MODEL = "claude-sonnet-4-20250514"  # Быстрая и умная модель
+
+# Claude API для AI-тренера менеджеров
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Получить на console.anthropic.com
+CLAUDE_MODEL = "claude-sonnet-4-20250514"  # Быстрая и умная модель
+
 # ==================== ЛОГИРОВАНИЕ ====================
 
 logging.basicConfig(
@@ -789,6 +801,263 @@ class TelemetrService:
 # Глобальный экземпляр сервиса Telemetr
 telemetr_service = TelemetrService(TELEMETR_API_TOKEN)
 
+# ==================== AI-ТРЕНЕР ДЛЯ МЕНЕДЖЕРОВ ====================
+
+AI_TRAINER_SYSTEM_PROMPT = """Ты — строгий AI-тренер по продажам рекламы в Telegram-каналах.
+
+⛔ КРИТИЧЕСКИ ВАЖНО:
+- Отвечай ТОЛЬКО на вопросы о продаже рекламы в Telegram
+- Если вопрос не связан с продажами рекламы — вежливо откажи и верни к теме
+- Примеры НЕ связанных тем: погода, политика, личные советы, программирование, другие темы
+
+✅ ТВОИ ТЕМЫ (отвечай только на это):
+- Продажа рекламы в Telegram-каналах
+- Форматы размещения (1/24, 1/48, 2/48, нативный)
+- Ценообразование и CPM
+- Работа с возражениями клиентов
+- Скрипты продаж и холодные сообщения
+- Закрытие сделок
+- Поиск рекламодателей
+- Работа с постоянными клиентами
+- Аналитика и статистика каналов
+
+ЗНАНИЯ О БИЗНЕСЕ:
+1. Форматы размещения:
+   - 1/24: пост на 24 часа (удаляется) — базовая цена
+   - 1/48: пост на 48 часов — цена ×0.8 (охват 48ч выше)
+   - 2/48: два поста за 48 часов — цена ×1.6
+   - Нативный: навсегда — цена ×2.5
+
+2. Ценообразование:
+   - CPM = стоимость за 1000 просмотров
+   - Цена = (охват × CPM) / 1000
+   - CPM по тематикам: недвижимость ~7000₽, бизнес ~4800₽, крипто ~4500₽, 
+     IT ~2500₽, психология ~1600₽, юмор ~865₽
+
+3. Работа с возражениями:
+   - "Дорого" → покажи CPM, сравни с Яндекс.Директ (клик 30-50₽ vs 1000 показов)
+   - "Подумаю" → "Что именно смущает? Давайте разберём"
+   - "Не уверен в результате" → предложи тестовое размещение
+
+4. Техники закрытия:
+   - Альтернативное: "Вам на понедельник или среду?"
+   - С дедлайном: "Остался один слот на эту неделю"
+   - Прямое: "Отлично, оформляем?"
+
+СТИЛЬ ОТВЕТОВ:
+- Кратко и по делу (до 250 слов)
+- Конкретные примеры и скрипты
+- Используй emoji для структуры
+- Формат: **жирный** для ключевого, списки для шагов
+
+ЕСЛИ ВОПРОС НЕ ПО ТЕМЕ:
+Отвечай: "Я тренер только по продажам рекламы в Telegram. Давай обсудим:
+• Как найти клиентов
+• Как закрывать сделки  
+• Как работать с возражениями
+Что из этого разберём?"
+
+САМООБУЧЕНИЕ:
+В конце каждого ответа добавляй скрытую метку для аналитики:
+[TOPIC: краткая тема вопроса]"""
+
+# Модель для хранения обучающих данных
+class TrainingInsight(Base):
+    """Инсайты из обучения для самоулучшения AI"""
+    __tablename__ = "training_insights"
+    
+    id = Column(Integer, primary_key=True)
+    manager_id = Column(Integer, ForeignKey("managers.id"))
+    question = Column(Text)  # Вопрос менеджера
+    topic = Column(String(100))  # Тема (извлекается из ответа)
+    was_helpful = Column(Boolean)  # Был ли ответ полезен
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class AITrainerService:
+    """AI-тренер на базе Claude для обучения менеджеров (с самообучением)"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.anthropic.com/v1/messages"
+        self.conversation_history = {}  # user_id -> list of messages
+    
+    async def get_response(self, user_id: int, user_message: str, manager_name: str = "менеджер") -> Optional[str]:
+        """Получить ответ от AI-тренера"""
+        if not self.api_key:
+            return None
+        
+        # Инициализируем историю если нет
+        if user_id not in self.conversation_history:
+            self.conversation_history[user_id] = []
+        
+        # Добавляем сообщение пользователя
+        self.conversation_history[user_id].append({
+            "role": "user",
+            "content": user_message
+        })
+        
+        # Ограничиваем историю последними 10 сообщениями
+        if len(self.conversation_history[user_id]) > 10:
+            self.conversation_history[user_id] = self.conversation_history[user_id][-10:]
+        
+        # Получаем частые темы для контекста
+        frequent_topics = await self.get_frequent_topics()
+        context_addition = ""
+        if frequent_topics:
+            context_addition = f"\n\nЧАСТЫЕ ВОПРОСЫ МЕНЕДЖЕРОВ (учитывай в ответах):\n{frequent_topics}"
+        
+        try:
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+            
+            payload = {
+                "model": CLAUDE_MODEL,
+                "max_tokens": 1024,
+                "system": AI_TRAINER_SYSTEM_PROMPT + f"\n\nИмя менеджера: {manager_name}" + context_addition,
+                "messages": self.conversation_history[user_id]
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.base_url,
+                    headers=headers,
+                    json=payload
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        assistant_message = data["content"][0]["text"]
+                        
+                        # Сохраняем ответ в историю
+                        self.conversation_history[user_id].append({
+                            "role": "assistant",
+                            "content": assistant_message
+                        })
+                        
+                        # Сохраняем инсайт для самообучения
+                        await self.save_insight(user_id, user_message, assistant_message)
+                        
+                        # Убираем метку [TOPIC:...] из ответа пользователю
+                        clean_response = self._remove_topic_tag(assistant_message)
+                        
+                        return clean_response
+                    else:
+                        error = await resp.text()
+                        logger.error(f"Claude API error: {resp.status} - {error}")
+                        return None
+        except Exception as e:
+            logger.error(f"AI Trainer error: {e}")
+            return None
+    
+    def _remove_topic_tag(self, text: str) -> str:
+        """Убрать метку [TOPIC:...] из ответа"""
+        import re
+        return re.sub(r'\[TOPIC:.*?\]', '', text).strip()
+    
+    def _extract_topic(self, text: str) -> Optional[str]:
+        """Извлечь тему из метки [TOPIC:...]"""
+        import re
+        match = re.search(r'\[TOPIC:\s*(.+?)\]', text)
+        return match.group(1).strip() if match else None
+    
+    async def save_insight(self, user_id: int, question: str, response: str):
+        """Сохранить инсайт для самообучения"""
+        try:
+            topic = self._extract_topic(response)
+            
+            async with async_session_maker() as session:
+                # Находим менеджера
+                result = await session.execute(
+                    select(Manager).where(Manager.telegram_id == user_id)
+                )
+                manager = result.scalar_one_or_none()
+                
+                if manager and topic:
+                    insight = TrainingInsight(
+                        manager_id=manager.id,
+                        question=question[:500],  # Ограничиваем длину
+                        topic=topic[:100],
+                        was_helpful=None  # Будет обновлено по фидбеку
+                    )
+                    session.add(insight)
+                    await session.commit()
+        except Exception as e:
+            logger.error(f"Failed to save insight: {e}")
+    
+    async def get_frequent_topics(self) -> str:
+        """Получить частые темы вопросов для контекста"""
+        try:
+            async with async_session_maker() as session:
+                # Получаем топ-5 частых тем за последний месяц
+                result = await session.execute(
+                    text("""
+                        SELECT topic, COUNT(*) as cnt 
+                        FROM training_insights 
+                        WHERE created_at > NOW() - INTERVAL '30 days'
+                        AND topic IS NOT NULL
+                        GROUP BY topic 
+                        ORDER BY cnt DESC 
+                        LIMIT 5
+                    """)
+                )
+                topics = result.fetchall()
+                
+                if topics:
+                    return "\n".join([f"- {t[0]} ({t[1]} раз)" for t in topics])
+                return ""
+        except Exception as e:
+            logger.debug(f"Could not get frequent topics: {e}")
+            return ""
+    
+    async def mark_helpful(self, user_id: int, helpful: bool):
+        """Отметить последний ответ как полезный/неполезный"""
+        try:
+            async with async_session_maker() as session:
+                result = await session.execute(
+                    select(Manager).where(Manager.telegram_id == user_id)
+                )
+                manager = result.scalar_one_or_none()
+                
+                if manager:
+                    # Обновляем последний инсайт
+                    await session.execute(
+                        text("""
+                            UPDATE training_insights 
+                            SET was_helpful = :helpful 
+                            WHERE id = (
+                                SELECT id FROM training_insights 
+                                WHERE manager_id = :manager_id 
+                                ORDER BY created_at DESC 
+                                LIMIT 1
+                            )
+                        """),
+                        {"helpful": helpful, "manager_id": manager.id}
+                    )
+                    await session.commit()
+        except Exception as e:
+            logger.error(f"Failed to mark helpful: {e}")
+    
+    def clear_history(self, user_id: int):
+        """Очистить историю диалога"""
+        if user_id in self.conversation_history:
+            del self.conversation_history[user_id]
+    
+    def get_quick_topics(self) -> list:
+        """Быстрые темы для обучения (только продажи рекламы)"""
+        return [
+            ("💰 Как формируется цена?", "Объясни как рассчитывается цена на рекламу и что такое CPM"),
+            ("🗣 Клиент говорит 'дорого'", "Как отвечать если клиент говорит что цена высокая?"),
+            ("📝 Первое сообщение клиенту", "Дай скрипт первого холодного сообщения рекламодателю"),
+            ("🎯 Как закрыть сделку?", "Какие техники закрытия сделок работают лучше всего?"),
+            ("📊 Какой формат предложить?", "Как выбрать формат размещения (1/24, 1/48, нативный) для клиента?"),
+            ("🔍 Где искать клиентов?", "Где и как искать рекламодателей для Telegram-каналов?"),
+        ]
+
+# Глобальный экземпляр AI-тренера
+ai_trainer = AITrainerService(CLAUDE_API_KEY)
+
 async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]:
     """
     Получить статистику канала через Telegram Bot API.
@@ -1087,6 +1356,9 @@ class ManagerStates(StatesGroup):
     # Обучение
     viewing_lesson = State()
     taking_quiz = State()
+    # AI-тренер
+    ai_training = State()
+    ai_asking = State()  # Ожидание вопроса к AI
     # Вывод средств
     payout_amount = State()
     payout_method = State()
@@ -3406,32 +3678,291 @@ async def receive_payout_details(message: Message, state: FSMContext):
 
 # --- Обучение ---
 @router.message(F.text == "📚 Обучение", IsManager())
-async def manager_training(message: Message):
+async def manager_training(message: Message, state: FSMContext):
     async with async_session_maker() as session:
         result = await session.execute(
             select(Manager).where(Manager.telegram_id == message.from_user.id)
         )
         manager = result.scalar_one_or_none()
     
-    if manager.training_completed:
-        await message.answer(
-            "🎓 **Обучение пройдено!**\n\n"
-            f"Ваш результат: {manager.training_score} баллов\n\n"
-            "Вы можете пересмотреть уроки:",
-            reply_markup=get_training_keyboard(1, len(DEFAULT_LESSONS)),
+    # Создаём клавиатуру с опциями обучения
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 AI-тренер", callback_data="ai_trainer")],
+        [InlineKeyboardButton(text="📖 Уроки", callback_data="show_lessons")],
+        [InlineKeyboardButton(text="📊 Мой прогресс", callback_data="training_progress")]
+    ])
+    
+    status = "✅ Пройдено" if manager.training_completed else f"📖 Урок {manager.current_lesson}/{len(DEFAULT_LESSONS)}"
+    
+    await message.answer(
+        f"📚 **Обучение менеджеров**\n\n"
+        f"Статус: {status}\n"
+        f"Баллы: {manager.training_score}\n\n"
+        f"🤖 **AI-тренер** — задавай любые вопросы по продажам\n"
+        f"📖 **Уроки** — структурированный курс с тестами",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "ai_trainer")
+async def start_ai_trainer(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    
+    if not CLAUDE_API_KEY:
+        await callback.message.edit_text(
+            "❌ AI-тренер не настроен.\n\n"
+            "Админ должен добавить CLAUDE_API_KEY в настройки.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_training")]
+            ])
+        )
+        return
+    
+    # Получаем быстрые темы
+    topics = ai_trainer.get_quick_topics()
+    
+    buttons = []
+    for emoji_title, _ in topics:
+        buttons.append([InlineKeyboardButton(
+            text=emoji_title, 
+            callback_data=f"ai_topic:{topics.index((emoji_title, _))}"
+        )])
+    buttons.append([InlineKeyboardButton(text="❌ Завершить", callback_data="back_to_training")])
+    
+    await callback.message.edit_text(
+        "🤖 **AI-тренер по продажам**\n\n"
+        "Я помогу тебе освоить продажи рекламы!\n\n"
+        "**Выбери тему** или просто напиши свой вопрос:\n",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    await state.set_state(ManagerStates.ai_training)
+
+@router.callback_query(F.data.startswith("ai_topic:"), ManagerStates.ai_training)
+async def ai_topic_selected(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    
+    topic_idx = int(callback.data.split(":")[1])
+    topics = ai_trainer.get_quick_topics()
+    
+    if topic_idx >= len(topics):
+        return
+    
+    topic_title, topic_prompt = topics[topic_idx]
+    
+    await callback.message.edit_text(
+        f"🤖 Отвечаю на тему: **{topic_title}**\n\n⏳ Думаю...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    # Получаем ответ от AI
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+        manager_name = manager.name if manager else "менеджер"
+    
+    response = await ai_trainer.get_response(
+        callback.from_user.id, 
+        topic_prompt,
+        manager_name
+    )
+    
+    if response:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍 Полезно", callback_data="ai_feedback:helpful"),
+                InlineKeyboardButton(text="👎 Не понял", callback_data="ai_feedback:not_helpful")
+            ],
+            [InlineKeyboardButton(text="📝 Задать вопрос", callback_data="ai_ask_question")],
+            [InlineKeyboardButton(text="🔄 Другая тема", callback_data="ai_trainer")],
+            [InlineKeyboardButton(text="❌ Завершить", callback_data="back_to_training")]
+        ])
+        
+        await callback.message.edit_text(
+            f"🤖 **{topic_title}**\n\n{response}",
+            reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN
         )
     else:
-        lesson = DEFAULT_LESSONS[manager.current_lesson - 1] if manager.current_lesson <= len(DEFAULT_LESSONS) else None
+        await callback.message.edit_text(
+            "❌ Не удалось получить ответ. Попробуй позже.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="ai_trainer")]
+            ])
+        )
+
+@router.callback_query(F.data == "ai_ask_question")
+async def ai_ask_question(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    
+    await callback.message.edit_text(
+        "🤖 **Задай свой вопрос**\n\n"
+        "Напиши любой вопрос о продажах рекламы, работе с клиентами, "
+        "ценообразовании или техниках закрытия сделок.\n\n"
+        "_Просто отправь сообщение:_",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="ai_trainer")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    await state.set_state(ManagerStates.ai_asking)
+
+@router.message(ManagerStates.ai_asking)
+async def process_ai_question(message: Message, state: FSMContext):
+    """Обработка вопроса к AI-тренеру"""
+    
+    # Отправляем индикатор загрузки
+    thinking_msg = await message.answer("🤖 Думаю...")
+    
+    # Получаем имя менеджера
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+        manager_name = manager.name if manager else "менеджер"
+    
+    # Получаем ответ от AI
+    response = await ai_trainer.get_response(
+        message.from_user.id,
+        message.text,
+        manager_name
+    )
+    
+    await thinking_msg.delete()
+    
+    if response:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍 Полезно", callback_data="ai_feedback:helpful"),
+                InlineKeyboardButton(text="👎 Не понял", callback_data="ai_feedback:not_helpful")
+            ],
+            [InlineKeyboardButton(text="📝 Ещё вопрос", callback_data="ai_ask_question")],
+            [InlineKeyboardButton(text="🔄 Темы", callback_data="ai_trainer")],
+            [InlineKeyboardButton(text="❌ Завершить", callback_data="back_to_training")]
+        ])
         
         await message.answer(
-            f"📚 **Обучение**\n\n"
-            f"Текущий урок: {manager.current_lesson}/{len(DEFAULT_LESSONS)}\n"
-            f"{'✅' if manager.training_completed else '📖'} {lesson['title'] if lesson else 'Завершено'}\n\n"
-            f"Пройдите все уроки чтобы начать работу!",
-            reply_markup=get_training_keyboard(manager.current_lesson, len(DEFAULT_LESSONS)),
+            f"🤖 **AI-тренер:**\n\n{response}",
+            reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN
         )
+    else:
+        await message.answer(
+            "❌ Не удалось получить ответ. Проверьте настройки API или попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data="ai_ask_question")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="ai_trainer")]
+            ])
+        )
+
+@router.callback_query(F.data.startswith("ai_feedback:"))
+async def ai_feedback(callback: CallbackQuery):
+    """Обработка фидбека по ответу AI"""
+    feedback = callback.data.split(":")[1]
+    helpful = feedback == "helpful"
+    
+    await ai_trainer.mark_helpful(callback.from_user.id, helpful)
+    
+    if helpful:
+        await callback.answer("👍 Спасибо! Это поможет улучшить обучение", show_alert=False)
+    else:
+        await callback.answer("👎 Понял, постараюсь лучше объяснять", show_alert=False)
+    
+    # Обновляем клавиатуру без кнопок фидбека
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Ещё вопрос", callback_data="ai_ask_question")],
+        [InlineKeyboardButton(text="🔄 Темы", callback_data="ai_trainer")],
+        [InlineKeyboardButton(text="❌ Завершить", callback_data="back_to_training")]
+    ])
+    
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+
+@router.callback_query(F.data == "back_to_training")
+async def back_to_training(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    
+    # Очищаем историю AI
+    ai_trainer.clear_history(callback.from_user.id)
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 AI-тренер", callback_data="ai_trainer")],
+        [InlineKeyboardButton(text="📖 Уроки", callback_data="show_lessons")],
+        [InlineKeyboardButton(text="📊 Мой прогресс", callback_data="training_progress")]
+    ])
+    
+    status = "✅ Пройдено" if manager.training_completed else f"📖 Урок {manager.current_lesson}/{len(DEFAULT_LESSONS)}"
+    
+    await callback.message.edit_text(
+        f"📚 **Обучение менеджеров**\n\n"
+        f"Статус: {status}\n"
+        f"Баллы: {manager.training_score}\n\n"
+        f"🤖 **AI-тренер** — задавай любые вопросы по продажам\n"
+        f"📖 **Уроки** — структурированный курс с тестами",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "show_lessons")
+async def show_lessons(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    await callback.message.edit_text(
+        f"📖 **Уроки**\n\n"
+        f"Прогресс: {manager.current_lesson - 1}/{len(DEFAULT_LESSONS)} пройдено\n\n"
+        f"Выберите урок:",
+        reply_markup=get_training_keyboard(manager.current_lesson, len(DEFAULT_LESSONS)),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "training_progress")
+async def training_progress(callback: CallbackQuery):
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    # Формируем прогресс по урокам
+    lessons_text = ""
+    for i, lesson in enumerate(DEFAULT_LESSONS, 1):
+        if i < manager.current_lesson:
+            lessons_text += f"✅ Урок {i}: {lesson['title']}\n"
+        elif i == manager.current_lesson:
+            lessons_text += f"📖 Урок {i}: {lesson['title']} ← текущий\n"
+        else:
+            lessons_text += f"🔒 Урок {i}: {lesson['title']}\n"
+    
+    await callback.message.edit_text(
+        f"📊 **Мой прогресс**\n\n"
+        f"👤 {manager.name}\n"
+        f"🏆 Баллы: {manager.training_score}\n"
+        f"📚 Статус: {'✅ Обучение пройдено' if manager.training_completed else '📖 В процессе'}\n\n"
+        f"**Уроки:**\n{lessons_text}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_training")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 @router.callback_query(F.data.startswith("lesson:"))
 async def view_lesson(callback: CallbackQuery, state: FSMContext):
