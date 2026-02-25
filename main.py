@@ -63,11 +63,11 @@ TGSTAT_API_TOKEN = os.getenv("TGSTAT_API_TOKEN", "")  # Получить на tg
 TGSTAT_API_URL = "https://api.tgstat.ru"
 
 # Telemetr API для аналитики (как Trustat)
-TELEMETR_API_TOKEN = os.getenv("TELEMETR_API_TOKEN", "yeWKeyjhJkwAZCWkciIyDFfG5RVRYsIS")  # Получить через @telemetrio_api_bot
+TELEMETR_API_TOKEN = os.getenv("TELEMETR_API_TOKEN", "")  # Получить через @telemetrio_api_bot
 TELEMETR_API_URL = "https://api.telemetr.io"
 
 # Claude API для AI-тренера менеджеров
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "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")
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Получить на console.anthropic.com
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 # Claude API для AI-тренера менеджеров
@@ -1394,6 +1394,7 @@ def get_admin_menu() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="📢 Каналы"), KeyboardButton(text="📊 Аналитика")],
         [KeyboardButton(text="💳 Оплаты"), KeyboardButton(text="📈 Статистика")],
+        [KeyboardButton(text="👥 Менеджеры"), KeyboardButton(text="📚 Обучение AI")],
         [KeyboardButton(text="◀️ Главное меню")],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -2145,6 +2146,81 @@ async def admin_panel(message: Message):
         reply_markup=get_admin_menu(),
         parse_mode=ParseMode.MARKDOWN
     )
+
+@router.message(F.text == "👥 Менеджеры", IsAdmin())
+async def admin_managers(message: Message):
+    """Список менеджеров"""
+    async with async_session_maker() as session:
+        result = await session.execute(select(Manager).order_by(Manager.total_sales.desc()))
+        managers = result.scalars().all()
+    
+    if not managers:
+        await message.answer(
+            "👥 **Менеджеры**\n\n"
+            "Пока нет зарегистрированных менеджеров.\n\n"
+            "Чтобы стать менеджером: /manager",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    text = "👥 **Менеджеры:**\n\n"
+    for m in managers[:20]:
+        level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
+        status = "✅" if m.is_active else "❌"
+        text += (
+            f"{status} {level_info['emoji']} **{m.name}**\n"
+            f"   💰 {m.total_earned:,.0f}₽ | 📦 {m.total_sales} продаж\n"
+        )
+    
+    text += f"\n**Всего:** {len(managers)} менеджеров"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+@router.message(F.text == "📚 Обучение AI", IsAdmin())
+async def admin_training_stats(message: Message):
+    """Статистика обучения AI"""
+    try:
+        async with async_session_maker() as session:
+            # Частые темы
+            result = await session.execute(
+                text("""
+                    SELECT topic, COUNT(*) as cnt, 
+                           SUM(CASE WHEN was_helpful = true THEN 1 ELSE 0 END) as helpful_cnt
+                    FROM training_insights 
+                    WHERE topic IS NOT NULL
+                    GROUP BY topic 
+                    ORDER BY cnt DESC 
+                    LIMIT 10
+                """)
+            )
+            topics = result.fetchall()
+            
+            # Общая статистика
+            total_result = await session.execute(
+                text("SELECT COUNT(*) FROM training_insights")
+            )
+            total = total_result.scalar() or 0
+        
+        text = "📚 **Статистика AI-обучения**\n\n"
+        text += f"📊 Всего вопросов: **{total}**\n\n"
+        
+        if topics:
+            text += "**Популярные темы:**\n"
+            for t in topics:
+                topic_name = t[0]
+                count = t[1]
+                helpful = t[2] or 0
+                rate = (helpful / count * 100) if count > 0 else 0
+                text += f"• {topic_name}: {count} раз ({rate:.0f}% полезно)\n"
+        else:
+            text += "_Пока нет данных_"
+        
+        text += "\n\n💡 AI использует эти данные для улучшения ответов"
+        
+    except Exception as e:
+        text = f"📚 **Статистика AI-обучения**\n\n_Таблица ещё не создана. Начните использовать AI-тренер._"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
 
 @router.message(F.text == "◀️ Главное меню")
 async def back_to_main(message: Message):
