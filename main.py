@@ -71,7 +71,7 @@ CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Получить на consol
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 # Пароль для входа в админку владельца
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "743Rigr2")
 
 # Настройки автопостинга
 AUTOPOST_ENABLED = True  # Включить автопостинг
