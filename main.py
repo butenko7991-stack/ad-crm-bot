@@ -70,13 +70,28 @@ TELEMETR_API_URL = "https://api.telemetr.io"
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Получить на console.anthropic.com
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
-# Claude API для AI-тренера менеджеров
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Получить на console.anthropic.com
-CLAUDE_MODEL = "claude-sonnet-4-20250514"  # Быстрая и умная модель
+# Пароль для входа в админку владельца
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
-# Claude API для AI-тренера менеджеров
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Получить на console.anthropic.com
-CLAUDE_MODEL = "claude-sonnet-4-20250514"  # Быстрая и умная модель
+# Настройки автопостинга
+AUTOPOST_ENABLED = True  # Включить автопостинг
+AUTOPOST_CHECK_INTERVAL = 60  # Проверка каждые 60 секунд
+
+# Настройки геймификации
+COMPETITION_REWARDS = {
+    1: {"xp": 5000, "bonus": 1000, "title": "🥇 Чемпион месяца"},
+    2: {"xp": 3000, "bonus": 500, "title": "🥈 Серебряный призёр"},
+    3: {"xp": 1500, "bonus": 250, "title": "🥉 Бронзовый призёр"},
+}
+
+# Бонусы за достижения
+SALES_MILESTONES = {
+    5: {"xp": 500, "bonus": 200, "name": "Первые 5 продаж"},
+    10: {"xp": 1000, "bonus": 500, "name": "10 продаж"},
+    25: {"xp": 2500, "bonus": 1000, "name": "25 продаж"},
+    50: {"xp": 5000, "bonus": 2500, "name": "50 продаж"},
+    100: {"xp": 10000, "bonus": 5000, "name": "100 продаж"},
+}
 
 # ==================== ЛОГИРОВАНИЕ ====================
 
@@ -346,6 +361,98 @@ class ManagerPayout(Base):
     payment_details = Column(String(255))  # Номер карты/телефона
     created_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime)
+
+class ScheduledPost(Base):
+    """Запланированные посты для автопостинга"""
+    __tablename__ = "scheduled_posts"
+    
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    scheduled_at = Column(DateTime, nullable=False)  # Когда публиковать
+    delete_at = Column(DateTime)  # Когда удалять
+    status = Column(String(20), default="pending")  # pending, moderation, approved, rejected, posted, deleted
+    content = Column(Text)
+    file_id = Column(String(255))
+    file_type = Column(String(20))  # text, photo, video
+    message_id = Column(Integer)  # ID опубликованного сообщения
+    posted_at = Column(DateTime)
+    deleted_at = Column(DateTime)
+    moderation_note = Column(Text)  # Комментарий модератора
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    order = relationship("Order")
+    channel = relationship("Channel")
+
+class MessageTemplate(Base):
+    """Шаблоны сообщений для менеджеров"""
+    __tablename__ = "message_templates"
+    
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)  # Название шаблона
+    category = Column(String(50))  # first_contact, follow_up, proposal, objection
+    content = Column(Text, nullable=False)
+    variables = Column(JSON)  # Список переменных {channel}, {price}, {reach}
+    usage_count = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class ClientFollowUp(Base):
+    """Напоминания о клиентах для follow-up"""
+    __tablename__ = "client_followups"
+    
+    id = Column(Integer, primary_key=True)
+    manager_id = Column(Integer, ForeignKey("managers.id"), nullable=False)
+    client_telegram_id = Column(BigInteger, nullable=False)
+    client_name = Column(String(255))
+    remind_at = Column(DateTime, nullable=False)
+    note = Column(Text)  # Заметка менеджера
+    status = Column(String(20), default="pending")  # pending, done, skipped
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class PostAnalytics(Base):
+    """Аналитика после размещения рекламы"""
+    __tablename__ = "post_analytics"
+    
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    views_1h = Column(Integer, default=0)
+    views_6h = Column(Integer, default=0)
+    views_12h = Column(Integer, default=0)
+    views_24h = Column(Integer, default=0)
+    views_48h = Column(Integer, default=0)
+    forwards = Column(Integer, default=0)
+    reactions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)  # Если есть ссылка
+    cpm_actual = Column(Numeric(10, 2))  # Фактический CPM
+    collected_at = Column(DateTime, default=datetime.utcnow)
+    
+    order = relationship("Order")
+
+class Competition(Base):
+    """Соревнования менеджеров"""
+    __tablename__ = "competitions"
+    
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    metric = Column(String(50), default="sales_count")  # sales_count, revenue, clients
+    status = Column(String(20), default="active")  # active, finished
+    prizes = Column(JSON)  # {1: {bonus: 1000, xp: 5000}, 2: ...}
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class CompetitionResult(Base):
+    """Результаты соревнований"""
+    __tablename__ = "competition_results"
+    
+    id = Column(Integer, primary_key=True)
+    competition_id = Column(Integer, ForeignKey("competitions.id"), nullable=False)
+    manager_id = Column(Integer, ForeignKey("managers.id"), nullable=False)
+    score = Column(Integer, default=0)
+    rank = Column(Integer)
+    prize_awarded = Column(Boolean, default=False)
 
 # ==================== КОНФИГУРАЦИЯ МЕНЕДЖЕРОВ ====================
 
@@ -1058,6 +1165,491 @@ class AITrainerService:
 # Глобальный экземпляр AI-тренера
 ai_trainer = AITrainerService(CLAUDE_API_KEY)
 
+# ==================== ШАБЛОНЫ СООБЩЕНИЙ ====================
+
+DEFAULT_TEMPLATES = [
+    {
+        "name": "Первый контакт",
+        "category": "first_contact",
+        "content": """Здравствуйте! 👋
+
+Размещаем рекламу в Telegram-каналах по тематике {category}.
+
+📊 Охват: от {reach:,} просмотров
+💰 Цена: от {price:,}₽
+
+Есть свободные слоты на эту неделю. Интересно?""",
+        "variables": ["category", "reach", "price"]
+    },
+    {
+        "name": "Follow-up (1 день)",
+        "category": "follow_up",
+        "content": """Добрый день!
+
+Напоминаю о нашем предложении по рекламе в канале {channel}.
+
+🎯 Формат: {format}
+💰 Цена: {price:,}₽
+
+Готов ответить на вопросы!""",
+        "variables": ["channel", "format", "price"]
+    },
+    {
+        "name": "Коммерческое предложение",
+        "category": "proposal",
+        "content": """📋 **Коммерческое предложение**
+
+**Канал:** {channel}
+**Подписчики:** {subscribers:,}
+**Охват 24ч:** {reach:,}
+
+**Форматы и цены:**
+• 1/24 (на 24 часа): {price_124:,}₽
+• 1/48 (на 48 часов): {price_148:,}₽
+• Навсегда: {price_native:,}₽
+
+**Почему стоит выбрать нас:**
+✅ Живая аудитория
+✅ Высокая вовлечённость ({err}%)
+✅ Быстрое размещение
+
+Готов обсудить детали!""",
+        "variables": ["channel", "subscribers", "reach", "price_124", "price_148", "price_native", "err"]
+    },
+    {
+        "name": "Ответ на 'дорого'",
+        "category": "objection",
+        "content": """Понимаю ваши сомнения! Давайте посчитаем:
+
+💰 Цена: {price:,}₽
+👁 Охват: {reach:,} просмотров
+📊 Стоимость за 1000 показов: {cpm:,}₽
+
+Для сравнения:
+• Яндекс.Директ: ~50₽ за клик
+• VK Реклама: ~30₽ за 1000 показов
+
+Получается очень выгодно! Хотите попробовать тестовое размещение?""",
+        "variables": ["price", "reach", "cpm"]
+    },
+]
+
+# ==================== СЕРВИС АВТОПОСТИНГА ====================
+
+class AutoPostService:
+    """Сервис автоматической публикации постов"""
+    
+    def __init__(self, bot: Bot):
+        self.bot = bot
+    
+    async def create_scheduled_post(self, order_id: int) -> Optional[int]:
+        """Создать запланированный пост из заказа"""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Order).where(Order.id == order_id)
+            )
+            order = result.scalar_one_or_none()
+            
+            if not order:
+                return None
+            
+            slot = await session.get(Slot, order.slot_id)
+            
+            # Время публикации = дата слота + время слота
+            scheduled_at = datetime.combine(slot.slot_date, slot.slot_time)
+            
+            # Время удаления
+            delete_at = None
+            if order.placement_format in PLACEMENT_FORMATS:
+                hours = PLACEMENT_FORMATS[order.placement_format]["hours"]
+                if hours > 0:
+                    delete_at = scheduled_at + timedelta(hours=hours)
+            
+            scheduled_post = ScheduledPost(
+                order_id=order_id,
+                channel_id=slot.channel_id,
+                scheduled_at=scheduled_at,
+                delete_at=delete_at,
+                status="moderation",  # Сначала на модерацию
+                content=order.ad_content,
+                file_id=order.ad_file_id,
+                file_type=order.ad_format
+            )
+            session.add(scheduled_post)
+            await session.commit()
+            
+            return scheduled_post.id
+    
+    async def publish_post(self, post_id: int) -> bool:
+        """Опубликовать пост в канал"""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost).where(ScheduledPost.id == post_id)
+            )
+            post = result.scalar_one_or_none()
+            
+            if not post or post.status != "approved":
+                return False
+            
+            channel = await session.get(Channel, post.channel_id)
+            
+            try:
+                # Публикуем в зависимости от типа
+                if post.file_type == "photo" and post.file_id:
+                    msg = await self.bot.send_photo(
+                        channel.telegram_id,
+                        photo=post.file_id,
+                        caption=post.content,
+                        parse_mode=ParseMode.HTML
+                    )
+                elif post.file_type == "video" and post.file_id:
+                    msg = await self.bot.send_video(
+                        channel.telegram_id,
+                        video=post.file_id,
+                        caption=post.content,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    msg = await self.bot.send_message(
+                        channel.telegram_id,
+                        post.content,
+                        parse_mode=ParseMode.HTML
+                    )
+                
+                post.message_id = msg.message_id
+                post.posted_at = datetime.utcnow()
+                post.status = "posted"
+                await session.commit()
+                
+                logger.info(f"Post {post_id} published to channel {channel.name}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Failed to publish post {post_id}: {e}")
+                return False
+    
+    async def delete_post(self, post_id: int) -> bool:
+        """Удалить пост из канала"""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost).where(ScheduledPost.id == post_id)
+            )
+            post = result.scalar_one_or_none()
+            
+            if not post or not post.message_id:
+                return False
+            
+            channel = await session.get(Channel, post.channel_id)
+            
+            try:
+                await self.bot.delete_message(channel.telegram_id, post.message_id)
+                post.deleted_at = datetime.utcnow()
+                post.status = "deleted"
+                await session.commit()
+                
+                logger.info(f"Post {post_id} deleted from channel {channel.name}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Failed to delete post {post_id}: {e}")
+                return False
+    
+    async def check_and_publish(self):
+        """Проверить и опубликовать запланированные посты"""
+        now = datetime.utcnow()
+        
+        async with async_session_maker() as session:
+            # Посты для публикации
+            result = await session.execute(
+                select(ScheduledPost).where(
+                    ScheduledPost.status == "approved",
+                    ScheduledPost.scheduled_at <= now
+                )
+            )
+            posts_to_publish = result.scalars().all()
+            
+            for post in posts_to_publish:
+                await self.publish_post(post.id)
+            
+            # Посты для удаления
+            result = await session.execute(
+                select(ScheduledPost).where(
+                    ScheduledPost.status == "posted",
+                    ScheduledPost.delete_at != None,
+                    ScheduledPost.delete_at <= now
+                )
+            )
+            posts_to_delete = result.scalars().all()
+            
+            for post in posts_to_delete:
+                await self.delete_post(post.id)
+
+# ==================== СЕРВИС AI-ГЕНЕРАЦИИ КП ====================
+
+class AIProposalService:
+    """Генерация коммерческих предложений через AI"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.anthropic.com/v1/messages"
+    
+    async def generate_proposal(self, channel_data: dict, client_info: str = "") -> Optional[str]:
+        """Сгенерировать персонализированное КП"""
+        if not self.api_key:
+            return None
+        
+        prompt = f"""Сгенерируй краткое коммерческое предложение по размещению рекламы.
+
+Данные канала:
+- Название: {channel_data.get('name', 'Канал')}
+- Подписчики: {channel_data.get('subscribers', 0):,}
+- Охват 24ч: {channel_data.get('reach', 0):,}
+- Тематика: {channel_data.get('category', 'Общая')}
+- Цена 1/24: {channel_data.get('price_124', 0):,}₽
+
+Информация о клиенте: {client_info or 'не указана'}
+
+Требования:
+- Максимум 150 слов
+- Дружелюбный тон
+- Конкретные цифры
+- Призыв к действию
+- Используй emoji для структуры"""
+
+        try:
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+            
+            payload = {
+                "model": CLAUDE_MODEL,
+                "max_tokens": 500,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.base_url, headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["content"][0]["text"]
+                    return None
+        except Exception as e:
+            logger.error(f"AI proposal error: {e}")
+            return None
+
+ai_proposal_service = AIProposalService(CLAUDE_API_KEY)
+
+# ==================== СЕРВИС АНАЛИТИКИ ПОСТОВ ====================
+
+class PostAnalyticsService:
+    """Сбор аналитики после размещения"""
+    
+    def __init__(self, bot: Bot):
+        self.bot = bot
+    
+    async def collect_analytics(self, post_id: int) -> Optional[dict]:
+        """Собрать аналитику поста"""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost).where(ScheduledPost.id == post_id)
+            )
+            post = result.scalar_one_or_none()
+            
+            if not post or not post.message_id:
+                return None
+            
+            channel = await session.get(Channel, post.channel_id)
+            
+            # Пробуем получить просмотры через пересылку сообщения
+            # Примечание: Bot API не даёт прямого доступа к просмотрам
+            # Это заглушка — реальные данные нужно получать через TGStat/Telemetr
+            
+            analytics = {
+                "post_id": post_id,
+                "channel": channel.name,
+                "posted_at": post.posted_at,
+                "views_estimate": channel.avg_reach_24h or channel.avg_reach or 0,
+            }
+            
+            return analytics
+    
+    async def generate_client_report(self, order_id: int) -> str:
+        """Сгенерировать отчёт для клиента"""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Order).where(Order.id == order_id)
+            )
+            order = result.scalar_one_or_none()
+            
+            if not order:
+                return "Заказ не найден"
+            
+            slot = await session.get(Slot, order.slot_id)
+            channel = await session.get(Channel, slot.channel_id)
+            
+            # Получаем аналитику
+            analytics_result = await session.execute(
+                select(PostAnalytics).where(PostAnalytics.order_id == order_id)
+            )
+            analytics = analytics_result.scalar_one_or_none()
+            
+            views = analytics.views_24h if analytics else (channel.avg_reach_24h or 0)
+            cpm = (float(order.final_price) / views * 1000) if views > 0 else 0
+            
+            report = f"""📊 **Отчёт о размещении #{order_id}**
+
+📢 **Канал:** {channel.name}
+📅 **Дата:** {slot.slot_date.strftime('%d.%m.%Y')}
+📌 **Формат:** {order.placement_format}
+
+📈 **Результаты:**
+👁 Просмотры: ~{views:,}
+💰 CPM: {cpm:.0f}₽
+👥 Аудитория канала: {channel.subscribers:,}
+
+✅ **Итог:**
+Ваша реклама была успешно размещена и получила охват согласно статистике канала.
+
+💡 **Рекомендация:**
+Для максимального эффекта рекомендуем повторное размещение через 3-5 дней.
+
+Спасибо что выбрали нас! 🙏"""
+            
+            return report
+
+# ==================== СЕРВИС ГЕЙМИФИКАЦИИ ====================
+
+class GamificationService:
+    """Геймификация для менеджеров"""
+    
+    async def check_milestone(self, manager_id: int) -> Optional[dict]:
+        """Проверить достижение milestone"""
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            
+            if not manager:
+                return None
+            
+            for sales_count, reward in SALES_MILESTONES.items():
+                if manager.total_sales == sales_count:
+                    # Начисляем бонус
+                    manager.experience_points += reward["xp"]
+                    manager.balance = Decimal(str(float(manager.balance) + reward["bonus"]))
+                    await session.commit()
+                    
+                    return {
+                        "milestone": sales_count,
+                        "name": reward["name"],
+                        "xp": reward["xp"],
+                        "bonus": reward["bonus"]
+                    }
+            
+            return None
+    
+    async def get_leaderboard(self, metric: str = "sales", limit: int = 10) -> List[dict]:
+        """Получить таблицу лидеров"""
+        async with async_session_maker() as session:
+            if metric == "sales":
+                order_by = Manager.total_sales.desc()
+            elif metric == "revenue":
+                order_by = Manager.total_revenue.desc()
+            elif metric == "xp":
+                order_by = Manager.experience_points.desc()
+            else:
+                order_by = Manager.total_sales.desc()
+            
+            result = await session.execute(
+                select(Manager)
+                .where(Manager.is_active == True)
+                .order_by(order_by)
+                .limit(limit)
+            )
+            managers = result.scalars().all()
+            
+            leaderboard = []
+            for i, m in enumerate(managers, 1):
+                level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
+                leaderboard.append({
+                    "rank": i,
+                    "name": m.name,
+                    "emoji": level_info["emoji"],
+                    "sales": m.total_sales,
+                    "revenue": float(m.total_revenue),
+                    "xp": m.experience_points
+                })
+            
+            return leaderboard
+    
+    async def create_monthly_competition(self) -> int:
+        """Создать ежемесячное соревнование"""
+        today = date.today()
+        start = today.replace(day=1)
+        
+        # Последний день месяца
+        if today.month == 12:
+            end = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
+        else:
+            end = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+        
+        async with async_session_maker() as session:
+            competition = Competition(
+                name=f"Лучший менеджер {today.strftime('%B %Y')}",
+                description="Кто сделает больше всего продаж за месяц?",
+                start_date=start,
+                end_date=end,
+                metric="sales_count",
+                prizes=COMPETITION_REWARDS
+            )
+            session.add(competition)
+            await session.commit()
+            
+            return competition.id
+    
+    async def finish_competition(self, competition_id: int) -> List[dict]:
+        """Завершить соревнование и наградить победителей"""
+        async with async_session_maker() as session:
+            competition = await session.get(Competition, competition_id)
+            
+            if not competition or competition.status == "finished":
+                return []
+            
+            # Получаем результаты
+            result = await session.execute(
+                select(CompetitionResult)
+                .where(CompetitionResult.competition_id == competition_id)
+                .order_by(CompetitionResult.score.desc())
+            )
+            results = result.scalars().all()
+            
+            winners = []
+            for i, res in enumerate(results[:3], 1):
+                manager = await session.get(Manager, res.manager_id)
+                reward = COMPETITION_REWARDS.get(i, {})
+                
+                if reward and not res.prize_awarded:
+                    manager.experience_points += reward.get("xp", 0)
+                    manager.balance = Decimal(str(float(manager.balance) + reward.get("bonus", 0)))
+                    res.rank = i
+                    res.prize_awarded = True
+                    
+                    winners.append({
+                        "rank": i,
+                        "name": manager.name,
+                        "score": res.score,
+                        "title": reward.get("title", ""),
+                        "bonus": reward.get("bonus", 0),
+                        "xp": reward.get("xp", 0)
+                    })
+            
+            competition.status = "finished"
+            await session.commit()
+            
+            return winners
+
+gamification_service = GamificationService()
+
 async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]:
     """
     Получить статистику канала через Telegram Bot API.
@@ -1348,6 +1940,11 @@ class AdminChannelStates(StatesGroup):
     waiting_manual_reach = State()
     waiting_manual_err = State()
     waiting_cpm = State()
+    # Модерация постов
+    waiting_moderation_note = State()
+    waiting_post_edit = State()
+    # Вход в админку
+    waiting_admin_password = State()
 
 class ManagerStates(StatesGroup):
     # Регистрация
@@ -1381,14 +1978,80 @@ class IsManager(BaseFilter):
 
 # ==================== КЛАВИАТУРЫ ====================
 
-def get_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    buttons = [
-        [KeyboardButton(text="📢 Каталог каналов")],
-        [KeyboardButton(text="📦 Мои заказы")],
-    ]
-    if is_admin:
-        buttons.append([KeyboardButton(text="⚙️ Админ-панель")])
+def get_main_menu(is_admin: bool = False, is_manager: bool = False, is_authenticated_admin: bool = False) -> ReplyKeyboardMarkup:
+    """Главное меню — адаптируется под роль пользователя"""
+    if is_authenticated_admin:
+        # Полное меню для авторизованного админа
+        buttons = [
+            [KeyboardButton(text="📢 Каналы"), KeyboardButton(text="💳 Оплаты")],
+            [KeyboardButton(text="👥 Менеджеры"), KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="📝 Модерация"), KeyboardButton(text="🏆 Лидерборд")],
+            [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="🚪 Выйти")],
+        ]
+    elif is_manager:
+        # Меню для менеджера (своя "админка")
+        buttons = [
+            [KeyboardButton(text="📚 Обучение"), KeyboardButton(text="💼 Продажи")],
+            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💰 Баланс")],
+            [KeyboardButton(text="📋 Шаблоны"), KeyboardButton(text="🏆 Рейтинг")],
+        ]
+    elif is_admin:
+        # Меню для админа без авторизации
+        buttons = [
+            [KeyboardButton(text="🔐 Войти в админку")],
+            [KeyboardButton(text="📢 Каталог каналов")],
+        ]
+    else:
+        # Меню для клиентов
+        buttons = [
+            [KeyboardButton(text="📢 Каталог каналов")],
+            [KeyboardButton(text="📦 Мои заказы")],
+            [KeyboardButton(text="💼 Стать менеджером")],
+        ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+def get_manager_cabinet_menu() -> InlineKeyboardMarkup:
+    """Инлайн-меню кабинета менеджера"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 Мои продажи", callback_data="mgr_my_sales"),
+            InlineKeyboardButton(text="👥 Мои клиенты", callback_data="mgr_my_clients")
+        ],
+        [
+            InlineKeyboardButton(text="📋 Шаблоны", callback_data="mgr_templates"),
+            InlineKeyboardButton(text="🤖 AI-помощник", callback_data="ai_trainer")
+        ],
+        [
+            InlineKeyboardButton(text="💰 Вывод средств", callback_data="request_payout"),
+            InlineKeyboardButton(text="🏆 Рейтинг", callback_data="mgr_leaderboard")
+        ],
+        [InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link")]
+    ])
+
+def get_admin_panel_menu() -> InlineKeyboardMarkup:
+    """Инлайн-меню админ-панели"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📢 Каналы", callback_data="adm_channels"),
+            InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")
+        ],
+        [
+            InlineKeyboardButton(text="💳 Оплаты", callback_data="adm_payments"),
+            InlineKeyboardButton(text="📝 Модерация", callback_data="adm_moderation")
+        ],
+        [
+            InlineKeyboardButton(text="👥 Менеджеры", callback_data="adm_managers"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="adm_stats")
+        ],
+        [
+            InlineKeyboardButton(text="🏆 Соревнования", callback_data="adm_competitions"),
+            InlineKeyboardButton(text="💰 CPM тематик", callback_data="adm_cpm")
+        ],
+        [InlineKeyboardButton(text="⚙️ Настройки бота", callback_data="adm_settings")]
+    ])
+
+# Хранилище авторизованных админов (в памяти)
+authenticated_admins = set()
 
 def get_admin_menu() -> ReplyKeyboardMarkup:
     buttons = [
@@ -1494,10 +2157,9 @@ def get_cancel_keyboard() -> InlineKeyboardMarkup:
 def get_manager_menu() -> ReplyKeyboardMarkup:
     """Главное меню менеджера"""
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📊 Мой профиль"), KeyboardButton(text="💰 Баланс")],
-        [KeyboardButton(text="📚 Обучение"), KeyboardButton(text="🎯 Задания")],
-        [KeyboardButton(text="🏆 Достижения"), KeyboardButton(text="📈 Статистика")],
-        [KeyboardButton(text="🔗 Моя ссылка")],
+        [KeyboardButton(text="💼 Продажи"), KeyboardButton(text="📚 Обучение")],
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="💰 Баланс")],
+        [KeyboardButton(text="🏆 Достижения"), KeyboardButton(text="🔗 Моя ссылка")],
     ], resize_keyboard=True)
 
 def get_training_keyboard(current_lesson: int, total_lessons: int) -> InlineKeyboardMarkup:
@@ -1659,12 +2321,12 @@ async def cmd_start(message: Message, state: FSMContext):
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             ref_manager_id = int(args[1].replace("ref_", ""))
-            # Сохраняем в состояние для будущих заказов
             await state.update_data(ref_manager_id=ref_manager_id)
         except:
             pass
     
     is_admin = message.from_user.id in ADMIN_IDS
+    is_authenticated = message.from_user.id in authenticated_admins
     
     # Проверяем, является ли пользователь менеджером
     async with async_session_maker() as session:
@@ -1674,22 +2336,859 @@ async def cmd_start(message: Message, state: FSMContext):
         manager = result.scalar_one_or_none()
     
     if manager:
-        role = "менеджер"
-        extra_text = "\n\n💼 Для панели менеджера: /manager"
+        # Кабинет менеджера
+        level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+        
+        await message.answer(
+            f"👋 **Привет, {manager.name}!**\n\n"
+            f"{level_info['emoji']} Уровень: {level_info['name']}\n"
+            f"💰 Баланс: **{manager.balance:,.0f}₽**\n"
+            f"📦 Продаж: {manager.total_sales}\n\n"
+            f"Выбери действие:",
+            reply_markup=get_main_menu(is_admin, is_manager=True),
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif is_admin:
-        role = "администратор"
-        extra_text = ""
+        if is_authenticated:
+            # Админ уже авторизован
+            await message.answer(
+                f"👋 **Добро пожаловать, Владелец!**\n\n"
+                f"Вы авторизованы в админ-панели.",
+                reply_markup=get_main_menu(is_admin=True, is_authenticated_admin=True),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            # Админ не авторизован
+            await message.answer(
+                f"👋 **Добро пожаловать!**\n\n"
+                f"🔐 Для доступа к админ-панели введите пароль.",
+                reply_markup=get_main_menu(is_admin=True, is_manager=False),
+                parse_mode=ParseMode.MARKDOWN
+            )
     else:
-        role = "клиент"
+        # Приветствие для клиента
         extra_text = ""
         if ref_manager_id:
             extra_text = "\n\n✨ Вы пришли по приглашению нашего менеджера!"
+        
+        await message.answer(
+            f"👋 **Добро пожаловать!**\n\n"
+            f"Здесь вы можете забронировать рекламу в наших каналах.{extra_text}",
+            reply_markup=get_main_menu(is_admin=False, is_manager=False),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+# --- Вход в админку по паролю ---
+@router.message(F.text == "🔐 Войти в админку")
+async def request_admin_password(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Доступ запрещён")
+        return
     
     await message.answer(
-        f"👋 Добро пожаловать в CRM-бот!\n\n"
-        f"Здесь вы можете забронировать рекламу в наших каналах.\n\n"
-        f"🔑 Ваша роль: **{role}**{extra_text}",
-        reply_markup=get_main_menu(is_admin),
+        "🔐 **Вход в админ-панель**\n\n"
+        "Введите пароль:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_admin_password)
+
+@router.message(AdminChannelStates.waiting_admin_password)
+async def check_admin_password(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    
+    # Удаляем сообщение с паролем для безопасности
+    try:
+        await message.delete()
+    except:
+        pass
+    
+    if message.text == ADMIN_PASSWORD:
+        authenticated_admins.add(message.from_user.id)
+        await message.answer(
+            "✅ **Добро пожаловать в админ-панель!**",
+            reply_markup=get_main_menu(is_admin=True, is_authenticated_admin=True),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await message.answer(
+            "⚙️ **Админ-панель**\n\n"
+            "Выберите действие:",
+            reply_markup=get_admin_panel_menu(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await message.answer("❌ Неверный пароль. Попробуйте ещё раз.")
+    
+    await state.clear()
+
+# --- Выход из админки ---
+@router.message(F.text == "🚪 Выйти")
+async def admin_logout(message: Message):
+    if message.from_user.id in authenticated_admins:
+        authenticated_admins.discard(message.from_user.id)
+    
+    await message.answer(
+        "👋 Вы вышли из админ-панели",
+        reply_markup=get_main_menu(is_admin=True, is_manager=False)
+    )
+
+# --- Кнопка "Стать менеджером" ---
+@router.message(F.text == "💼 Стать менеджером")
+async def become_manager(message: Message, state: FSMContext):
+    # Проверяем, не менеджер ли уже
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    if manager:
+        await message.answer(
+            "✅ Вы уже зарегистрированы как менеджер!",
+            reply_markup=get_main_menu(is_manager=True)
+        )
+        return
+    
+    await message.answer(
+        "💼 **Стать менеджером**\n\n"
+        "Зарабатывайте на продаже рекламы!\n\n"
+        "**Условия:**\n"
+        "💰 Комиссия 10-25% от каждой продажи\n"
+        "📚 Бесплатное обучение\n"
+        "🏆 Бонусы за достижения\n\n"
+        "Введите ваше имя:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(ManagerStates.registration_phone)
+
+# --- Админ-панель через инлайн кнопки ---
+@router.callback_query(F.data == "adm_channels")
+async def adm_channels(callback: CallbackQuery):
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel))
+        channels = result.scalars().all()
+    
+    if channels:
+        text = "📢 **Каналы:**\n\n"
+        buttons = []
+        for ch in channels:
+            status = "✅" if ch.is_active else "❌"
+            text += f"{status} **{ch.name}** (ID: {ch.id})\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"⚙️ {ch.name}",
+                callback_data=f"adm_ch:{ch.id}"
+            )])
+        buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+    else:
+        text = "📢 Каналов пока нет"
+        buttons = [
+            [InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+        ]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "adm_add_channel")
+async def adm_add_channel(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        "📢 **Добавление канала**\n\n"
+        "Перешлите любое сообщение из канала:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_channel_forward)
+
+@router.callback_query(F.data == "adm_payments")
+async def adm_payments(callback: CallbackQuery):
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Order)
+            .where(Order.status == "payment_uploaded")
+            .order_by(Order.created_at.desc())
+        )
+        orders = result.scalars().all()
+    
+    if orders:
+        text = f"💳 **Оплаты на проверке: {len(orders)}**\n\n"
+        buttons = []
+        for order in orders[:10]:
+            text += f"• Заказ #{order.id} — {order.final_price:,.0f}₽\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"📄 Заказ #{order.id}",
+                callback_data=f"adm_order:{order.id}"
+            )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+    else:
+        text = "✅ Нет оплат на проверке"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "adm_moderation")
+async def adm_moderation(callback: CallbackQuery):
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(ScheduledPost)
+            .where(ScheduledPost.status == "moderation")
+            .order_by(ScheduledPost.created_at.desc())
+        )
+        posts = result.scalars().all()
+    
+    if posts:
+        text = f"📝 **Посты на модерации: {len(posts)}**\n\n"
+        buttons = []
+        for post in posts[:10]:
+            channel = await session.get(Channel, post.channel_id)
+            text += f"• ID {post.id} — {channel.name if channel else 'N/A'}\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"📄 Пост #{post.id}",
+                callback_data=f"adm_post:{post.id}"
+            )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+    else:
+        text = "✅ Нет постов на модерации"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "adm_managers")
+async def adm_managers(callback: CallbackQuery):
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).order_by(Manager.total_sales.desc())
+        )
+        managers = result.scalars().all()
+    
+    if managers:
+        text = "👥 **Менеджеры:**\n\n"
+        for m in managers[:15]:
+            level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
+            status = "✅" if m.is_active else "❌"
+            text += f"{status} {level_info['emoji']} **{m.name}** — {m.total_sales} продаж, {m.total_earned:,.0f}₽\n"
+    else:
+        text = "👥 Менеджеров пока нет"
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "adm_stats")
+async def adm_stats(callback: CallbackQuery):
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        # Общая статистика
+        orders_count = await session.execute(select(func.count(Order.id)))
+        total_orders = orders_count.scalar() or 0
+        
+        revenue_sum = await session.execute(
+            select(func.sum(Order.final_price))
+            .where(Order.status == "payment_confirmed")
+        )
+        total_revenue = revenue_sum.scalar() or 0
+        
+        managers_count = await session.execute(select(func.count(Manager.id)))
+        total_managers = managers_count.scalar() or 0
+        
+        channels_count = await session.execute(select(func.count(Channel.id)))
+        total_channels = channels_count.scalar() or 0
+    
+    text = (
+        "📊 **Статистика бота**\n\n"
+        f"📦 Всего заказов: **{total_orders}**\n"
+        f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
+        f"👥 Менеджеров: **{total_managers}**\n"
+        f"📢 Каналов: **{total_channels}**"
+    )
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "adm_back")
+async def adm_back(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        "⚙️ **Админ-панель**\n\n"
+        "Выберите действие:",
+        reply_markup=get_admin_panel_menu(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Менеджерский кабинет через инлайн кнопки ---
+@router.callback_query(F.data == "mgr_my_sales")
+async def mgr_my_sales(callback: CallbackQuery):
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await callback.message.answer("❌ Вы не менеджер")
+            return
+        
+        # Получаем заказы менеджера
+        orders_result = await session.execute(
+            select(Order)
+            .where(Order.manager_id == manager.id)
+            .order_by(Order.created_at.desc())
+            .limit(10)
+        )
+        orders = orders_result.scalars().all()
+    
+    text = f"📊 **Мои продажи**\n\n"
+    text += f"Всего продаж: **{manager.total_sales}**\n"
+    text += f"Общая выручка: **{manager.total_revenue:,.0f}₽**\n"
+    text += f"Мой заработок: **{manager.total_earned:,.0f}₽**\n\n"
+    
+    if orders:
+        text += "**Последние заказы:**\n"
+        for order in orders:
+            status_emoji = {"payment_confirmed": "✅", "pending": "⏳"}.get(order.status, "❓")
+            text += f"{status_emoji} #{order.id} — {order.final_price:,.0f}₽\n"
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "mgr_templates")
+async def mgr_templates(callback: CallbackQuery):
+    await callback.answer()
+    
+    text = "📋 **Шаблоны сообщений**\n\n"
+    buttons = []
+    
+    for i, tpl in enumerate(DEFAULT_TEMPLATES):
+        text += f"{i+1}. **{tpl['name']}**\n"
+        buttons.append([InlineKeyboardButton(
+            text=f"📄 {tpl['name']}",
+            callback_data=f"tpl_default:{i}"
+        )])
+    
+    buttons.append([InlineKeyboardButton(text="🤖 AI-генерация КП", callback_data="generate_kp")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")])
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "mgr_leaderboard")
+async def mgr_leaderboard(callback: CallbackQuery):
+    await callback.answer()
+    
+    leaderboard = await gamification_service.get_leaderboard("sales", 10)
+    
+    text = "🏆 **Рейтинг менеджеров**\n\n"
+    
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    
+    for item in leaderboard:
+        medal = medals.get(item["rank"], f"{item['rank']}.")
+        text += f"{medal} {item['emoji']} **{item['name']}** — {item['sales']} продаж\n"
+    
+    buttons = [
+        [
+            InlineKeyboardButton(text="📦 Продажи", callback_data="lb:sales"),
+            InlineKeyboardButton(text="💵 Выручка", callback_data="lb:revenue")
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]
+    ]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "mgr_back")
+async def mgr_back(callback: CallbackQuery):
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    if not manager:
+        return
+    
+    level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+    
+    await callback.message.edit_text(
+        f"👤 **Кабинет менеджера**\n\n"
+        f"{level_info['emoji']} {manager.name}\n"
+        f"💰 Баланс: **{manager.balance:,.0f}₽**\n"
+        f"📦 Продаж: {manager.total_sales}",
+        reply_markup=get_manager_cabinet_menu(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Кнопки профиля и баланса через ReplyKeyboard ---
+@router.message(F.text == "👤 Профиль")
+async def show_profile(message: Message):
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    if not manager:
+        await message.answer("❌ Вы не менеджер")
+        return
+    
+    level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+    
+    await message.answer(
+        f"👤 **Кабинет менеджера**\n\n"
+        f"{level_info['emoji']} {manager.name}\n"
+        f"📊 Уровень: **{level_info['name']}**\n"
+        f"💰 Баланс: **{manager.balance:,.0f}₽**\n"
+        f"📦 Продаж: {manager.total_sales}\n"
+        f"💵 Выручка: {manager.total_revenue:,.0f}₽",
+        reply_markup=get_manager_cabinet_menu(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(F.text == "📋 Шаблоны")
+async def show_templates_btn(message: Message):
+    text = "📋 **Шаблоны сообщений**\n\n"
+    buttons = []
+    
+    for i, tpl in enumerate(DEFAULT_TEMPLATES):
+        text += f"{i+1}. **{tpl['name']}**\n"
+        buttons.append([InlineKeyboardButton(
+            text=f"📄 {tpl['name']}",
+            callback_data=f"tpl_default:{i}"
+        )])
+    
+    buttons.append([InlineKeyboardButton(text="🤖 AI-генерация КП", callback_data="generate_kp")])
+    
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(F.text == "🏆 Рейтинг")
+async def show_leaderboard_btn(message: Message):
+    leaderboard = await gamification_service.get_leaderboard("sales", 10)
+    
+    text = "🏆 **Рейтинг менеджеров**\n\n"
+    
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    
+    for item in leaderboard:
+        medal = medals.get(item["rank"], f"{item['rank']}.")
+        text += f"{medal} {item['emoji']} **{item['name']}** — {item['sales']} продаж\n"
+    
+    buttons = [
+        [
+            InlineKeyboardButton(text="📦 Продажи", callback_data="lb:sales"),
+            InlineKeyboardButton(text="💵 Выручка", callback_data="lb:revenue")
+        ]
+    ]
+    
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Админские кнопки через ReplyKeyboard ---
+@router.message(F.text == "📢 Каналы")
+async def admin_channels_btn(message: Message):
+    if message.from_user.id not in authenticated_admins:
+        await message.answer("🔐 Требуется авторизация в админ-панели")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel))
+        channels = result.scalars().all()
+    
+    if channels:
+        text = "📢 **Каналы:**\n\n"
+        buttons = []
+        for ch in channels:
+            status = "✅" if ch.is_active else "❌"
+            text += f"{status} **{ch.name}** (ID: {ch.id})\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"⚙️ {ch.name}",
+                callback_data=f"adm_ch:{ch.id}"
+            )])
+        buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")])
+    else:
+        text = "📢 Каналов пока нет"
+        buttons = [[InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")]]
+    
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.message(F.text == "💳 Оплаты")
+async def admin_payments_btn(message: Message):
+    if message.from_user.id not in authenticated_admins:
+        await message.answer("🔐 Требуется авторизация в админ-панели")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Order)
+            .where(Order.status == "payment_uploaded")
+            .order_by(Order.created_at.desc())
+        )
+        orders = result.scalars().all()
+    
+    if orders:
+        text = f"💳 **Оплаты на проверке: {len(orders)}**\n\n"
+        for order in orders[:10]:
+            text += f"• Заказ #{order.id} — {order.final_price:,.0f}₽\n"
+    else:
+        text = "✅ Нет оплат на проверке"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+@router.message(F.text == "📝 Модерация")
+async def admin_moderation_btn(message: Message):
+    if message.from_user.id not in authenticated_admins:
+        await message.answer("🔐 Требуется авторизация в админ-панели")
+        return
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(ScheduledPost)
+            .where(ScheduledPost.status == "moderation")
+            .order_by(ScheduledPost.created_at.desc())
+        )
+        posts = result.scalars().all()
+    
+    if posts:
+        text = f"📝 **Посты на модерации: {len(posts)}**\n\n"
+        for post in posts[:10]:
+            text += f"• Пост #{post.id}\n"
+    else:
+        text = "✅ Нет постов на модерации"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+@router.message(F.text == "🏆 Лидерборд")
+async def admin_leaderboard_btn(message: Message):
+    leaderboard = await gamification_service.get_leaderboard("sales", 10)
+    
+    text = "🏆 **Лидерборд менеджеров**\n\n"
+    
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    
+    for item in leaderboard:
+        medal = medals.get(item["rank"], f"{item['rank']}.")
+        text += f"{medal} {item['emoji']} **{item['name']}**\n"
+        text += f"    📦 {item['sales']} | 💵 {item['revenue']:,.0f}₽\n"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+@router.message(F.text == "📊 Статистика")
+async def admin_stats_btn(message: Message):
+    if message.from_user.id not in authenticated_admins:
+        await message.answer("🔐 Требуется авторизация в админ-панели")
+        return
+    
+    async with async_session_maker() as session:
+        orders_count = await session.execute(select(func.count(Order.id)))
+        total_orders = orders_count.scalar() or 0
+        
+        revenue_sum = await session.execute(
+            select(func.sum(Order.final_price))
+            .where(Order.status == "payment_confirmed")
+        )
+        total_revenue = revenue_sum.scalar() or 0
+        
+        managers_count = await session.execute(select(func.count(Manager.id)))
+        total_managers = managers_count.scalar() or 0
+    
+    text = (
+        "📊 **Статистика**\n\n"
+        f"📦 Заказов: **{total_orders}**\n"
+        f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
+        f"👥 Менеджеров: **{total_managers}**"
+    )
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+# --- Кнопка "Продажи" для менеджеров ---
+@router.message(F.text == "💼 Продажи")
+async def manager_sales(message: Message, state: FSMContext):
+    """Показать каналы для продажи"""
+    async with async_session_maker() as session:
+        # Проверяем что это менеджер
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await message.answer("❌ Вы не зарегистрированы как менеджер. /manager")
+            return
+        
+        # Получаем каналы
+        result = await session.execute(
+            select(Channel).where(Channel.is_active == True)
+        )
+        channels = result.scalars().all()
+    
+    if not channels:
+        await message.answer(
+            "😔 **Пока нет каналов для продажи**\n\n"
+            "Обратитесь к администратору для добавления каналов.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    text = "💼 **Каналы для продажи:**\n\n"
+    
+    for ch in channels:
+        prices = ch.prices or {}
+        price_124 = prices.get("1/24", 0)
+        
+        # Охваты
+        reach_info = ""
+        if ch.avg_reach_24h:
+            reach_info = f"👁 {ch.avg_reach_24h:,}"
+        elif ch.subscribers:
+            reach_info = f"👥 {ch.subscribers:,}"
+        
+        text += f"📢 **{ch.name}**\n"
+        text += f"   {reach_info} | 💰 от {price_124:,}₽\n\n"
+    
+    text += (
+        "**Как продавать:**\n"
+        "1️⃣ Найдите клиента\n"
+        "2️⃣ Отправьте ему ссылку: t.me/{bot_username}?start=ref_{ref_id}\n"
+        "3️⃣ Получите комиссию после оплаты!"
+    )
+    
+    # Получаем реф-ссылку менеджера
+    bot_info = await message.bot.get_me()
+    ref_link = f"t.me/{bot_info.username}?start=ref_{manager.id}"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Скопировать реф-ссылку", callback_data="copy_ref_link")],
+        [InlineKeyboardButton(text="📢 Выбрать канал", callback_data="select_channel_for_sale")]
+    ])
+    
+    await message.answer(
+        text.format(bot_username=bot_info.username, ref_id=manager.id),
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "copy_ref_link")
+async def copy_ref_link(callback: CallbackQuery):
+    """Показать реферальную ссылку"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    if not manager:
+        await callback.answer("Вы не менеджер", show_alert=True)
+        return
+    
+    bot_info = await callback.bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{manager.id}"
+    
+    await callback.message.answer(
+        f"🔗 **Ваша реферальная ссылка:**\n\n"
+        f"`{ref_link}`\n\n"
+        f"Отправьте её клиенту — вы получите комиссию с его заказа!",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "select_channel_for_sale")
+async def select_channel_for_sale(callback: CallbackQuery, state: FSMContext):
+    """Выбор канала для продажи"""
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Channel).where(Channel.is_active == True)
+        )
+        channels = result.scalars().all()
+    
+    if not channels:
+        await callback.message.edit_text("😔 Нет доступных каналов")
+        return
+    
+    await callback.message.edit_text(
+        "📢 **Выберите канал:**",
+        reply_markup=get_channels_keyboard(channels),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(BookingStates.selecting_channel)
+
+# --- Кнопка "Обучение" для менеджеров ---
+@router.message(F.text == "📚 Обучение")
+async def manager_training_menu(message: Message, state: FSMContext):
+    """Меню обучения для менеджеров"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    # Если не менеджер — предлагаем зарегистрироваться
+    if not manager:
+        await message.answer(
+            "📚 **Обучение для менеджеров**\n\n"
+            "Чтобы пройти обучение, сначала зарегистрируйтесь как менеджер:\n\n"
+            "/manager — стать менеджером",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Показываем меню обучения
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 AI-тренер", callback_data="ai_trainer")],
+        [InlineKeyboardButton(text="📖 Уроки", callback_data="show_lessons")],
+        [InlineKeyboardButton(text="📊 Мой прогресс", callback_data="training_progress")]
+    ])
+    
+    status = "✅ Пройдено" if manager.training_completed else f"📖 Урок {manager.current_lesson}/{len(DEFAULT_LESSONS)}"
+    
+    await message.answer(
+        f"📚 **Обучение менеджеров**\n\n"
+        f"Статус: {status}\n"
+        f"Баллы: {manager.training_score}\n\n"
+        f"🤖 **AI-тренер** — задавай вопросы о продажах\n"
+        f"📖 **Уроки** — структурированный курс",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Кнопка "Мой профиль" ---
+@router.message(F.text == "👤 Мой профиль")
+async def manager_profile_btn(message: Message):
+    """Профиль менеджера"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    if not manager:
+        await message.answer("❌ Вы не зарегистрированы как менеджер. /manager")
+        return
+    
+    level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+    next_level = MANAGER_LEVELS.get(manager.level + 1)
+    
+    progress = ""
+    if next_level:
+        xp_needed = next_level["min_xp"] - manager.experience_points
+        progress = f"\n📈 До уровня {manager.level + 1}: {xp_needed:,} XP"
+    
+    await message.answer(
+        f"👤 **Профиль менеджера**\n\n"
+        f"👋 {manager.name}\n"
+        f"{level_info['emoji']} Уровень {manager.level}: **{level_info['name']}**\n"
+        f"📊 XP: {manager.experience_points:,}{progress}\n"
+        f"💰 Комиссия: **{level_info['commission']}%**\n\n"
+        f"**Статистика:**\n"
+        f"📦 Продаж: {manager.total_sales}\n"
+        f"💵 Оборот: {manager.total_revenue:,.0f}₽\n"
+        f"💰 Заработано: {manager.total_earned:,.0f}₽\n"
+        f"👥 Клиентов: {manager.clients_count}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Кнопка "Баланс" ---
+@router.message(F.text == "💰 Баланс")
+async def manager_balance_btn(message: Message):
+    """Баланс менеджера"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+    
+    if not manager:
+        await message.answer("❌ Вы не зарегистрированы как менеджер. /manager")
+        return
+    
+    await message.answer(
+        f"💰 **Ваш баланс**\n\n"
+        f"Доступно к выводу: **{manager.balance:,.0f}₽**\n\n"
+        f"Минимальная сумма вывода: 500₽",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Вывести средства", callback_data="request_payout")],
+            [InlineKeyboardButton(text="📜 История выплат", callback_data="payout_history")]
+        ]),
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -3355,6 +4854,92 @@ async def approve_payment(callback: CallbackQuery, bot: Bot):
                         pass
             
             await session.commit()
+            
+            # Создаём пост на модерацию
+            if AUTOPOST_ENABLED:
+                slot = await session.get(Slot, order.slot_id)
+                channel = await session.get(Channel, slot.channel_id)
+                
+                scheduled_at = datetime.combine(slot.slot_date, slot.slot_time)
+                delete_at = None
+                if order.placement_format in PLACEMENT_FORMATS:
+                    hours = PLACEMENT_FORMATS[order.placement_format]["hours"]
+                    if hours > 0:
+                        delete_at = scheduled_at + timedelta(hours=hours)
+                
+                scheduled_post = ScheduledPost(
+                    order_id=order_id,
+                    channel_id=slot.channel_id,
+                    scheduled_at=scheduled_at,
+                    delete_at=delete_at,
+                    status="moderation",
+                    content=order.ad_content,
+                    file_id=order.ad_file_id,
+                    file_type=order.ad_format
+                )
+                session.add(scheduled_post)
+                await session.commit()
+                
+                # Уведомляем админа о необходимости модерации
+                for admin_id in ADMIN_IDS:
+                    try:
+                        moderation_kb = InlineKeyboardMarkup(inline_keyboard=[
+                            [
+                                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"mod_approve:{scheduled_post.id}"),
+                                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"mod_reject:{scheduled_post.id}")
+                            ],
+                            [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"mod_edit:{scheduled_post.id}")]
+                        ])
+                        
+                        preview_text = (
+                            f"📝 **Пост на модерацию**\n\n"
+                            f"📢 Канал: {channel.name}\n"
+                            f"📅 Публикация: {scheduled_at.strftime('%d.%m.%Y %H:%M')}\n"
+                            f"📌 Формат: {order.placement_format}\n\n"
+                            f"**Содержимое:**\n{order.ad_content[:500] if order.ad_content else 'Без текста'}"
+                        )
+                        
+                        if order.ad_file_id and order.ad_format == "photo":
+                            await bot.send_photo(
+                                admin_id,
+                                photo=order.ad_file_id,
+                                caption=preview_text,
+                                reply_markup=moderation_kb,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        elif order.ad_file_id and order.ad_format == "video":
+                            await bot.send_video(
+                                admin_id,
+                                video=order.ad_file_id,
+                                caption=preview_text,
+                                reply_markup=moderation_kb,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        else:
+                            await bot.send_message(
+                                admin_id,
+                                preview_text,
+                                reply_markup=moderation_kb,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to send moderation request: {e}")
+                
+                # Проверяем milestone
+                if order.manager_id:
+                    milestone = await gamification_service.check_milestone(order.manager_id)
+                    if milestone:
+                        try:
+                            await bot.send_message(
+                                manager.telegram_id,
+                                f"🎉 **Достижение разблокировано!**\n\n"
+                                f"🏆 {milestone['name']}\n"
+                                f"+{milestone['xp']} XP\n"
+                                f"+{milestone['bonus']}₽ бонус",
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        except:
+                            pass
     
     await callback.message.edit_caption(
         callback.message.caption + "\n\n✅ ПОДТВЕРЖДЕНО"
@@ -3395,6 +4980,343 @@ async def reject_payment(callback: CallbackQuery, bot: Bot):
     await callback.message.edit_caption(
         callback.message.caption + "\n\n❌ ОТКЛОНЕНО"
     )
+
+# ==================== МОДЕРАЦИЯ ПОСТОВ ====================
+
+@router.callback_query(F.data.startswith("mod_approve:"), IsAdmin())
+async def moderate_approve(callback: CallbackQuery, bot: Bot):
+    """Одобрить пост для публикации"""
+    await callback.answer("✅ Пост одобрен")
+    post_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        post = await session.get(ScheduledPost, post_id)
+        if post:
+            post.status = "approved"
+            await session.commit()
+            
+            order = await session.get(Order, post.order_id)
+            client = await session.get(Client, order.client_id) if order else None
+            
+            # Уведомляем клиента
+            if client:
+                try:
+                    await bot.send_message(
+                        client.telegram_id,
+                        f"✅ **Ваш пост одобрен!**\n\n"
+                        f"Публикация: {post.scheduled_at.strftime('%d.%m.%Y %H:%M')}",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except:
+                    pass
+    
+    try:
+        await callback.message.edit_caption(
+            callback.message.caption + "\n\n✅ ОДОБРЕНО — будет опубликован автоматически"
+        )
+    except:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n✅ ОДОБРЕНО — будет опубликован автоматически"
+        )
+
+@router.callback_query(F.data.startswith("mod_reject:"), IsAdmin())
+async def moderate_reject(callback: CallbackQuery, state: FSMContext):
+    """Отклонить пост"""
+    post_id = int(callback.data.split(":")[1])
+    await state.update_data(rejecting_post_id=post_id)
+    
+    await callback.message.answer(
+        "❌ **Отклонение поста**\n\n"
+        "Укажите причину отклонения:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_moderation_note)
+    await callback.answer()
+
+@router.message(AdminChannelStates.waiting_moderation_note, IsAdmin())
+async def receive_moderation_note(message: Message, state: FSMContext, bot: Bot):
+    """Получить причину отклонения"""
+    data = await state.get_data()
+    post_id = data.get("rejecting_post_id")
+    
+    async with async_session_maker() as session:
+        post = await session.get(ScheduledPost, post_id)
+        if post:
+            post.status = "rejected"
+            post.moderation_note = message.text
+            await session.commit()
+            
+            order = await session.get(Order, post.order_id)
+            client = await session.get(Client, order.client_id) if order else None
+            
+            if client:
+                try:
+                    await bot.send_message(
+                        client.telegram_id,
+                        f"❌ **Пост отклонён**\n\n"
+                        f"Причина: {message.text}\n\n"
+                        f"Свяжитесь с нами для исправления.",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except:
+                    pass
+    
+    await message.answer("✅ Пост отклонён, клиент уведомлён")
+    await state.clear()
+
+@router.callback_query(F.data.startswith("mod_edit:"), IsAdmin())
+async def moderate_edit(callback: CallbackQuery, state: FSMContext):
+    """Редактировать пост перед публикацией"""
+    post_id = int(callback.data.split(":")[1])
+    await state.update_data(editing_post_id=post_id)
+    
+    await callback.message.answer(
+        "✏️ **Редактирование поста**\n\n"
+        "Отправьте исправленный текст поста:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_post_edit)
+    await callback.answer()
+
+@router.message(AdminChannelStates.waiting_post_edit, IsAdmin())
+async def receive_post_edit(message: Message, state: FSMContext):
+    """Получить отредактированный текст"""
+    data = await state.get_data()
+    post_id = data.get("editing_post_id")
+    
+    async with async_session_maker() as session:
+        post = await session.get(ScheduledPost, post_id)
+        if post:
+            post.content = message.text
+            post.status = "approved"
+            await session.commit()
+    
+    await message.answer("✅ Пост отредактирован и одобрен!")
+    await state.clear()
+
+# ==================== ШАБЛОНЫ СООБЩЕНИЙ ====================
+
+@router.message(Command("templates"))
+async def show_templates(message: Message):
+    """Показать список шаблонов"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(MessageTemplate).where(MessageTemplate.is_active == True)
+        )
+        templates = result.scalars().all()
+    
+    # Если в БД нет шаблонов — используем дефолтные
+    if not templates:
+        text = "📝 **Шаблоны сообщений**\n\n"
+        for i, tpl in enumerate(DEFAULT_TEMPLATES, 1):
+            text += f"{i}. **{tpl['name']}** ({tpl['category']})\n"
+        text += "\nВыберите шаблон для просмотра:"
+        
+        buttons = []
+        for i, tpl in enumerate(DEFAULT_TEMPLATES):
+            buttons.append([InlineKeyboardButton(
+                text=f"📄 {tpl['name']}", 
+                callback_data=f"tpl_default:{i}"
+            )])
+        buttons.append([InlineKeyboardButton(text="🤖 Сгенерировать КП", callback_data="generate_kp")])
+    else:
+        text = "📝 **Шаблоны сообщений**\n\n"
+        buttons = []
+        for tpl in templates:
+            text += f"• **{tpl.name}** — использовано {tpl.usage_count} раз\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"📄 {tpl.name}",
+                callback_data=f"tpl:{tpl.id}"
+            )])
+        buttons.append([InlineKeyboardButton(text="🤖 Сгенерировать КП", callback_data="generate_kp")])
+    
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
+
+@router.callback_query(F.data.startswith("tpl_default:"))
+async def show_default_template(callback: CallbackQuery):
+    """Показать дефолтный шаблон"""
+    await callback.answer()
+    idx = int(callback.data.split(":")[1])
+    
+    if idx < len(DEFAULT_TEMPLATES):
+        tpl = DEFAULT_TEMPLATES[idx]
+        await callback.message.answer(
+            f"📝 **{tpl['name']}**\n\n"
+            f"```\n{tpl['content']}\n```\n\n"
+            f"_Переменные: {', '.join(tpl['variables'])}_",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+@router.callback_query(F.data == "generate_kp")
+async def generate_kp_start(callback: CallbackQuery, state: FSMContext):
+    """Начать генерацию КП через AI"""
+    await callback.answer()
+    
+    if not CLAUDE_API_KEY:
+        await callback.message.answer("❌ AI не настроен. Добавьте CLAUDE_API_KEY.")
+        return
+    
+    # Получаем список каналов
+    async with async_session_maker() as session:
+        result = await session.execute(select(Channel).where(Channel.is_active == True))
+        channels = result.scalars().all()
+    
+    if not channels:
+        await callback.message.answer("❌ Нет каналов для генерации КП")
+        return
+    
+    buttons = []
+    for ch in channels:
+        buttons.append([InlineKeyboardButton(
+            text=f"📢 {ch.name}",
+            callback_data=f"gen_kp:{ch.id}"
+        )])
+    
+    await callback.message.edit_text(
+        "🤖 **Генерация КП**\n\n"
+        "Выберите канал для КП:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data.startswith("gen_kp:"))
+async def generate_kp_for_channel(callback: CallbackQuery):
+    """Сгенерировать КП для канала"""
+    await callback.answer("⏳ Генерирую...")
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+    
+    if not channel:
+        await callback.message.answer("❌ Канал не найден")
+        return
+    
+    # Формируем данные для AI
+    channel_data = {
+        "name": channel.name,
+        "subscribers": channel.subscribers or 0,
+        "reach": channel.avg_reach_24h or channel.avg_reach or 0,
+        "category": channel.category or "Общая",
+        "price_124": channel.prices.get("1/24", 0) if channel.prices else 0
+    }
+    
+    # Генерируем
+    proposal = await ai_proposal_service.generate_proposal(channel_data)
+    
+    if proposal:
+        await callback.message.answer(
+            f"🤖 **Сгенерированное КП:**\n\n{proposal}\n\n"
+            f"_Скопируйте и отправьте клиенту_",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await callback.message.answer("❌ Не удалось сгенерировать. Попробуйте позже.")
+
+# ==================== ЛИДЕРБОРД И СОРЕВНОВАНИЯ ====================
+
+@router.message(Command("leaderboard"))
+async def show_leaderboard(message: Message):
+    """Показать таблицу лидеров"""
+    leaderboard = await gamification_service.get_leaderboard("sales", 10)
+    
+    if not leaderboard:
+        await message.answer("📊 Пока нет данных для рейтинга")
+        return
+    
+    text = "🏆 **Таблица лидеров**\n\n"
+    
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    
+    for item in leaderboard:
+        medal = medals.get(item["rank"], f"{item['rank']}.")
+        text += f"{medal} {item['emoji']} **{item['name']}**\n"
+        text += f"    📦 {item['sales']} продаж | 💵 {item['revenue']:,.0f}₽\n\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📦 По продажам", callback_data="lb:sales"),
+            InlineKeyboardButton(text="💵 По выручке", callback_data="lb:revenue")
+        ],
+        [InlineKeyboardButton(text="⭐ По XP", callback_data="lb:xp")]
+    ])
+    
+    await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@router.callback_query(F.data.startswith("lb:"))
+async def change_leaderboard(callback: CallbackQuery):
+    """Переключить метрику лидерборда"""
+    await callback.answer()
+    metric = callback.data.split(":")[1]
+    
+    metric_names = {"sales": "продажам", "revenue": "выручке", "xp": "опыту"}
+    
+    leaderboard = await gamification_service.get_leaderboard(metric, 10)
+    
+    text = f"🏆 **Таблица лидеров** (по {metric_names.get(metric, metric)})\n\n"
+    
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    
+    for item in leaderboard:
+        medal = medals.get(item["rank"], f"{item['rank']}.")
+        text += f"{medal} {item['emoji']} **{item['name']}**\n"
+        
+        if metric == "sales":
+            text += f"    📦 {item['sales']} продаж\n\n"
+        elif metric == "revenue":
+            text += f"    💵 {item['revenue']:,.0f}₽\n\n"
+        else:
+            text += f"    ⭐ {item['xp']:,} XP\n\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📦 По продажам", callback_data="lb:sales"),
+            InlineKeyboardButton(text="💵 По выручке", callback_data="lb:revenue")
+        ],
+        [InlineKeyboardButton(text="⭐ По XP", callback_data="lb:xp")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+# ==================== ОТЧЁТ ДЛЯ КЛИЕНТА ====================
+
+@router.message(Command("report"), IsAdmin())
+async def send_client_report(message: Message, bot: Bot):
+    """Отправить отчёт клиенту: /report <order_id>"""
+    args = message.text.split()
+    
+    if len(args) < 2:
+        await message.answer("Использование: `/report <order_id>`", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    try:
+        order_id = int(args[1])
+    except:
+        await message.answer("❌ ID заказа должен быть числом")
+        return
+    
+    # Создаём сервис аналитики
+    analytics_service = PostAnalyticsService(bot)
+    report = await analytics_service.generate_client_report(order_id)
+    
+    # Получаем клиента
+    async with async_session_maker() as session:
+        result = await session.execute(select(Order).where(Order.id == order_id))
+        order = result.scalar_one_or_none()
+        
+        if order:
+            client = await session.get(Client, order.client_id)
+            
+            if client:
+                try:
+                    await bot.send_message(client.telegram_id, report, parse_mode=ParseMode.MARKDOWN)
+                    await message.answer(f"✅ Отчёт отправлен клиенту (ID: {client.telegram_id})")
+                except Exception as e:
+                    await message.answer(f"❌ Не удалось отправить: {e}\n\nОтчёт:\n{report}")
+            else:
+                await message.answer(f"❌ Клиент не найден\n\nОтчёт:\n{report}")
+        else:
+            await message.answer("❌ Заказ не найден")
 
 # --- Аналитика (кнопка) ---
 @router.message(F.text == "📊 Аналитика", IsAdmin())
@@ -3560,81 +5482,6 @@ async def confirm_manager_registration(callback: CallbackQuery, state: FSMContex
         parse_mode=ParseMode.MARKDOWN
     )
 
-# --- Профиль менеджера ---
-@router.message(F.text == "📊 Мой профиль", IsManager())
-async def manager_profile(message: Message):
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(Manager).where(Manager.telegram_id == message.from_user.id)
-        )
-        manager = result.scalar_one_or_none()
-    
-    if not manager:
-        await message.answer("❌ Вы не зарегистрированы. Нажмите /manager")
-        return
-    
-    level_info = await get_manager_level(manager)
-    next_level = MANAGER_LEVELS.get(manager.level + 1)
-    
-    # Прогресс до следующего уровня
-    if next_level:
-        current_xp = manager.experience_points
-        next_xp = next_level["min_xp"]
-        prev_xp = level_info["min_xp"]
-        progress = int((current_xp - prev_xp) / (next_xp - prev_xp) * 10)
-        progress_bar = "▓" * progress + "░" * (10 - progress)
-        next_level_text = f"\n📈 До уровня {manager.level + 1}: {progress_bar} {current_xp}/{next_xp}"
-    else:
-        next_level_text = "\n🏆 Максимальный уровень достигнут!"
-    
-    status_names = {
-        "trainee": "🌱 Стажёр (обучение)",
-        "active": "✅ Активный",
-        "senior": "⭐ Старший",
-        "lead": "👑 Лид"
-    }
-    
-    await message.answer(
-        f"👤 **Ваш профиль**\n\n"
-        f"📛 {manager.first_name or 'Менеджер'}\n"
-        f"📱 {manager.phone or 'Не указан'}\n\n"
-        f"**Уровень и статус:**\n"
-        f"{level_info['emoji']} Уровень {manager.level}: {level_info['name']}\n"
-        f"📊 XP: {manager.experience_points:,}\n"
-        f"{status_names.get(manager.status, manager.status)}"
-        f"{next_level_text}\n\n"
-        f"**Комиссия:** {manager.commission_rate}% от продаж\n\n"
-        f"**Статистика:**\n"
-        f"💰 Всего заработано: {manager.total_earned:,.0f}₽\n"
-        f"📦 Продаж: {manager.total_sales}\n"
-        f"👥 Клиентов: {manager.clients_count}\n"
-        f"💵 Оборот: {manager.total_revenue:,.0f}₽",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-# --- Баланс менеджера ---
-@router.message(F.text == "💰 Баланс", IsManager())
-async def manager_balance(message: Message):
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(Manager).where(Manager.telegram_id == message.from_user.id)
-        )
-        manager = result.scalar_one_or_none()
-    
-    if not manager:
-        return
-    
-    await message.answer(
-        f"💰 **Ваш баланс**\n\n"
-        f"Доступно к выводу: **{manager.balance:,.0f}₽**\n\n"
-        f"Минимальная сумма вывода: 500₽",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💸 Вывести средства", callback_data="request_payout")],
-            [InlineKeyboardButton(text="📜 История выплат", callback_data="payout_history")]
-        ]),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
 # --- Запрос на вывод ---
 @router.callback_query(F.data == "request_payout")
 async def request_payout(callback: CallbackQuery, state: FSMContext):
@@ -3751,34 +5598,6 @@ async def receive_payout_details(message: Message, state: FSMContext):
             )
         except:
             pass
-
-# --- Обучение ---
-@router.message(F.text == "📚 Обучение", IsManager())
-async def manager_training(message: Message, state: FSMContext):
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(Manager).where(Manager.telegram_id == message.from_user.id)
-        )
-        manager = result.scalar_one_or_none()
-    
-    # Создаём клавиатуру с опциями обучения
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 AI-тренер", callback_data="ai_trainer")],
-        [InlineKeyboardButton(text="📖 Уроки", callback_data="show_lessons")],
-        [InlineKeyboardButton(text="📊 Мой прогресс", callback_data="training_progress")]
-    ])
-    
-    status = "✅ Пройдено" if manager.training_completed else f"📖 Урок {manager.current_lesson}/{len(DEFAULT_LESSONS)}"
-    
-    await message.answer(
-        f"📚 **Обучение менеджеров**\n\n"
-        f"Статус: {status}\n"
-        f"Баллы: {manager.training_score}\n\n"
-        f"🤖 **AI-тренер** — задавай любые вопросы по продажам\n"
-        f"📖 **Уроки** — структурированный курс с тестами",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
-    )
 
 @router.callback_query(F.data == "ai_trainer")
 async def start_ai_trainer(callback: CallbackQuery, state: FSMContext):
@@ -4179,25 +5998,6 @@ async def process_quiz_answer(callback: CallbackQuery, state: FSMContext):
         
         await state.clear()
 
-@router.callback_query(F.data == "back_to_training")
-async def back_to_training(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await state.clear()
-    
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(Manager).where(Manager.telegram_id == callback.from_user.id)
-        )
-        manager = result.scalar_one_or_none()
-    
-    await callback.message.edit_text(
-        f"📚 **Обучение**\n\n"
-        f"Прогресс: {manager.current_lesson - 1}/{len(DEFAULT_LESSONS)} уроков\n"
-        f"{'🎓 Обучение завершено!' if manager.training_completed else ''}",
-        reply_markup=get_training_keyboard(manager.current_lesson, len(DEFAULT_LESSONS)),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
 # --- Достижения ---
 @router.message(F.text == "🏆 Достижения", IsManager())
 async def manager_achievements(message: Message):
@@ -4253,12 +6053,33 @@ async def manager_back(callback: CallbackQuery, state: FSMContext):
 
 # ==================== ЗАПУСК ====================
 
+# Глобальный экземпляр автопостера
+auto_post_service: Optional[AutoPostService] = None
+
+async def autopost_loop(bot: Bot):
+    """Фоновая задача для автопостинга"""
+    global auto_post_service
+    auto_post_service = AutoPostService(bot)
+    
+    while True:
+        try:
+            await auto_post_service.check_and_publish()
+        except Exception as e:
+            logger.error(f"Autopost error: {e}")
+        
+        await asyncio.sleep(AUTOPOST_CHECK_INTERVAL)
+
 async def on_startup(bot: Bot):
     await init_db()
     await migrate_db()  # Добавляем новые колонки если их нет
     await init_category_cpm()  # Инициализируем CPM тематик
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
+    
+    # Запускаем автопостинг
+    if AUTOPOST_ENABLED:
+        asyncio.create_task(autopost_loop(bot))
+        logger.info("Autopost service started")
     
     for admin_id in ADMIN_IDS:
         try:
