@@ -1636,7 +1636,7 @@ class GamificationService:
                     
                     winners.append({
                         "rank": i,
-                        "name": manager.name,
+                        "name": manager.first_name,
                         "score": res.score,
                         "title": reward.get("title", ""),
                         "bonus": reward.get("bonus", 0),
@@ -2340,7 +2340,7 @@ async def cmd_start(message: Message, state: FSMContext):
         level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
         
         await message.answer(
-            f"👋 **Привет, {manager.name}!**\n\n"
+            f"👋 **Привет, {manager.first_name}!**\n\n"
             f"{level_info['emoji']} Уровень: {level_info['name']}\n"
             f"💰 Баланс: **{manager.balance:,.0f}₽**\n"
             f"📦 Продаж: {manager.total_sales}\n\n"
@@ -2457,10 +2457,13 @@ async def become_manager(message: Message, state: FSMContext):
         "💰 Комиссия 10-25% от каждой продажи\n"
         "📚 Бесплатное обучение\n"
         "🏆 Бонусы за достижения\n\n"
-        "Введите ваше имя:",
+        "Нажмите кнопку чтобы зарегистрироваться:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Стать менеджером", callback_data="manager_register")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
+        ]),
         parse_mode=ParseMode.MARKDOWN
     )
-    await state.set_state(ManagerStates.registration_phone)
 
 # --- Админ-панель через инлайн кнопки ---
 @router.callback_query(F.data == "adm_channels")
@@ -2780,7 +2783,7 @@ async def mgr_back(callback: CallbackQuery):
     
     await callback.message.edit_text(
         f"👤 **Кабинет менеджера**\n\n"
-        f"{level_info['emoji']} {manager.name}\n"
+        f"{level_info['emoji']} {manager.first_name}\n"
         f"💰 Баланс: **{manager.balance:,.0f}₽**\n"
         f"📦 Продаж: {manager.total_sales}",
         reply_markup=get_manager_cabinet_menu(),
@@ -2804,7 +2807,7 @@ async def show_profile(message: Message):
     
     await message.answer(
         f"👤 **Кабинет менеджера**\n\n"
-        f"{level_info['emoji']} {manager.name}\n"
+        f"{level_info['emoji']} {manager.first_name}\n"
         f"📊 Уровень: **{level_info['name']}**\n"
         f"💰 Баланс: **{manager.balance:,.0f}₽**\n"
         f"📦 Продаж: {manager.total_sales}\n"
@@ -3155,7 +3158,7 @@ async def manager_profile_btn(message: Message):
     
     await message.answer(
         f"👤 **Профиль менеджера**\n\n"
-        f"👋 {manager.name}\n"
+        f"👋 {manager.first_name}\n"
         f"{level_info['emoji']} Уровень {manager.level}: **{level_info['name']}**\n"
         f"📊 XP: {manager.experience_points:,}{progress}\n"
         f"💰 Комиссия: **{level_info['commission']}%**\n\n"
@@ -5428,57 +5431,38 @@ async def manager_panel(message: Message, state: FSMContext):
 async def start_manager_registration(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     
-    await callback.message.edit_text(
-        "📝 **Регистрация менеджера**\n\n"
-        "Шаг 1/2: Введите ваш номер телефона:\n"
-        "(формат: +7XXXXXXXXXX)",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await state.set_state(ManagerStates.registration_phone)
-
-@router.message(ManagerStates.registration_phone)
-async def receive_manager_phone(message: Message, state: FSMContext):
-    phone = message.text.strip()
-    
-    # Простая валидация
-    if not phone.startswith("+") or len(phone) < 10:
-        await message.answer("❌ Введите корректный номер телефона (+7XXXXXXXXXX)")
-        return
-    
-    await state.update_data(phone=phone)
-    
-    await message.answer(
-        f"📱 Телефон: {phone}\n\n"
-        f"Подтверждаете регистрацию?",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_manager_reg")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
-        ])
-    )
-    await state.set_state(ManagerStates.registration_confirm)
-
-@router.callback_query(F.data == "confirm_manager_reg", ManagerStates.registration_confirm)
-async def confirm_manager_registration(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    data = await state.get_data()
-    
+    # Сразу регистрируем без телефона
     async with async_session_maker() as session:
+        # Проверяем не зарегистрирован ли уже
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            await callback.message.edit_text(
+                "✅ Вы уже зарегистрированы как менеджер!\n\n"
+                "Нажмите /start чтобы открыть меню.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
         manager = Manager(
             telegram_id=callback.from_user.id,
             username=callback.from_user.username,
-            first_name=callback.from_user.first_name,
-            phone=data.get("phone")
+            first_name=callback.from_user.first_name or "Менеджер"
         )
         session.add(manager)
         await session.commit()
     
-    await state.clear()
-    
     await callback.message.edit_text(
         "🎉 **Добро пожаловать в команду!**\n\n"
         "Вы успешно зарегистрированы как менеджер.\n\n"
-        "**Следующий шаг:** пройдите обучение чтобы начать работу.\n\n"
-        "Нажмите /manager чтобы открыть панель.",
+        "**Что дальше:**\n"
+        "📚 Пройдите обучение\n"
+        "💼 Начните продавать\n"
+        "💰 Получайте комиссию 10-25%\n\n"
+        "Нажмите /start чтобы открыть меню.",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -5657,7 +5641,7 @@ async def ai_topic_selected(callback: CallbackQuery, state: FSMContext):
             select(Manager).where(Manager.telegram_id == callback.from_user.id)
         )
         manager = result.scalar_one_or_none()
-        manager_name = manager.name if manager else "менеджер"
+        manager_name = manager.first_name if manager else "менеджер"
     
     response = await ai_trainer.get_response(
         callback.from_user.id, 
@@ -5719,7 +5703,7 @@ async def process_ai_question(message: Message, state: FSMContext):
             select(Manager).where(Manager.telegram_id == message.from_user.id)
         )
         manager = result.scalar_one_or_none()
-        manager_name = manager.name if manager else "менеджер"
+        manager_name = manager.first_name if manager else "менеджер"
     
     # Получаем ответ от AI
     response = await ai_trainer.get_response(
@@ -5849,7 +5833,7 @@ async def training_progress(callback: CallbackQuery):
     
     await callback.message.edit_text(
         f"📊 **Мой прогресс**\n\n"
-        f"👤 {manager.name}\n"
+        f"👤 {manager.first_name}\n"
         f"🏆 Баллы: {manager.training_score}\n"
         f"📚 Статус: {'✅ Обучение пройдено' if manager.training_completed else '📖 В процессе'}\n\n"
         f"**Уроки:**\n{lessons_text}",
