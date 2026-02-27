@@ -1577,7 +1577,7 @@ class GamificationService:
                 level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
                 leaderboard.append({
                     "rank": i,
-                    "name": m.name,
+                    "name": m.first_name or m.username or "Менеджер",
                     "emoji": level_info["emoji"],
                     "sales": m.total_sales,
                     "revenue": float(m.total_revenue),
@@ -2710,6 +2710,69 @@ async def mgr_my_sales(callback: CallbackQuery):
         for order in orders:
             status_emoji = {"payment_confirmed": "✅", "pending": "⏳"}.get(order.status, "❓")
             text += f"{status_emoji} #{order.id} — {order.final_price:,.0f}₽\n"
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "mgr_my_clients")
+async def mgr_my_clients(callback: CallbackQuery):
+    """Список клиентов менеджера"""
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await callback.message.answer("❌ Вы не менеджер")
+            return
+        
+        # Получаем клиентов через заказы менеджера
+        orders_result = await session.execute(
+            select(Order)
+            .where(Order.manager_id == manager.id)
+            .order_by(Order.created_at.desc())
+        )
+        orders = orders_result.scalars().all()
+        
+        # Собираем уникальных клиентов
+        client_ids = set()
+        clients_data = []
+        
+        for order in orders:
+            if order.client_id not in client_ids:
+                client_ids.add(order.client_id)
+                client = await session.get(Client, order.client_id)
+                if client:
+                    # Считаем заказы и сумму по этому клиенту
+                    client_orders = [o for o in orders if o.client_id == client.id]
+                    total_spent = sum(float(o.final_price) for o in client_orders)
+                    
+                    clients_data.append({
+                        "name": client.first_name or client.username or f"ID:{client.telegram_id}",
+                        "orders": len(client_orders),
+                        "spent": total_spent
+                    })
+    
+    text = f"👥 **Мои клиенты**\n\n"
+    text += f"Всего клиентов: **{len(clients_data)}**\n\n"
+    
+    if clients_data:
+        # Сортируем по сумме
+        clients_data.sort(key=lambda x: x["spent"], reverse=True)
+        
+        for i, client in enumerate(clients_data[:15], 1):
+            text += f"{i}. **{client['name']}**\n"
+            text += f"   📦 {client['orders']} заказов | 💰 {client['spent']:,.0f}₽\n\n"
+    else:
+        text += "_Пока нет клиентов. Отправляйте реф-ссылку!_"
     
     buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
     
