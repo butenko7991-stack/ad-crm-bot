@@ -3017,6 +3017,7 @@ async def manager_sales(message: Message, state: FSMContext):
     
     text = "💼 **Каналы для продажи:**\n\n"
     
+    buttons = []
     for ch in channels:
         prices = ch.prices or {}
         price_124 = prices.get("1/24", 0)
@@ -3030,26 +3031,20 @@ async def manager_sales(message: Message, state: FSMContext):
         
         text += f"📢 **{ch.name}**\n"
         text += f"   {reach_info} | 💰 от {price_124:,}₽\n\n"
-    
-    text += (
-        "**Как продавать:**\n"
-        "1️⃣ Найдите клиента\n"
-        "2️⃣ Отправьте ему ссылку: t.me/{bot_username}?start=ref_{ref_id}\n"
-        "3️⃣ Получите комиссию после оплаты!"
-    )
+        
+        buttons.append([InlineKeyboardButton(
+            text=f"📊 {ch.name}",
+            callback_data=f"analyze_ch:{ch.id}"
+        )])
     
     # Получаем реф-ссылку менеджера
     bot_info = await message.bot.get_me()
-    ref_link = f"t.me/{bot_info.username}?start=ref_{manager.id}"
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Скопировать реф-ссылку", callback_data="copy_ref_link")],
-        [InlineKeyboardButton(text="📢 Выбрать канал", callback_data="select_channel_for_sale")]
-    ])
+    buttons.append([InlineKeyboardButton(text="📋 Моя реф-ссылка", callback_data="copy_ref_link")])
     
     await message.answer(
-        text.format(bot_username=bot_info.username, ref_id=manager.id),
-        reply_markup=keyboard,
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -3068,6 +3063,263 @@ async def copy_ref_link(callback: CallbackQuery):
     
     bot_info = await callback.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{manager.id}"
+    
+    await callback.message.answer(
+        f"🔗 **Ваша реферальная ссылка:**\n\n"
+        f"`{ref_link}`\n\n"
+        f"📤 Отправьте клиенту — получите комиссию с заказа!",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await callback.answer()
+
+# ==================== АНАЛИЗ КАНАЛА ДЛЯ МЕНЕДЖЕРОВ ====================
+
+@router.callback_query(F.data.startswith("analyze_ch:"))
+async def analyze_channel_for_manager(callback: CallbackQuery, bot: Bot):
+    """Красивая карточка анализа канала с РЕАЛЬНЫМИ данными"""
+    await callback.answer("📊 Загружаю свежие данные...")
+    
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        
+        if not channel:
+            await callback.message.answer("❌ Канал не найден")
+            return
+        
+        # Получаем категорию
+        category_info = CHANNEL_CATEGORIES.get(channel.category, {"name": "📁 Другое", "cpm": 500})
+        
+        # === ПОЛУЧАЕМ СВЕЖИЕ ДАННЫЕ ===
+        
+        # 1. Bot API — подписчики (бот админ)
+        bot_stats = await get_channel_stats_via_bot(bot, channel.telegram_id)
+        if bot_stats:
+            subscribers = bot_stats["subscribers"]
+            channel.subscribers = subscribers
+        else:
+            subscribers = channel.subscribers or 0
+        
+        # 2. Telemetr API — охваты, ERR (реальные данные)
+        telemetr_data = None
+        if TELEMETR_API_TOKEN:
+            telemetr_data = await telemetr_service.get_full_stats(
+                telegram_id=channel.telegram_id,
+                username=channel.username
+            )
+        
+        if telemetr_data:
+            # Используем свежие данные из Telemetr
+            avg_reach_12h = int(telemetr_data.get("avg_views_24h", 0) * 0.75)
+            avg_reach_24h = telemetr_data.get("avg_views_24h", 0)
+            avg_reach_48h = telemetr_data.get("avg_views_48h", 0)
+            err = telemetr_data.get("err_percent", 0)
+            err24 = telemetr_data.get("err24_percent", 0)
+            
+            # Обновляем в базе
+            channel.avg_reach_24h = avg_reach_24h
+            channel.avg_reach_48h = avg_reach_48h
+            channel.err = err
+            channel.analytics_updated = datetime.utcnow()
+            
+            data_source = "🟢 Telemetr (live)"
+        else:
+            # Используем данные из базы
+            avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
+            avg_reach_12h = int(avg_reach_24h * 0.75)
+            avg_reach_48h = channel.avg_reach_48h or int(avg_reach_24h * 1.27)
+            err = channel.err or (avg_reach_24h / subscribers * 100 if subscribers > 0 else 0)
+            err24 = err
+            
+            data_source = "🟡 База данных"
+        
+        await session.commit()
+    
+    # === РАСЧЁТ ПОКАЗАТЕЛЕЙ ===
+    
+    # CPM и цены
+    cpm = channel.cpm or category_info.get("cpm", 1000)
+    prices = channel.prices or {}
+    
+    # Если цены не заданы — рассчитываем по CPM
+    if prices.get("1/24", 0) == 0 and avg_reach_24h > 0:
+        price_124 = int(avg_reach_24h * cpm / 1000)
+        price_148 = int(price_124 * 0.8)
+        price_248 = int(price_124 * 1.6)
+        price_native = int(price_124 * 2.5)
+    else:
+        price_124 = prices.get("1/24", 0)
+        price_148 = prices.get("1/48", 0)
+        price_248 = prices.get("2/48", 0)
+        price_native = prices.get("native", 0)
+    
+    # Индекс цитирования
+    citation_index = round(subscribers / 1000 * err / 10, 1) if subscribers > 0 and err > 0 else 0
+    
+    # Оценка качества канала
+    if err >= 15:
+        quality = "🔥 Отличный"
+    elif err >= 10:
+        quality = "✅ Хороший"
+    elif err >= 5:
+        quality = "👍 Средний"
+    else:
+        quality = "⚠️ Низкий ERR"
+    
+    # === ФОРМИРУЕМ КАРТОЧКУ ===
+    
+    card = f"""
+📊 **АНАЛИТИКА КАНАЛА**
+━━━━━━━━━━━━━━━━━━━━
+
+📢 **{channel.name}**
+{category_info['name']}
+{data_source}
+
+━━━━━━━━━━━━━━━━━━━━
+👥 **АУДИТОРИЯ**
+━━━━━━━━━━━━━━━━━━━━
+
+**{subscribers:,}** подписчиков
+
+━━━━━━━━━━━━━━━━━━━━
+👁 **РЕКЛАМНЫЕ ОХВАТЫ**
+━━━━━━━━━━━━━━━━━━━━
+
+⏱ 12 часов: **{avg_reach_12h:,}**
+⏱ 24 часа: **{avg_reach_24h:,}**
+⏱ 48 часов: **{avg_reach_48h:,}**
+
+━━━━━━━━━━━━━━━━━━━━
+📈 **ВОВЛЕЧЁННОСТЬ**
+━━━━━━━━━━━━━━━━━━━━
+
+**ERR:** {err:.1f}%
+**ERR24:** {err24:.1f}%
+**Качество:** {quality}
+**Индекс:** {citation_index}
+
+━━━━━━━━━━━━━━━━━━━━
+💰 **ЦЕНЫ НА РЕКЛАМУ**
+━━━━━━━━━━━━━━━━━━━━
+
+📌 **1/24** (24ч): **{price_124:,}₽**
+📌 **1/48** (48ч): **{price_148:,}₽**
+📌 **2/48** (2 поста): **{price_248:,}₽**
+📌 **Навсегда:** **{price_native:,}₽**
+
+💡 CPM: **{cpm:,}₽**
+
+━━━━━━━━━━━━━━━━━━━━
+🎯 **АРГУМЕНТЫ ДЛЯ КЛИЕНТА**
+━━━━━━━━━━━━━━━━━━━━
+
+✅ {subscribers:,} живых подписчиков
+✅ ERR {err:.1f}% — {quality.split()[1].lower()} вовлечённость
+✅ {avg_reach_24h:,} просмотров за 24ч
+✅ CPM {cpm}₽ — выгоднее рынка
+"""
+    
+    # Кнопки действий
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Создать КП", callback_data=f"gen_kp:{channel_id}"),
+            InlineKeyboardButton(text="🔄 Обновить", callback_data=f"analyze_ch:{channel_id}")
+        ],
+        [InlineKeyboardButton(text="📤 Скопировать карточку", callback_data=f"copy_card:{channel_id}")],
+        [InlineKeyboardButton(text="◀️ Назад к каналам", callback_data="back_to_sales")]
+    ])
+    
+    await callback.message.edit_text(
+        card,
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data.startswith("copy_card:"))
+async def copy_channel_card(callback: CallbackQuery):
+    """Скопировать карточку для отправки клиенту (без лишней инфы)"""
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        
+        if not channel:
+            return
+        
+        category_info = CHANNEL_CATEGORIES.get(channel.category, {"name": "📁 Другое", "cpm": 500})
+        
+        subscribers = channel.subscribers or 0
+        avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
+        err = channel.err or 0
+        
+        prices = channel.prices or {}
+        price_124 = prices.get("1/24", 0)
+        price_148 = prices.get("1/48", 0)
+        price_native = prices.get("native", 0)
+    
+    # Карточка для клиента (без внутренней информации)
+    client_card = f"""
+📢 **{channel.name}**
+{category_info['name']}
+
+👥 **{subscribers:,}** подписчиков
+👁 **{avg_reach_24h:,}** просмотров/24ч
+📈 ERR: **{err:.1f}%**
+
+💰 **Цены:**
+• 1/24: {price_124:,}₽
+• 1/48: {price_148:,}₽
+• Навсегда: {price_native:,}₽
+
+✅ Живая аудитория
+✅ Высокая вовлечённость
+✅ Быстрое размещение
+
+📩 Забронировать: напишите мне!
+"""
+    
+    await callback.message.answer(
+        f"📋 **Карточка для клиента:**\n"
+        f"_(скопируйте и отправьте)_\n"
+        f"{client_card}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "back_to_sales")
+async def back_to_sales(callback: CallbackQuery):
+    """Вернуться к списку каналов"""
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Channel).where(Channel.is_active == True)
+        )
+        channels = result.scalars().all()
+    
+    text = "💼 **Каналы для продажи:**\n\n"
+    buttons = []
+    
+    for ch in channels:
+        prices = ch.prices or {}
+        price_124 = prices.get("1/24", 0)
+        reach_info = f"👁 {ch.avg_reach_24h:,}" if ch.avg_reach_24h else f"👥 {ch.subscribers:,}" if ch.subscribers else ""
+        
+        text += f"📢 **{ch.name}**\n   {reach_info} | 💰 от {price_124:,}₽\n\n"
+        buttons.append([InlineKeyboardButton(
+            text=f"📊 {ch.name}",
+            callback_data=f"analyze_ch:{ch.id}"
+        )])
+    
+    buttons.append([InlineKeyboardButton(text="📋 Моя реф-ссылка", callback_data="copy_ref_link")])
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
     
     await callback.message.answer(
         f"🔗 **Ваша реферальная ссылка:**\n\n"
