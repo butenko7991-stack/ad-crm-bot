@@ -3241,52 +3241,57 @@ async def analyze_channel_for_manager(callback: CallbackQuery, bot: Bot):
 async def copy_channel_card(callback: CallbackQuery):
     """Скопировать карточку для отправки клиенту (без лишней инфы)"""
     await callback.answer()
-    channel_id = int(callback.data.split(":")[1])
     
-    async with async_session_maker() as session:
-        channel = await session.get(Channel, channel_id)
+    try:
+        channel_id = int(callback.data.split(":")[1])
         
-        if not channel:
-            return
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            
+            if not channel:
+                await callback.message.answer("❌ Канал не найден")
+                return
+            
+            category_info = CHANNEL_CATEGORIES.get(channel.category, {"name": "📁 Другое", "cpm": 500})
+            
+            subscribers = channel.subscribers or 0
+            avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
+            err = channel.err or 0
+            
+            prices = channel.prices or {}
+            price_124 = prices.get("1/24", 0)
+            price_148 = prices.get("1/48", 0)
+            price_native = prices.get("native", 0)
+            
+            channel_name = channel.name
+            category_name = category_info['name']
         
-        category_info = CHANNEL_CATEGORIES.get(channel.category, {"name": "📁 Другое", "cpm": 500})
+        # Карточка для клиента (простой текст без сложного форматирования)
+        client_card = (
+            f"📢 {channel_name}\n"
+            f"{category_name}\n\n"
+            f"👥 {subscribers:,} подписчиков\n"
+            f"👁 {avg_reach_24h:,} просмотров/24ч\n"
+            f"📈 ERR: {err:.1f}%\n\n"
+            f"💰 Цены:\n"
+            f"• 1/24: {price_124:,}₽\n"
+            f"• 1/48: {price_148:,}₽\n"
+            f"• Навсегда: {price_native:,}₽\n\n"
+            f"✅ Живая аудитория\n"
+            f"✅ Высокая вовлечённость\n"
+            f"✅ Быстрое размещение\n\n"
+            f"📩 Забронировать: напишите мне!"
+        )
         
-        subscribers = channel.subscribers or 0
-        avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
-        err = channel.err or 0
-        
-        prices = channel.prices or {}
-        price_124 = prices.get("1/24", 0)
-        price_148 = prices.get("1/48", 0)
-        price_native = prices.get("native", 0)
-    
-    # Карточка для клиента (без внутренней информации)
-    client_card = f"""
-📢 **{channel.name}**
-{category_info['name']}
-
-👥 **{subscribers:,}** подписчиков
-👁 **{avg_reach_24h:,}** просмотров/24ч
-📈 ERR: **{err:.1f}%**
-
-💰 **Цены:**
-• 1/24: {price_124:,}₽
-• 1/48: {price_148:,}₽
-• Навсегда: {price_native:,}₽
-
-✅ Живая аудитория
-✅ Высокая вовлечённость
-✅ Быстрое размещение
-
-📩 Забронировать: напишите мне!
-"""
-    
-    await callback.message.answer(
-        f"📋 **Карточка для клиента:**\n"
-        f"_(скопируйте и отправьте)_\n"
-        f"{client_card}",
-        parse_mode=ParseMode.MARKDOWN
-    )
+        await callback.message.answer(
+            f"📋 Карточка для клиента:\n"
+            f"(скопируйте и отправьте)\n\n"
+            f"```\n{client_card}\n```",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in copy_card: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
 
 @router.callback_query(F.data == "back_to_sales")
 async def back_to_sales(callback: CallbackQuery):
