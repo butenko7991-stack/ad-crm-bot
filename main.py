@@ -3120,7 +3120,7 @@ async def analyze_channel_for_manager(callback: CallbackQuery, bot: Bot):
             # Обновляем в базе
             channel.avg_reach_24h = avg_reach_24h
             channel.avg_reach_48h = avg_reach_48h
-            channel.err = err
+            channel.err_percent = err
             channel.analytics_updated = datetime.utcnow()
             
             data_source = "🟢 Telemetr (live)"
@@ -3129,7 +3129,7 @@ async def analyze_channel_for_manager(callback: CallbackQuery, bot: Bot):
             avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
             avg_reach_12h = int(avg_reach_24h * 0.75)
             avg_reach_48h = channel.avg_reach_48h or int(avg_reach_24h * 1.27)
-            err = channel.err or (avg_reach_24h / subscribers * 100 if subscribers > 0 else 0)
+            err = float(channel.err_percent or 0) or (avg_reach_24h / subscribers * 100 if subscribers > 0 else 0)
             err24 = err
             
             data_source = "🟡 База данных"
@@ -3256,7 +3256,7 @@ async def copy_channel_card(callback: CallbackQuery):
             
             subscribers = channel.subscribers or 0
             avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
-            err = channel.err or 0
+            err = float(channel.err_percent or 0)
             
             prices = channel.prices or {}
             price_124 = prices.get("1/24", 0)
