@@ -2534,6 +2534,142 @@ async def adm_add_channel(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AdminChannelStates.waiting_channel_forward)
 
+@router.callback_query(F.data.startswith("adm_ch:"))
+async def adm_channel_settings(callback: CallbackQuery):
+    """Настройки канала в админке"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    try:
+        channel_id = int(callback.data.split(":")[1])
+        
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            
+            if not channel:
+                await callback.message.edit_text("❌ Канал не найден")
+                return
+            
+            # Сохраняем данные
+            ch_name = channel.name
+            ch_username = channel.username or "—"
+            ch_subscribers = channel.subscribers or 0
+            ch_avg_reach = channel.avg_reach_24h or channel.avg_reach or 0
+            ch_category = channel.category
+            ch_is_active = channel.is_active
+            prices = channel.prices or {}
+            ch_cpm = float(channel.cpm or 0)
+        
+        category_info = CHANNEL_CATEGORIES.get(ch_category, {"name": "📁 Другое"})
+        status = "✅ Активен" if ch_is_active else "❌ Неактивен"
+        
+        text = (
+            f"⚙️ **Настройки канала**\n\n"
+            f"📢 **{ch_name}**\n"
+            f"👤 @{ch_username}\n"
+            f"{category_info['name']}\n"
+            f"{status}\n\n"
+            f"👥 Подписчиков: **{ch_subscribers:,}**\n"
+            f"👁 Охват 24ч: **{ch_avg_reach:,}**\n"
+            f"💰 CPM: **{ch_cpm:,.0f}₽**\n\n"
+            f"**Цены:**\n"
+            f"• 1/24: {prices.get('1/24', 0):,}₽\n"
+            f"• 1/48: {prices.get('1/48', 0):,}₽\n"
+            f"• 2/48: {prices.get('2/48', 0):,}₽\n"
+            f"• Навсегда: {prices.get('native', 0):,}₽"
+        )
+        
+        buttons = [
+            [
+                InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"adm_ch_update:{channel_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="💰 Изменить цены", callback_data=f"adm_ch_prices:{channel_id}"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Деактивировать" if ch_is_active else "✅ Активировать",
+                    callback_data=f"adm_ch_toggle:{channel_id}"
+                ),
+            ],
+            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"adm_ch_delete:{channel_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_channels")]
+        ]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_channel_settings: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
+
+@router.callback_query(F.data.startswith("adm_ch_toggle:"))
+async def adm_toggle_channel(callback: CallbackQuery):
+    """Включить/выключить канал"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        if channel:
+            channel.is_active = not channel.is_active
+            await session.commit()
+            status = "активирован ✅" if channel.is_active else "деактивирован ❌"
+            await callback.answer(f"Канал {status}", show_alert=True)
+    
+    # Возвращаемся к настройкам канала
+    callback.data = f"adm_ch:{channel_id}"
+    await adm_channel_settings(callback)
+
+@router.callback_query(F.data.startswith("adm_ch_delete:"))
+async def adm_delete_channel(callback: CallbackQuery):
+    """Удалить канал"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    channel_id = int(callback.data.split(":")[1])
+    
+    await callback.message.edit_text(
+        "⚠️ **Удалить канал?**\n\n"
+        "Это действие нельзя отменить!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"adm_ch_del_confirm:{channel_id}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch:{channel_id}")
+            ]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data.startswith("adm_ch_del_confirm:"))
+async def adm_delete_channel_confirm(callback: CallbackQuery):
+    """Подтвердить удаление канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        if channel:
+            await session.delete(channel)
+            await session.commit()
+            await callback.answer("🗑 Канал удалён", show_alert=True)
+    
+    # Возвращаемся к списку каналов
+    callback.data = "adm_channels"
+    await adm_channels(callback)
+
 @router.callback_query(F.data == "adm_payments")
 async def adm_payments(callback: CallbackQuery):
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
@@ -3703,34 +3839,79 @@ async def show_catalog(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("channel:"))
 async def select_channel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    channel_id = int(callback.data.split(":")[1])
     
-    async with async_session_maker() as session:
-        channel = await session.get(Channel, channel_id)
-        result = await session.execute(
-            select(Slot).where(
-                Slot.channel_id == channel_id,
-                Slot.status == "available",
-                Slot.slot_date >= date.today()
-            ).order_by(Slot.slot_date)
+    try:
+        channel_id = int(callback.data.split(":")[1])
+        
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            
+            if not channel:
+                await callback.message.edit_text("❌ Канал не найден")
+                return
+            
+            result = await session.execute(
+                select(Slot).where(
+                    Slot.channel_id == channel_id,
+                    Slot.status == "available",
+                    Slot.slot_date >= date.today()
+                ).order_by(Slot.slot_date)
+            )
+            slots = result.scalars().all()
+            
+            # Сохраняем данные канала
+            channel_name = channel.name
+            prices = channel.prices or {}
+            price_124 = prices.get("1/24", 0)
+            price_148 = prices.get("1/48", 0)
+            price_248 = prices.get("2/48", 0)
+            price_native = prices.get("native", 0)
+            subscribers = channel.subscribers or 0
+            avg_reach = channel.avg_reach_24h or channel.avg_reach or 0
+            category = channel.category
+        
+        category_info = CHANNEL_CATEGORIES.get(category, {"name": "📁 Другое"})
+        
+        if not slots:
+            # Показываем информацию о канале даже без слотов
+            await callback.message.edit_text(
+                f"📢 **{channel_name}**\n"
+                f"{category_info['name']}\n\n"
+                f"👥 Подписчиков: **{subscribers:,}**\n"
+                f"👁 Охват: **{avg_reach:,}**\n\n"
+                f"💰 **Цены:**\n"
+                f"• 1/24: {price_124:,}₽\n"
+                f"• 1/48: {price_148:,}₽\n"
+                f"• 2/48: {price_248:,}₽\n"
+                f"• Навсегда: {price_native:,}₽\n\n"
+                f"😔 _Нет доступных слотов_",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_channels")]
+                ]),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
+        await state.update_data(channel_id=channel_id, channel_name=channel_name)
+        
+        await callback.message.edit_text(
+            f"📢 **{channel_name}**\n"
+            f"{category_info['name']}\n\n"
+            f"👥 Подписчиков: **{subscribers:,}**\n"
+            f"👁 Охват: **{avg_reach:,}**\n\n"
+            f"💰 **Цены:**\n"
+            f"• 1/24: {price_124:,}₽\n"
+            f"• 1/48: {price_148:,}₽\n"
+            f"• 2/48: {price_248:,}₽\n"
+            f"• Навсегда: {price_native:,}₽\n\n"
+            f"📅 Выберите дату:",
+            reply_markup=get_dates_keyboard(slots),
+            parse_mode=ParseMode.MARKDOWN
         )
-        slots = result.scalars().all()
-    
-    if not slots:
-        await callback.message.edit_text("😔 Нет доступных слотов")
-        return
-    
-    await state.update_data(channel_id=channel_id, channel_name=channel.name)
-    
-    await callback.message.edit_text(
-        f"📢 **{channel.name}**\n\n"
-        f"🌅 Утро (9:00): {channel.price_morning:,.0f}₽\n"
-        f"🌆 Вечер (18:00): {channel.price_evening:,.0f}₽\n\n"
-        f"Выберите дату:",
-        reply_markup=get_dates_keyboard(slots),
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await state.set_state(BookingStates.selecting_date)
+        await state.set_state(BookingStates.selecting_date)
+    except Exception as e:
+        logger.error(f"Error in select_channel: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
 
 # --- Выбор даты ---
 @router.callback_query(F.data.startswith("date:"), BookingStates.selecting_date)
