@@ -1,13 +1,21 @@
 """
 Подключение к базе данных
 """
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from config import DATABASE_URL
 
 
+# Исправляем URL для asyncpg
+db_url = DATABASE_URL
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+elif db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+
 # Создаём движок
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(db_url, echo=False)
 
 # Создаём фабрику сессий
 async_session_maker = async_sessionmaker(
