@@ -2676,48 +2676,176 @@ async def adm_back(callback: CallbackQuery):
         parse_mode=ParseMode.MARKDOWN
     )
 
-# --- Менеджерский кабинет через инлайн кнопки ---
-@router.callback_query(F.data == "mgr_my_sales")
-async def mgr_my_sales(callback: CallbackQuery):
+@router.callback_query(F.data == "adm_competitions")
+async def adm_competitions(callback: CallbackQuery):
+    """Соревнования менеджеров"""
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
     await callback.answer()
     
     async with async_session_maker() as session:
         result = await session.execute(
-            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            select(Competition).order_by(Competition.start_date.desc()).limit(5)
         )
-        manager = result.scalar_one_or_none()
-        
-        if not manager:
-            await callback.message.answer("❌ Вы не менеджер")
-            return
-        
-        # Получаем заказы менеджера
-        orders_result = await session.execute(
-            select(Order)
-            .where(Order.manager_id == manager.id)
-            .order_by(Order.created_at.desc())
-            .limit(10)
-        )
-        orders = orders_result.scalars().all()
+        competitions = result.scalars().all()
     
-    text = f"📊 **Мои продажи**\n\n"
-    text += f"Всего продаж: **{manager.total_sales}**\n"
-    text += f"Общая выручка: **{manager.total_revenue:,.0f}₽**\n"
-    text += f"Мой заработок: **{manager.total_earned:,.0f}₽**\n\n"
+    text = "🏆 **Соревнования**\n\n"
     
-    if orders:
-        text += "**Последние заказы:**\n"
-        for order in orders:
-            status_emoji = {"payment_confirmed": "✅", "pending": "⏳"}.get(order.status, "❓")
-            text += f"{status_emoji} #{order.id} — {order.final_price:,.0f}₽\n"
+    if competitions:
+        for comp in competitions:
+            status = "🟢 Активно" if comp.status == "active" else "⚫ Завершено"
+            text += f"{status} **{comp.name}**\n"
+            text += f"📅 {comp.start_date} — {comp.end_date}\n\n"
+    else:
+        text += "_Нет соревнований_\n\n"
     
-    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+    buttons = [
+        [InlineKeyboardButton(text="➕ Создать соревнование", callback_data="adm_create_comp")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+    ]
     
     await callback.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode=ParseMode.MARKDOWN
     )
+
+@router.callback_query(F.data == "adm_create_comp")
+async def adm_create_competition(callback: CallbackQuery):
+    """Создать ежемесячное соревнование"""
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer("⏳ Создаю...")
+    
+    comp_id = await gamification_service.create_monthly_competition()
+    
+    await callback.message.answer(
+        f"✅ Соревнование создано! ID: {comp_id}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "adm_cpm")
+async def adm_cpm(callback: CallbackQuery):
+    """CPM по тематикам"""
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    text = "💰 **CPM по тематикам**\n\n"
+    
+    # Показываем топ-10 самых дорогих
+    sorted_categories = sorted(CHANNEL_CATEGORIES.items(), key=lambda x: x[1]["cpm"], reverse=True)[:10]
+    
+    for key, cat in sorted_categories:
+        text += f"{cat['name']}: **{cat['cpm']:,}₽**\n"
+    
+    text += "\n_Для изменения CPM используйте /set\\_cpm_"
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "adm_settings")
+async def adm_settings(callback: CallbackQuery):
+    """Настройки бота"""
+    if callback.from_user.id not in authenticated_admins:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    autopost_status = "🟢 Включен" if AUTOPOST_ENABLED else "🔴 Выключен"
+    claude_status = "🟢 Настроен" if CLAUDE_API_KEY else "🔴 Не настроен"
+    telemetr_status = "🟢 Настроен" if TELEMETR_API_TOKEN else "🔴 Не настроен"
+    
+    text = (
+        "⚙️ **Настройки бота**\n\n"
+        f"📝 Автопостинг: {autopost_status}\n"
+        f"🤖 Claude API: {claude_status}\n"
+        f"📊 Telemetr API: {telemetr_status}\n\n"
+        f"👤 Админы: {len(ADMIN_IDS)}\n"
+    )
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Менеджерский кабинет через инлайн кнопки ---
+@router.callback_query(F.data == "mgr_my_sales")
+async def mgr_my_sales(callback: CallbackQuery):
+    await callback.answer()
+    
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+            
+            if not manager:
+                await callback.message.answer("❌ Вы не менеджер")
+                return
+            
+            # Сохраняем данные менеджера
+            total_sales = manager.total_sales or 0
+            total_revenue = float(manager.total_revenue or 0)
+            total_earned = float(manager.total_earned or 0)
+            
+            # Получаем заказы менеджера
+            orders_result = await session.execute(
+                select(Order)
+                .where(Order.manager_id == manager.id)
+                .order_by(Order.created_at.desc())
+                .limit(10)
+            )
+            orders = orders_result.scalars().all()
+            
+            # Собираем данные заказов
+            orders_data = []
+            for order in orders:
+                orders_data.append({
+                    "id": order.id,
+                    "status": order.status,
+                    "price": float(order.final_price or 0)
+                })
+        
+        text = f"📊 **Мои продажи**\n\n"
+        text += f"Всего продаж: **{total_sales}**\n"
+        text += f"Общая выручка: **{total_revenue:,.0f}₽**\n"
+        text += f"Мой заработок: **{total_earned:,.0f}₽**\n\n"
+        
+        if orders_data:
+            text += "**Последние заказы:**\n"
+            for order in orders_data:
+                status_emoji = {"payment_confirmed": "✅", "pending": "⏳"}.get(order["status"], "❓")
+                text += f"{status_emoji} #{order['id']} — {order['price']:,.0f}₽\n"
+        else:
+            text += "_Пока нет заказов_"
+        
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in mgr_my_sales: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
 
 @router.callback_query(F.data == "mgr_my_clients")
 async def mgr_my_clients(callback: CallbackQuery):
@@ -6144,26 +6272,129 @@ async def training_progress(callback: CallbackQuery):
             select(Manager).where(Manager.telegram_id == callback.from_user.id)
         )
         manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await callback.message.answer("❌ Вы не менеджер")
+            return
+        
+        # Сохраняем данные
+        first_name = manager.first_name or "Менеджер"
+        training_score = manager.training_score or 0
+        training_completed = manager.training_completed
+        current_lesson = manager.current_lesson or 1
     
     # Формируем прогресс по урокам
     lessons_text = ""
     for i, lesson in enumerate(DEFAULT_LESSONS, 1):
-        if i < manager.current_lesson:
+        if i < current_lesson:
             lessons_text += f"✅ Урок {i}: {lesson['title']}\n"
-        elif i == manager.current_lesson:
+        elif i == current_lesson:
             lessons_text += f"📖 Урок {i}: {lesson['title']} ← текущий\n"
         else:
             lessons_text += f"🔒 Урок {i}: {lesson['title']}\n"
     
     await callback.message.edit_text(
         f"📊 **Мой прогресс**\n\n"
-        f"👤 {manager.first_name}\n"
-        f"🏆 Баллы: {manager.training_score}\n"
-        f"📚 Статус: {'✅ Обучение пройдено' if manager.training_completed else '📖 В процессе'}\n\n"
+        f"👤 {first_name}\n"
+        f"🏆 Баллы: {training_score}\n"
+        f"📚 Статус: {'✅ Обучение пройдено' if training_completed else '📖 В процессе'}\n\n"
         f"**Уроки:**\n{lessons_text}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_training")]
         ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "completed_lessons")
+async def completed_lessons(callback: CallbackQuery):
+    """Показать пройденные уроки"""
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await callback.message.answer("❌ Вы не менеджер")
+            return
+        
+        current_lesson = manager.current_lesson or 1
+    
+    text = "✅ **Пройденные уроки**\n\n"
+    buttons = []
+    
+    completed_count = current_lesson - 1
+    if completed_count > 0:
+        for i in range(1, min(completed_count + 1, len(DEFAULT_LESSONS) + 1)):
+            lesson = DEFAULT_LESSONS[i - 1]
+            text += f"✅ Урок {i}: {lesson['title']}\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"📖 Урок {i}",
+                callback_data=f"lesson:{i}"
+            )])
+    else:
+        text += "_Вы ещё не прошли ни одного урока_"
+    
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_training")])
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data == "payout_history")
+async def payout_history(callback: CallbackQuery):
+    """История выплат"""
+    await callback.answer()
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await callback.message.answer("❌ Вы не менеджер")
+            return
+        
+        # Получаем историю выплат
+        payouts_result = await session.execute(
+            select(ManagerPayout)
+            .where(ManagerPayout.manager_id == manager.id)
+            .order_by(ManagerPayout.created_at.desc())
+            .limit(10)
+        )
+        payouts = payouts_result.scalars().all()
+        
+        payouts_data = []
+        for p in payouts:
+            payouts_data.append({
+                "amount": float(p.amount),
+                "status": p.status,
+                "date": p.created_at.strftime("%d.%m.%Y") if p.created_at else "—"
+            })
+    
+    text = "💸 **История выплат**\n\n"
+    
+    if payouts_data:
+        for p in payouts_data:
+            status_emoji = {
+                "pending": "⏳",
+                "completed": "✅",
+                "rejected": "❌"
+            }.get(p["status"], "❓")
+            text += f"{status_emoji} {p['amount']:,.0f}₽ — {p['date']}\n"
+    else:
+        text += "_Выплат пока не было_"
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode=ParseMode.MARKDOWN
     )
 
