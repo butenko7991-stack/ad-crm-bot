@@ -2932,34 +2932,46 @@ async def adm_moderation(callback: CallbackQuery):
     
     await callback.answer()
     
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(ScheduledPost)
-            .where(ScheduledPost.status == "moderation")
-            .order_by(ScheduledPost.created_at.desc())
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost)
+                .where(ScheduledPost.status == "moderation")
+                .order_by(ScheduledPost.created_at.desc())
+            )
+            posts = result.scalars().all()
+            
+            posts_data = []
+            for post in posts[:10]:
+                channel = await session.get(Channel, post.channel_id)
+                posts_data.append({
+                    "id": post.id,
+                    "channel_name": channel.name if channel else "N/A"
+                })
+        
+        if posts_data:
+            text = f"📝 **Посты на модерации: {len(posts_data)}**\n\n"
+            buttons = []
+            for post in posts_data:
+                text += f"• ID {post['id']} — {post['channel_name']}\n"
+                buttons.append([InlineKeyboardButton(
+                    text=f"📄 Пост #{post['id']}",
+                    callback_data=f"adm_post:{post['id']}"
+                )])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "✅ Нет постов на модерации"
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
         )
-        posts = result.scalars().all()
-    
-    if posts:
-        text = f"📝 **Посты на модерации: {len(posts)}**\n\n"
-        buttons = []
-        for post in posts[:10]:
-            channel = await session.get(Channel, post.channel_id)
-            text += f"• ID {post.id} — {channel.name if channel else 'N/A'}\n"
-            buttons.append([InlineKeyboardButton(
-                text=f"📄 Пост #{post.id}",
-                callback_data=f"adm_post:{post.id}"
-            )])
-        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
-    else:
-        text = "✅ Нет постов на модерации"
-        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    except Exception as e:
+        import traceback
+        logger.error(f"Error in adm_moderation: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка в adm_moderation:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
 
 @router.callback_query(F.data == "adm_managers")
 async def adm_managers(callback: CallbackQuery):
@@ -2981,6 +2993,7 @@ async def adm_managers(callback: CallbackQuery):
             for m in managers[:15]:
                 level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
                 managers_data.append({
+                    "id": m.id,
                     "name": m.first_name or m.username or "Менеджер",
                     "emoji": level_info["emoji"],
                     "is_active": m.is_active,
@@ -2990,13 +3003,18 @@ async def adm_managers(callback: CallbackQuery):
         
         if managers_data:
             text = "👥 **Менеджеры:**\n\n"
+            buttons = []
             for m in managers_data:
                 status = "✅" if m["is_active"] else "❌"
                 text += f"{status} {m['emoji']} **{m['name']}** — {m['total_sales']} продаж, {m['total_earned']:,.0f}₽\n"
+                buttons.append([InlineKeyboardButton(
+                    text=f"⚙️ {m['name']}",
+                    callback_data=f"adm_mgr:{m['id']}"
+                )])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
         else:
             text = "👥 Менеджеров пока нет"
-        
-        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
         
         await callback.message.edit_text(
             text,
@@ -3004,8 +3022,10 @@ async def adm_managers(callback: CallbackQuery):
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        logger.error(f"Error in adm_managers: {e}")
-        await callback.message.answer(f"❌ Ошибка: {e}")
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Error in adm_managers: {error_details}")
+        await callback.message.answer(f"❌ Ошибка в adm_managers:\n\n`{str(e)}`\n\nПодробности в логах.", parse_mode=ParseMode.MARKDOWN)
 
 @router.callback_query(F.data == "adm_stats")
 async def adm_stats(callback: CallbackQuery):
@@ -3015,38 +3035,43 @@ async def adm_stats(callback: CallbackQuery):
     
     await callback.answer()
     
-    async with async_session_maker() as session:
-        # Общая статистика
-        orders_count = await session.execute(select(func.count(Order.id)))
-        total_orders = orders_count.scalar() or 0
+    try:
+        async with async_session_maker() as session:
+            # Общая статистика
+            orders_count = await session.execute(select(func.count(Order.id)))
+            total_orders = orders_count.scalar() or 0
+            
+            revenue_sum = await session.execute(
+                select(func.sum(Order.final_price))
+                .where(Order.status == "payment_confirmed")
+            )
+            total_revenue = revenue_sum.scalar() or 0
+            
+            managers_count = await session.execute(select(func.count(Manager.id)))
+            total_managers = managers_count.scalar() or 0
+            
+            channels_count = await session.execute(select(func.count(Channel.id)))
+            total_channels = channels_count.scalar() or 0
         
-        revenue_sum = await session.execute(
-            select(func.sum(Order.final_price))
-            .where(Order.status == "payment_confirmed")
+        text = (
+            "📊 **Статистика бота**\n\n"
+            f"📦 Всего заказов: **{total_orders}**\n"
+            f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
+            f"👥 Менеджеров: **{total_managers}**\n"
+            f"📢 Каналов: **{total_channels}**"
         )
-        total_revenue = revenue_sum.scalar() or 0
         
-        managers_count = await session.execute(select(func.count(Manager.id)))
-        total_managers = managers_count.scalar() or 0
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
         
-        channels_count = await session.execute(select(func.count(Channel.id)))
-        total_channels = channels_count.scalar() or 0
-    
-    text = (
-        "📊 **Статистика бота**\n\n"
-        f"📦 Всего заказов: **{total_orders}**\n"
-        f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
-        f"👥 Менеджеров: **{total_managers}**\n"
-        f"📢 Каналов: **{total_channels}**"
-    )
-    
-    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode=ParseMode.MARKDOWN
-    )
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        import traceback
+        logger.error(f"Error in adm_stats: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка в adm_stats:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
 
 @router.callback_query(F.data == "adm_back")
 async def adm_back(callback: CallbackQuery):
