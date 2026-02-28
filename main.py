@@ -2472,44 +2472,57 @@ async def become_manager(message: Message, state: FSMContext):
 # --- Админ-панель через инлайн кнопки ---
 @router.callback_query(F.data == "adm_channels")
 async def adm_channels(callback: CallbackQuery):
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
     await callback.answer()
     
-    async with async_session_maker() as session:
-        result = await session.execute(select(Channel))
-        channels = result.scalars().all()
-    
-    if channels:
-        text = "📢 **Каналы:**\n\n"
-        buttons = []
-        for ch in channels:
-            status = "✅" if ch.is_active else "❌"
-            text += f"{status} **{ch.name}** (ID: {ch.id})\n"
-            buttons.append([InlineKeyboardButton(
-                text=f"⚙️ {ch.name}",
-                callback_data=f"adm_ch:{ch.id}"
-            )])
-        buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")])
-        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
-    else:
-        text = "📢 Каналов пока нет"
-        buttons = [
-            [InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
-        ]
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(select(Channel))
+            channels = result.scalars().all()
+            
+            # Сохраняем данные до выхода из сессии
+            channels_data = []
+            for ch in channels:
+                channels_data.append({
+                    "id": ch.id,
+                    "name": ch.name,
+                    "is_active": ch.is_active
+                })
+        
+        if channels_data:
+            text = "📢 **Каналы:**\n\n"
+            buttons = []
+            for ch in channels_data:
+                status = "✅" if ch["is_active"] else "❌"
+                text += f"{status} **{ch['name']}** (ID: {ch['id']})\n"
+                buttons.append([InlineKeyboardButton(
+                    text=f"⚙️ {ch['name']}",
+                    callback_data=f"adm_ch:{ch['id']}"
+                )])
+            buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "📢 Каналов пока нет"
+            buttons = [
+                [InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+            ]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_channels: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
 
 @router.callback_query(F.data == "adm_add_channel")
 async def adm_add_channel(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
@@ -2523,7 +2536,7 @@ async def adm_add_channel(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "adm_payments")
 async def adm_payments(callback: CallbackQuery):
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
@@ -2559,7 +2572,7 @@ async def adm_payments(callback: CallbackQuery):
 
 @router.callback_query(F.data == "adm_moderation")
 async def adm_moderation(callback: CallbackQuery):
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
@@ -2596,38 +2609,53 @@ async def adm_moderation(callback: CallbackQuery):
 
 @router.callback_query(F.data == "adm_managers")
 async def adm_managers(callback: CallbackQuery):
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
     await callback.answer()
     
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(Manager).order_by(Manager.total_sales.desc())
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).order_by(Manager.total_sales.desc())
+            )
+            managers = result.scalars().all()
+            
+            # Сохраняем данные до выхода из сессии
+            managers_data = []
+            for m in managers[:15]:
+                level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
+                managers_data.append({
+                    "name": m.first_name or m.username or "Менеджер",
+                    "emoji": level_info["emoji"],
+                    "is_active": m.is_active,
+                    "total_sales": m.total_sales or 0,
+                    "total_earned": float(m.total_earned or 0)
+                })
+        
+        if managers_data:
+            text = "👥 **Менеджеры:**\n\n"
+            for m in managers_data:
+                status = "✅" if m["is_active"] else "❌"
+                text += f"{status} {m['emoji']} **{m['name']}** — {m['total_sales']} продаж, {m['total_earned']:,.0f}₽\n"
+        else:
+            text = "👥 Менеджеров пока нет"
+        
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
         )
-        managers = result.scalars().all()
-    
-    if managers:
-        text = "👥 **Менеджеры:**\n\n"
-        for m in managers[:15]:
-            level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
-            status = "✅" if m.is_active else "❌"
-            text += f"{status} {level_info['emoji']} **{m.name}** — {m.total_sales} продаж, {m.total_earned:,.0f}₽\n"
-    else:
-        text = "👥 Менеджеров пока нет"
-    
-    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    except Exception as e:
+        logger.error(f"Error in adm_managers: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
 
 @router.callback_query(F.data == "adm_stats")
 async def adm_stats(callback: CallbackQuery):
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
@@ -2679,7 +2707,7 @@ async def adm_back(callback: CallbackQuery):
 @router.callback_query(F.data == "adm_competitions")
 async def adm_competitions(callback: CallbackQuery):
     """Соревнования менеджеров"""
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
@@ -2715,7 +2743,7 @@ async def adm_competitions(callback: CallbackQuery):
 @router.callback_query(F.data == "adm_create_comp")
 async def adm_create_competition(callback: CallbackQuery):
     """Создать ежемесячное соревнование"""
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
@@ -2731,34 +2759,38 @@ async def adm_create_competition(callback: CallbackQuery):
 @router.callback_query(F.data == "adm_cpm")
 async def adm_cpm(callback: CallbackQuery):
     """CPM по тематикам"""
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
     await callback.answer()
     
-    text = "💰 **CPM по тематикам**\n\n"
-    
-    # Показываем топ-10 самых дорогих
-    sorted_categories = sorted(CHANNEL_CATEGORIES.items(), key=lambda x: x[1]["cpm"], reverse=True)[:10]
-    
-    for key, cat in sorted_categories:
-        text += f"{cat['name']}: **{cat['cpm']:,}₽**\n"
-    
-    text += "\n_Для изменения CPM используйте /set\\_cpm_"
-    
-    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        text = "💰 **CPM по тематикам**\n\n"
+        
+        # Показываем топ-15 самых дорогих
+        sorted_categories = sorted(CHANNEL_CATEGORIES.items(), key=lambda x: x[1]["cpm"], reverse=True)[:15]
+        
+        for key, cat in sorted_categories:
+            text += f"{cat['name']}: **{cat['cpm']:,}₽**\n"
+        
+        text += f"\n_Всего тематик: {len(CHANNEL_CATEGORIES)}_"
+        
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_cpm: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
 
 @router.callback_query(F.data == "adm_settings")
 async def adm_settings(callback: CallbackQuery):
     """Настройки бота"""
-    if callback.from_user.id not in authenticated_admins:
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
