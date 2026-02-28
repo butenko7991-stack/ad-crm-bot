@@ -1938,6 +1938,7 @@ class AdminChannelStates(StatesGroup):
     waiting_price_1_48 = State()
     waiting_price_2_48 = State()
     waiting_price_native = State()
+    waiting_price = State()  # Универсальное состояние для ввода цены
     # Аналитика
     waiting_category = State()
     waiting_manual_subscribers = State()
@@ -2628,6 +2629,223 @@ async def adm_toggle_channel(callback: CallbackQuery):
     # Возвращаемся к настройкам канала
     callback.data = f"adm_ch:{channel_id}"
     await adm_channel_settings(callback)
+
+@router.callback_query(F.data.startswith("adm_ch_update:"))
+async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
+    """Обновить статистику канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer("📊 Обновляю статистику...")
+    
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        
+        if not channel:
+            await callback.message.answer("❌ Канал не найден")
+            return
+        
+        # Обновляем через Bot API
+        bot_stats = await get_channel_stats_via_bot(bot, channel.telegram_id)
+        if bot_stats:
+            channel.subscribers = bot_stats["subscribers"]
+            channel.name = bot_stats.get("title", channel.name)
+            channel.analytics_updated = datetime.utcnow()
+            await session.commit()
+            await callback.answer(f"✅ Обновлено: {bot_stats['subscribers']:,} подписчиков", show_alert=True)
+        else:
+            await callback.answer("❌ Не удалось получить данные", show_alert=True)
+    
+    # Возвращаемся к настройкам канала
+    callback.data = f"adm_ch:{channel_id}"
+    await adm_channel_settings(callback)
+
+@router.callback_query(F.data.startswith("adm_ch_prices:"))
+async def adm_channel_prices(callback: CallbackQuery, state: FSMContext):
+    """Изменить цены канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        
+        if not channel:
+            await callback.message.answer("❌ Канал не найден")
+            return
+        
+        prices = channel.prices or {}
+        channel_name = channel.name
+    
+    await state.update_data(editing_channel_id=channel_id)
+    
+    await callback.message.edit_text(
+        f"💰 **Изменение цен для {channel_name}**\n\n"
+        f"Текущие цены:\n"
+        f"• 1/24: {prices.get('1/24', 0):,}₽\n"
+        f"• 1/48: {prices.get('1/48', 0):,}₽\n"
+        f"• 2/48: {prices.get('2/48', 0):,}₽\n"
+        f"• Навсегда: {prices.get('native', 0):,}₽\n\n"
+        f"Выберите что изменить:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="1/24", callback_data=f"set_price:1/24:{channel_id}"),
+                InlineKeyboardButton(text="1/48", callback_data=f"set_price:1/48:{channel_id}")
+            ],
+            [
+                InlineKeyboardButton(text="2/48", callback_data=f"set_price:2/48:{channel_id}"),
+                InlineKeyboardButton(text="Навсегда", callback_data=f"set_price:native:{channel_id}")
+            ],
+            [InlineKeyboardButton(text="📊 Авторасчёт по CPM", callback_data=f"auto_prices:{channel_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data=f"adm_ch:{channel_id}")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data.startswith("set_price:"))
+async def set_price_start(callback: CallbackQuery, state: FSMContext):
+    """Начать ввод цены"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    parts = callback.data.split(":")
+    price_type = parts[1]
+    channel_id = int(parts[2])
+    
+    await state.update_data(
+        editing_channel_id=channel_id,
+        editing_price_type=price_type
+    )
+    
+    price_names = {
+        "1/24": "1/24 (24 часа)",
+        "1/48": "1/48 (48 часов)",
+        "2/48": "2/48 (2 поста)",
+        "native": "Навсегда"
+    }
+    
+    await callback.message.edit_text(
+        f"💰 **Введите новую цену для {price_names.get(price_type, price_type)}**\n\n"
+        f"Отправьте число (только цифры):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch_prices:{channel_id}")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminChannelStates.waiting_price)
+
+@router.message(AdminChannelStates.waiting_price)
+async def receive_new_price(message: Message, state: FSMContext):
+    """Получить новую цену"""
+    try:
+        new_price = int(message.text.strip().replace(" ", "").replace(",", ""))
+    except:
+        await message.answer("❌ Введите число!")
+        return
+    
+    if new_price < 0:
+        await message.answer("❌ Цена не может быть отрицательной!")
+        return
+    
+    data = await state.get_data()
+    channel_id = data.get("editing_channel_id")
+    price_type = data.get("editing_price_type")
+    
+    if not channel_id or not price_type:
+        await message.answer("❌ Ошибка. Начните заново.")
+        await state.clear()
+        return
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        
+        if not channel:
+            await message.answer("❌ Канал не найден")
+            await state.clear()
+            return
+        
+        prices = channel.prices or {}
+        prices[price_type] = new_price
+        channel.prices = prices
+        await session.commit()
+    
+    await state.clear()
+    
+    await message.answer(
+        f"✅ Цена **{price_type}** установлена: **{new_price:,}₽**",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Продолжить редактирование", callback_data=f"adm_ch_prices:{channel_id}")],
+            [InlineKeyboardButton(text="◀️ К настройкам канала", callback_data=f"adm_ch:{channel_id}")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@router.callback_query(F.data.startswith("auto_prices:"))
+async def auto_calculate_prices(callback: CallbackQuery):
+    """Авторасчёт цен по CPM"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer("📊 Рассчитываю...")
+    
+    channel_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        channel = await session.get(Channel, channel_id)
+        
+        if not channel:
+            await callback.message.answer("❌ Канал не найден")
+            return
+        
+        # Получаем CPM
+        category_info = CHANNEL_CATEGORIES.get(channel.category, {"cpm": 1000})
+        cpm = float(channel.cpm or category_info.get("cpm", 1000))
+        
+        avg_reach = channel.avg_reach_24h or channel.avg_reach or 0
+        
+        if avg_reach == 0:
+            await callback.answer("❌ Нет данных об охвате!", show_alert=True)
+            return
+        
+        # Рассчитываем цены
+        price_124 = int(avg_reach * cpm / 1000)
+        price_148 = int(price_124 * 0.8)
+        price_248 = int(price_124 * 1.6)
+        price_native = int(price_124 * 2.5)
+        
+        channel.prices = {
+            "1/24": price_124,
+            "1/48": price_148,
+            "2/48": price_248,
+            "native": price_native
+        }
+        await session.commit()
+    
+    await callback.message.edit_text(
+        f"✅ **Цены рассчитаны по CPM!**\n\n"
+        f"📊 Охват: {avg_reach:,}\n"
+        f"💰 CPM: {cpm:,.0f}₽\n\n"
+        f"**Новые цены:**\n"
+        f"• 1/24: {price_124:,}₽\n"
+        f"• 1/48: {price_148:,}₽\n"
+        f"• 2/48: {price_248:,}₽\n"
+        f"• Навсегда: {price_native:,}₽",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ К настройкам канала", callback_data=f"adm_ch:{channel_id}")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 @router.callback_query(F.data.startswith("adm_ch_delete:"))
 async def adm_delete_channel(callback: CallbackQuery):
