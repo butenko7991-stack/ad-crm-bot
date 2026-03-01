@@ -415,12 +415,46 @@ async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
                 channel.name = chat.title or channel.name
                 await session.commit()
                 
-                await callback.answer(f"✅ Обновлено: {member_count:,} подписчиков", show_alert=True)
+                # Показываем обновлённые данные
+                ch_data = {
+                    "name": channel.name,
+                    "username": channel.username or "—",
+                    "subscribers": channel.subscribers or 0,
+                    "avg_reach": channel.avg_reach_24h or channel.avg_reach or 0,
+                    "category": channel.category,
+                    "is_active": channel.is_active,
+                    "prices": channel.prices or {},
+                    "cpm": float(channel.cpm or 0)
+                }
+                
+                category_info = CHANNEL_CATEGORIES.get(ch_data["category"], {"name": "📁 Другое"})
+                status = "✅ Активен" if ch_data["is_active"] else "❌ Неактивен"
+                
+                text = (
+                    f"⚙️ **Настройки канала**\n\n"
+                    f"📢 **{ch_data['name']}**\n"
+                    f"👤 @{ch_data['username']}\n"
+                    f"{category_info['name']}\n"
+                    f"{status}\n\n"
+                    f"👥 Подписчиков: **{ch_data['subscribers']:,}** ✅\n"
+                    f"👁 Охват 24ч: **{ch_data['avg_reach']:,}**\n"
+                    f"💰 CPM: **{ch_data['cpm']:,.0f}₽**\n\n"
+                    f"**Цены:**\n"
+                    f"• 1/24: {ch_data['prices'].get('1/24', 0):,}₽\n"
+                    f"• 1/48: {ch_data['prices'].get('1/48', 0):,}₽\n"
+                    f"• 2/48: {ch_data['prices'].get('2/48', 0):,}₽\n"
+                    f"• Навсегда: {ch_data['prices'].get('native', 0):,}₽"
+                )
+                
+                await callback.message.edit_text(
+                    text,
+                    reply_markup=get_channel_settings_keyboard(channel_id, ch_data["is_active"]),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
             except Exception as e:
-                await callback.answer(f"❌ Ошибка: {str(e)[:100]}", show_alert=True)
-        
-        callback.data = f"adm_ch:{channel_id}"
-        await adm_channel_settings(callback)
+                await callback.message.answer(f"❌ Ошибка обновления: {str(e)[:200]}")
+                
     except Exception as e:
         logger.error(f"Error in adm_update_channel_stats: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
@@ -445,9 +479,43 @@ async def adm_toggle_channel(callback: CallbackQuery):
                 await session.commit()
                 status = "активирован ✅" if channel.is_active else "деактивирован ❌"
                 await callback.answer(f"Канал {status}", show_alert=True)
-        
-        callback.data = f"adm_ch:{channel_id}"
-        await adm_channel_settings(callback)
+                
+                # Показываем обновлённые данные
+                ch_data = {
+                    "name": channel.name,
+                    "username": channel.username or "—",
+                    "subscribers": channel.subscribers or 0,
+                    "avg_reach": channel.avg_reach_24h or channel.avg_reach or 0,
+                    "category": channel.category,
+                    "is_active": channel.is_active,
+                    "prices": channel.prices or {},
+                    "cpm": float(channel.cpm or 0)
+                }
+                
+                category_info = CHANNEL_CATEGORIES.get(ch_data["category"], {"name": "📁 Другое"})
+                status_text = "✅ Активен" if ch_data["is_active"] else "❌ Неактивен"
+                
+                text = (
+                    f"⚙️ **Настройки канала**\n\n"
+                    f"📢 **{ch_data['name']}**\n"
+                    f"👤 @{ch_data['username']}\n"
+                    f"{category_info['name']}\n"
+                    f"{status_text}\n\n"
+                    f"👥 Подписчиков: **{ch_data['subscribers']:,}**\n"
+                    f"👁 Охват 24ч: **{ch_data['avg_reach']:,}**\n"
+                    f"💰 CPM: **{ch_data['cpm']:,.0f}₽**\n\n"
+                    f"**Цены:**\n"
+                    f"• 1/24: {ch_data['prices'].get('1/24', 0):,}₽\n"
+                    f"• 1/48: {ch_data['prices'].get('1/48', 0):,}₽\n"
+                    f"• 2/48: {ch_data['prices'].get('2/48', 0):,}₽\n"
+                    f"• Навсегда: {ch_data['prices'].get('native', 0):,}₽"
+                )
+                
+                await callback.message.edit_text(
+                    text,
+                    reply_markup=get_channel_settings_keyboard(channel_id, ch_data["is_active"]),
+                    parse_mode=ParseMode.MARKDOWN
+                )
     except Exception as e:
         logger.error(f"Error in adm_toggle_channel: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
@@ -462,6 +530,7 @@ async def adm_delete_channel(callback: CallbackQuery):
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
     
+    await callback.answer()
     channel_id = int(callback.data.split(":")[1])
     
     await callback.message.edit_text(
@@ -493,8 +562,36 @@ async def adm_delete_channel_confirm(callback: CallbackQuery):
                 await session.commit()
                 await callback.answer("🗑 Канал удалён", show_alert=True)
         
-        callback.data = "adm_channels"
-        await adm_channels(callback)
+        # Показываем список каналов
+        async with async_session_maker() as session:
+            result = await session.execute(select(Channel))
+            channels = result.scalars().all()
+            channels_data = [{"id": ch.id, "name": ch.name, "is_active": ch.is_active} for ch in channels]
+        
+        if channels_data:
+            text = "📢 **Каналы:**\n\n"
+            buttons = []
+            for ch in channels_data:
+                status = "✅" if ch["is_active"] else "❌"
+                text += f"{status} **{ch['name']}** (ID: {ch['id']})\n"
+                buttons.append([InlineKeyboardButton(
+                    text=f"⚙️ {ch['name']}",
+                    callback_data=f"adm_ch:{ch['id']}"
+                )])
+            buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "📢 Каналов пока нет"
+            buttons = [
+                [InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+            ]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
     except Exception as e:
         logger.error(f"Error in adm_delete_channel_confirm: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
