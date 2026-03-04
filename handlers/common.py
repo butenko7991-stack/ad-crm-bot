@@ -397,3 +397,88 @@ async def btn_leaderboard(message: Message):
     except Exception as e:
         logger.error(f"Error in btn_leaderboard: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "💰 Баланс")
+async def btn_balance(message: Message):
+    """Кнопка баланса менеджера"""
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == message.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await message.answer("❌ Вы не менеджер")
+            return
+        
+        balance = float(manager.balance or 0)
+        total_earned = float(manager.total_earned or 0)
+        commission = MANAGER_LEVELS.get(manager.level, {}).get("commission", 10)
+        
+        text = f"💰 **Ваш баланс**\n\n"
+        text += f"💵 Доступно к выводу: **{balance:,.0f}₽**\n"
+        text += f"📊 Всего заработано: **{total_earned:,.0f}₽**\n"
+        text += f"📈 Ваша комиссия: **{commission}%**\n\n"
+        
+        if balance >= 500:
+            text += "✅ Вы можете запросить вывод средств"
+        else:
+            text += f"⚠️ Минимальная сумма для вывода: 500₽"
+        
+        buttons = []
+        if balance >= 500:
+            buttons.append([InlineKeyboardButton(text="💸 Вывести", callback_data="request_payout")])
+        buttons.append([InlineKeyboardButton(text="📜 История выплат", callback_data="payout_history")])
+        
+        await message.answer(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in btn_balance: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "📋 Шаблоны")
+async def btn_templates(message: Message):
+    """Кнопка шаблонов"""
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == message.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+        
+        if not manager:
+            await message.answer("❌ Вы не менеджер")
+            return
+        
+        text = "📋 **Шаблоны для продаж**\n\n"
+        text += "**🔥 Холодное сообщение:**\n"
+        text += "_Привет! Хотите продвинуть свой канал/бизнес? "
+        text += "У нас отличные цены на рекламу в топовых каналах! "
+        text += "Напишите, расскажу подробнее._\n\n"
+        
+        text += "**💰 Для рекламодателей:**\n"
+        text += "_Добрый день! Предлагаю размещение в качественных каналах "
+        text += "с живой аудиторией. Есть разные форматы и бюджеты. "
+        text += "Какая у вас ниша?_\n\n"
+        
+        text += "**🎯 После интереса:**\n"
+        text += "_Отлично! Вот ссылка для заказа: [ваша реф-ссылка]. "
+        text += "Там можно выбрать канал, дату и формат. "
+        text += "Если будут вопросы — пишите!_"
+        
+        buttons = [[InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link")]]
+        
+        await message.answer(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in btn_templates: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
