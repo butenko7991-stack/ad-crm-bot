@@ -73,7 +73,7 @@ async def manager_register(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in manager_register: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка регистрации:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка регистрации: {str(e)[:100]}")
 
 
 # ==================== КАБИНЕТ МЕНЕДЖЕРА ====================
@@ -110,7 +110,132 @@ async def mgr_back(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_back: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+# ==================== АНАЛИЗ КАНАЛА ДЛЯ МЕНЕДЖЕРА ====================
+
+@router.callback_query(F.data.startswith("analyze_ch:"))
+async def analyze_channel_for_manager(callback: CallbackQuery):
+    """Показать карточку канала для менеджера"""
+    await callback.answer()
+    
+    try:
+        channel_id = int(callback.data.split(":")[1])
+        
+        async with async_session_maker() as session:
+            # Проверяем что это менеджер
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+            
+            if not manager:
+                await callback.message.answer("❌ Вы не менеджер")
+                return
+            
+            # Получаем канал
+            channel = await session.get(Channel, channel_id)
+            
+            if not channel:
+                await callback.message.answer("❌ Канал не найден")
+                return
+            
+            # Формируем карточку канала
+            prices = channel.prices or {}
+            category_info = CHANNEL_CATEGORIES.get(channel.category, {})
+            category_name = category_info.get("name", channel.category or "—")
+            
+            text = f"📢 **{channel.name}**\n\n"
+            text += f"📂 Категория: {category_name}\n"
+            text += f"👥 Подписчиков: {channel.subscribers or 0:,}\n"
+            
+            if channel.er:
+                text += f"📊 ER: {channel.er}%\n"
+            if channel.views_per_post:
+                text += f"👁 Средние охваты: {channel.views_per_post:,}\n"
+            
+            text += f"\n**💰 Цены:**\n"
+            for format_type, price in prices.items():
+                text += f"• {format_type}: **{price:,}₽**\n"
+            
+            # Добавляем подсказки для продажи
+            commission = MANAGER_LEVELS.get(manager.level, {}).get("commission", 10)
+            min_price = min(prices.values()) if prices else 0
+            potential_earning = int(min_price * commission / 100)
+            
+            text += f"\n💡 **Ваша комиссия:** {commission}%\n"
+            text += f"💵 Минимальный заработок: ~{potential_earning:,}₽\n"
+            text += f"\n📤 Отправьте клиенту реф-ссылку!"
+        
+        buttons = [
+            [InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link")],
+            [InlineKeyboardButton(text="◀️ К каналам", callback_data="back_to_sales")]
+        ]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in analyze_channel_for_manager: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data == "back_to_sales")
+async def back_to_sales(callback: CallbackQuery):
+    """Вернуться к списку каналов для продаж"""
+    await callback.answer()
+    
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+            
+            if not manager:
+                await callback.message.answer("❌ Вы не менеджер")
+                return
+            
+            result = await session.execute(
+                select(Channel).where(Channel.is_active == True)
+            )
+            channels = result.scalars().all()
+            
+            channels_data = [{
+                "id": ch.id,
+                "name": ch.name,
+                "prices": ch.prices or {}
+            } for ch in channels]
+        
+        if not channels_data:
+            await callback.message.edit_text("😔 Каналов пока нет")
+            return
+        
+        text = "💼 **Каналы для продажи:**\n\n"
+        buttons = []
+        
+        for ch in channels_data:
+            prices = ch["prices"]
+            price_124 = prices.get("1/24", 0)
+            text += f"📢 **{ch['name']}** — от {price_124:,}₽\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"📊 {ch['name']}",
+                callback_data=f"analyze_ch:{ch['id']}"
+            )])
+        
+        buttons.append([InlineKeyboardButton(text="📋 Моя реф-ссылка", callback_data="copy_ref_link")])
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in back_to_sales: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
 # ==================== МОИ ПРОДАЖИ ====================
@@ -135,34 +260,15 @@ async def mgr_my_sales(callback: CallbackQuery):
             total_sales = manager.total_sales or 0
             total_revenue = float(manager.total_revenue or 0)
             total_earned = float(manager.total_earned or 0)
-            
-            # Получаем заказы
-            orders_result = await session.execute(
-                select(Order)
-                .where(Order.manager_id == manager.id)
-                .order_by(Order.created_at.desc())
-                .limit(10)
-            )
-            orders = orders_result.scalars().all()
-            
-            orders_data = [{
-                "id": o.id,
-                "status": o.status,
-                "price": float(o.final_price or 0)
-            } for o in orders]
+            manager_id = manager.id
         
         text = f"📊 **Мои продажи**\n\n"
         text += f"Всего продаж: **{total_sales}**\n"
         text += f"Общая выручка: **{total_revenue:,.0f}₽**\n"
         text += f"Мой заработок: **{total_earned:,.0f}₽**\n\n"
         
-        if orders_data:
-            text += "**Последние заказы:**\n"
-            for order in orders_data:
-                status_emoji = {"payment_confirmed": "✅", "pending": "⏳"}.get(order["status"], "❓")
-                text += f"{status_emoji} #{order['id']} — {order['price']:,.0f}₽\n"
-        else:
-            text += "_Пока нет заказов_"
+        if total_sales == 0:
+            text += "_Пока нет продаж. Отправляйте реф-ссылку клиентам!_"
         
         buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
         
@@ -173,7 +279,7 @@ async def mgr_my_sales(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_my_sales: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
 # ==================== МОИ КЛИЕНТЫ ====================
@@ -194,36 +300,25 @@ async def mgr_my_clients(callback: CallbackQuery):
                 await callback.message.answer("❌ Вы не менеджер")
                 return
             
-            # Получаем заказы
-            orders_result = await session.execute(
-                select(Order).where(Order.manager_id == manager.id)
+            # Получаем количество клиентов (тех, кто пришёл по реф-ссылке)
+            clients_result = await session.execute(
+                select(Client).where(Client.referrer_id == manager.id)
             )
-            orders = orders_result.scalars().all()
+            clients = clients_result.scalars().all()
             
-            # Собираем клиентов
-            client_ids = set()
             clients_data = []
-            
-            for order in orders:
-                if order.client_id not in client_ids:
-                    client_ids.add(order.client_id)
-                    client = await session.get(Client, order.client_id)
-                    if client:
-                        client_orders = [o for o in orders if o.client_id == client.id]
-                        total_spent = sum(float(o.final_price or 0) for o in client_orders)
-                        clients_data.append({
-                            "name": client.first_name or client.username or f"ID:{client.telegram_id}",
-                            "orders": len(client_orders),
-                            "spent": total_spent
-                        })
+            for client in clients:
+                clients_data.append({
+                    "name": client.first_name or client.username or f"ID:{client.telegram_id}",
+                    "orders": 0,  # Упрощённо, без подсчёта заказов
+                    "created": client.created_at.strftime("%d.%m.%Y") if client.created_at else "—"
+                })
         
         text = f"👥 **Мои клиенты**\n\nВсего клиентов: **{len(clients_data)}**\n\n"
         
         if clients_data:
-            clients_data.sort(key=lambda x: x["spent"], reverse=True)
             for i, client in enumerate(clients_data[:15], 1):
-                text += f"{i}. **{client['name']}**\n"
-                text += f"   📦 {client['orders']} заказов | 💰 {client['spent']:,.0f}₽\n\n"
+                text += f"{i}. **{client['name']}** (с {client['created']})\n"
         else:
             text += "_Пока нет клиентов. Отправляйте реф-ссылку!_"
         
@@ -236,7 +331,39 @@ async def mgr_my_clients(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_my_clients: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+# ==================== ШАБЛОНЫ ====================
+
+@router.callback_query(F.data == "mgr_templates")
+async def mgr_templates(callback: CallbackQuery):
+    """Показать шаблоны сообщений"""
+    await callback.answer()
+    
+    text = "📋 **Шаблоны для продаж**\n\n"
+    text += "**🔥 Холодное сообщение:**\n"
+    text += "_Привет! Хотите продвинуть свой канал/бизнес? "
+    text += "У нас отличные цены на рекламу в топовых каналах! "
+    text += "Напишите, расскажу подробнее._\n\n"
+    
+    text += "**💰 Для рекламодателей:**\n"
+    text += "_Добрый день! Предлагаю размещение в качественных каналах "
+    text += "с живой аудиторией. Есть разные форматы и бюджеты. "
+    text += "Какая у вас ниша?_\n\n"
+    
+    text += "**🎯 После интереса:**\n"
+    text += "_Отлично! Вот ссылка для заказа: [ваша реф-ссылка]. "
+    text += "Там можно выбрать канал, дату и формат. "
+    text += "Если будут вопросы — пишите!_"
+    
+    buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 
 # ==================== РЕЙТИНГ ====================
@@ -250,7 +377,11 @@ async def mgr_leaderboard(callback: CallbackQuery):
         leaderboard = await gamification_service.get_leaderboard("sales", 10)
         
         if not leaderboard:
-            await callback.message.edit_text("📊 Рейтинг пока пуст")
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+            await callback.message.edit_text(
+                "📊 Рейтинг пока пуст",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            )
             return
         
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
@@ -276,7 +407,7 @@ async def mgr_leaderboard(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_leaderboard: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
 @router.callback_query(F.data.startswith("lb:"))
@@ -290,17 +421,25 @@ async def leaderboard_by_metric(callback: CallbackQuery):
     try:
         leaderboard = await gamification_service.get_leaderboard(metric, 10)
         
+        if not leaderboard:
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+            await callback.message.edit_text(
+                f"📊 Рейтинг по {metric_names.get(metric, metric)} пуст",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            )
+            return
+        
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         text = f"🏆 **Рейтинг по {metric_names.get(metric, metric)}**\n\n"
         
         for item in leaderboard:
             medal = medals.get(item["rank"], f"{item['rank']}.")
             if metric == "revenue":
-                value = f"{item['revenue']:,.0f}₽"
+                value = f"{item.get('revenue', 0):,.0f}₽"
             elif metric == "xp":
-                value = f"{item['xp']} XP"
+                value = f"{item.get('xp', 0)} XP"
             else:
-                value = f"{item['sales']} продаж"
+                value = f"{item.get('sales', 0)} продаж"
             text += f"{medal} {item['emoji']} **{item['name']}** — {value}\n"
         
         buttons = [
@@ -319,7 +458,7 @@ async def leaderboard_by_metric(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in leaderboard_by_metric: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
 # ==================== РЕФ-ССЫЛКА ====================
@@ -353,7 +492,7 @@ async def copy_ref_link(callback: CallbackQuery, bot: Bot):
         )
     except Exception as e:
         logger.error(f"Error in copy_ref_link: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
 # ==================== ВЫВОД СРЕДСТВ ====================
@@ -377,8 +516,10 @@ async def request_payout(callback: CallbackQuery, state: FSMContext):
             balance = float(manager.balance or 0)
         
         if balance < 500:
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
             await callback.message.edit_text(
-                f"❌ Минимальная сумма вывода: 500₽\n\nВаш баланс: {balance:,.0f}₽"
+                f"❌ Минимальная сумма вывода: 500₽\n\nВаш баланс: {balance:,.0f}₽",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
             )
             return
         
@@ -391,7 +532,7 @@ async def request_payout(callback: CallbackQuery, state: FSMContext):
         await state.set_state(ManagerStates.payout_amount)
     except Exception as e:
         logger.error(f"Error in request_payout: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
 @router.message(ManagerStates.payout_amount)
@@ -429,7 +570,7 @@ async def receive_payout_amount(message: Message, state: FSMContext):
         await state.set_state(ManagerStates.payout_method)
     except Exception as e:
         logger.error(f"Error in receive_payout_amount: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
 @router.callback_query(F.data.startswith("payout:"), ManagerStates.payout_method)
@@ -497,7 +638,7 @@ async def receive_payout_details(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in receive_payout_details: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
         await state.clear()
 
 
@@ -551,4 +692,4 @@ async def payout_history(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in payout_history: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
