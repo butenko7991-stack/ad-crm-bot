@@ -150,10 +150,10 @@ async def analyze_channel_for_manager(callback: CallbackQuery):
             text += f"📂 Категория: {category_name}\n"
             text += f"👥 Подписчиков: {channel.subscribers or 0:,}\n"
             
-            if channel.er:
-                text += f"📊 ER: {channel.er}%\n"
-            if channel.views_per_post:
-                text += f"👁 Средние охваты: {channel.views_per_post:,}\n"
+            if channel.err_percent:
+                text += f"📊 ER: {channel.err_percent}%\n"
+            if channel.avg_reach:
+                text += f"👁 Средние охваты: {channel.avg_reach:,}\n"
             
             text += f"\n**💰 Цены:**\n"
             for format_type, price in prices.items():
