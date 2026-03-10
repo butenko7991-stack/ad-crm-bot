@@ -7,12 +7,14 @@ from utils.helpers import (
 )
 from utils.states import (
     BookingStates, AdminChannelStates, ManagerStates,
-    AdminPasswordState, AutopostStates, AdminCompetitionStates
+    AdminPasswordState, AutopostStates, AdminCompetitionStates,
+    AdminSlotStates, AdminCPMStates
 )
 
 __all__ = [
     "get_channel_stats_via_bot", "calculate_recommended_price",
     "format_number", "format_price", "get_status_emoji", "truncate_text",
     "BookingStates", "AdminChannelStates", "ManagerStates",
-    "AdminPasswordState", "AutopostStates", "AdminCompetitionStates"
+    "AdminPasswordState", "AutopostStates", "AdminCompetitionStates",
+    "AdminSlotStates", "AdminCPMStates"
 ]
