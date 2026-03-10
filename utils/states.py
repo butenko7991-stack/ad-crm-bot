@@ -54,3 +54,12 @@ class AutopostStates(StatesGroup):
     uploading_media = State()
     selecting_time = State()
     confirming = State()
+
+
+class AdminCompetitionStates(StatesGroup):
+    """Состояния создания соревнования"""
+    waiting_name = State()
+    waiting_start_date = State()
+    waiting_end_date = State()
+    waiting_prize_pool = State()
+    waiting_metric = State()

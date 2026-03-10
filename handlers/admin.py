@@ -3,7 +3,8 @@
 """
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, date as date_type
+from decimal import Decimal
 
 from aiogram import Router, Bot, F
 from aiogram.types import Message, CallbackQuery
@@ -14,9 +15,9 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MANAGER_LEVELS
-from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition
+from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
-from utils import AdminChannelStates, AdminPasswordState
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
 
 
 logger = logging.getLogger(__name__)
@@ -882,3 +883,591 @@ async def adm_settings(callback: CallbackQuery):
         callback.message, text,
         InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
     )
+
+
+# ==================== ПРОСМОТР ЗАКАЗА ====================
+
+@router.callback_query(F.data.startswith("adm_order:"))
+async def adm_view_order(callback: CallbackQuery):
+    """Просмотр заказа и подтверждение оплаты"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        order_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            order = await session.get(Order, order_id)
+            if not order:
+                await callback.message.answer("❌ Заказ не найден")
+                return
+
+            client = await session.get(Client, order.client_id)
+            slot = await session.get(Slot, order.slot_id)
+            channel = await session.get(Channel, slot.channel_id) if slot else None
+
+        client_name = (client.first_name or client.username or f"ID {order.client_id}") if client else "—"
+        channel_name = channel.name if channel else "—"
+        slot_info = f"{slot.slot_date} {slot.slot_time.strftime('%H:%M')}" if slot else "—"
+
+        status_map = {
+            "pending": "⏳ Ожидает",
+            "payment_uploaded": "💳 Оплата загружена",
+            "payment_confirmed": "✅ Оплата подтверждена",
+            "cancelled": "❌ Отменён",
+            "posted": "📢 Опубликован",
+            "completed": "✔️ Завершён",
+        }
+        status_text = status_map.get(order.status, order.status)
+
+        text = (
+            f"📄 **Заказ #{order_id}**\n\n"
+            f"👤 Клиент: {client_name}\n"
+            f"📢 Канал: {channel_name}\n"
+            f"📅 Слот: {slot_info}\n"
+            f"📋 Формат: {order.format_type}\n"
+            f"💰 Сумма: **{float(order.final_price):,.0f}₽**\n"
+            f"📊 Статус: {status_text}\n"
+        )
+
+        if order.ad_content:
+            text += f"\n📝 Текст:\n{order.ad_content[:300]}{'...' if len(order.ad_content) > 300 else ''}\n"
+
+        buttons = []
+        if order.status == "payment_uploaded":
+            buttons.append([
+                InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"adm_confirm_payment:{order_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_reject_payment:{order_id}")
+            ])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_payments")])
+
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in adm_view_order: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_confirm_payment:"))
+async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
+    """Подтвердить оплату заказа"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        order_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            order = await session.get(Order, order_id)
+            if not order:
+                await callback.answer("❌ Заказ не найден", show_alert=True)
+                return
+
+            order.status = "payment_confirmed"
+            order.paid_at = datetime.utcnow()
+            await session.commit()
+
+            client = await session.get(Client, order.client_id)
+            client_telegram_id = client.telegram_id if client else None
+
+        await callback.answer("✅ Оплата подтверждена!", show_alert=True)
+
+        if client_telegram_id:
+            try:
+                await bot.send_message(
+                    client_telegram_id,
+                    f"✅ **Оплата по заказу #{order_id} подтверждена!**\n\n"
+                    f"Ваш пост будет опубликован в указанное время.",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+        await safe_edit_message(
+            callback.message,
+            f"✅ **Оплата по заказу #{order_id} подтверждена**",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К оплатам", callback_data="adm_payments")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_confirm_payment: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_reject_payment:"))
+async def adm_reject_payment(callback: CallbackQuery, bot: Bot):
+    """Отклонить оплату заказа"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        order_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            order = await session.get(Order, order_id)
+            if not order:
+                await callback.answer("❌ Заказ не найден", show_alert=True)
+                return
+
+            order.status = "cancelled"
+            await session.commit()
+
+            client = await session.get(Client, order.client_id)
+            client_telegram_id = client.telegram_id if client else None
+
+        await callback.answer("❌ Оплата отклонена", show_alert=True)
+
+        if client_telegram_id:
+            try:
+                await bot.send_message(
+                    client_telegram_id,
+                    f"❌ **Оплата по заказу #{order_id} не подтверждена.**\n\n"
+                    f"Пожалуйста, свяжитесь с администратором.",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+        await safe_edit_message(
+            callback.message,
+            f"❌ **Оплата по заказу #{order_id} отклонена**",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К оплатам", callback_data="adm_payments")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_reject_payment: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== ПРОСМОТР МЕНЕДЖЕРА ====================
+
+@router.callback_query(F.data.startswith("adm_mgr:"))
+async def adm_view_manager(callback: CallbackQuery):
+    """Просмотр и управление менеджером"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        manager_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager:
+                await callback.message.answer("❌ Менеджер не найден")
+                return
+
+            level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+
+        name = manager.first_name or manager.username or f"ID {manager.telegram_id}"
+        status = "✅ Активен" if manager.is_active else "❌ Неактивен"
+
+        text = (
+            f"👤 **{name}**\n\n"
+            f"{level_info['emoji']} Уровень: **{manager.level} — {level_info['name']}**\n"
+            f"⭐ Опыт: **{manager.experience_points} XP**\n"
+            f"💰 Баланс: **{float(manager.balance):,.0f}₽**\n"
+            f"📦 Продаж: **{manager.total_sales}**\n"
+            f"💵 Выручка: **{float(manager.total_revenue):,.0f}₽**\n"
+            f"🎓 Комиссия: **{float(manager.commission_rate):.0f}%**\n"
+            f"📊 Статус: {status}\n"
+        )
+
+        buttons = []
+
+        if manager.level < 5:
+            buttons.append([InlineKeyboardButton(
+                text=f"⬆️ Повысить до {manager.level + 1} ур.",
+                callback_data=f"adm_mgr_promote:{manager_id}"
+            )])
+        if manager.level > 1:
+            buttons.append([InlineKeyboardButton(
+                text=f"⬇️ Понизить до {manager.level - 1} ур.",
+                callback_data=f"adm_mgr_demote:{manager_id}"
+            )])
+
+        toggle_text = "❌ Деактивировать" if manager.is_active else "✅ Активировать"
+        buttons.append([InlineKeyboardButton(
+            text=toggle_text,
+            callback_data=f"adm_mgr_toggle:{manager_id}"
+        )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_managers")])
+
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in adm_view_manager: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_mgr_promote:"))
+async def adm_promote_manager(callback: CallbackQuery):
+    """Повысить уровень менеджера"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        manager_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager or manager.level >= 5:
+                await callback.answer("❌ Невозможно повысить", show_alert=True)
+                return
+
+            manager.level += 1
+            level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+            manager.commission_rate = level_info["commission"]
+            await session.commit()
+
+        await callback.answer(f"⬆️ Повышен до уровня {manager.level}!", show_alert=True)
+        await adm_view_manager(callback)
+    except Exception as e:
+        logger.error(f"Error in adm_promote_manager: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_mgr_demote:"))
+async def adm_demote_manager(callback: CallbackQuery):
+    """Понизить уровень менеджера"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        manager_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager or manager.level <= 1:
+                await callback.answer("❌ Невозможно понизить", show_alert=True)
+                return
+
+            manager.level -= 1
+            level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+            manager.commission_rate = level_info["commission"]
+            await session.commit()
+
+        await callback.answer(f"⬇️ Понижен до уровня {manager.level}", show_alert=True)
+        await adm_view_manager(callback)
+    except Exception as e:
+        logger.error(f"Error in adm_demote_manager: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_mgr_toggle:"))
+async def adm_toggle_manager(callback: CallbackQuery):
+    """Активировать/деактивировать менеджера"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        manager_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager:
+                await callback.answer("❌ Менеджер не найден", show_alert=True)
+                return
+
+            manager.is_active = not manager.is_active
+            await session.commit()
+
+        status = "✅ Активирован" if manager.is_active else "❌ Деактивирован"
+        await callback.answer(status, show_alert=True)
+        await adm_view_manager(callback)
+    except Exception as e:
+        logger.error(f"Error in adm_toggle_manager: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== ПРОСМОТР ПОСТА НА МОДЕРАЦИИ ====================
+
+@router.callback_query(F.data.startswith("adm_post:"))
+async def adm_view_post(callback: CallbackQuery):
+    """Просмотр поста на модерации"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.message.answer("❌ Пост не найден")
+                return
+
+            channel = await session.get(Channel, post.channel_id)
+
+        channel_name = channel.name if channel else "—"
+        scheduled_time = post.scheduled_time.strftime("%d.%m.%Y %H:%M") if post.scheduled_time else "—"
+
+        text = (
+            f"📄 **Пост #{post_id} на модерации**\n\n"
+            f"📢 Канал: {channel_name}\n"
+            f"📅 Время: {scheduled_time}\n"
+            f"🗑 Удалить через: {post.delete_after_hours}ч\n\n"
+        )
+
+        if post.content:
+            text += f"📝 Текст:\n{post.content[:400]}{'...' if len(post.content) > 400 else ''}\n"
+
+        if post.file_type:
+            text += f"\n📎 Медиа: {post.file_type}\n"
+
+        buttons = [
+            [
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_post_approve:{post_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_post_reject:{post_id}")
+            ],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_moderation")]
+        ]
+
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in adm_view_post: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_post_approve:"))
+async def adm_approve_post(callback: CallbackQuery):
+    """Одобрить пост"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.answer("❌ Пост не найден", show_alert=True)
+                return
+
+            post.status = "pending"
+            await session.commit()
+
+        await callback.answer("✅ Пост одобрен и поставлен в очередь!", show_alert=True)
+
+        await safe_edit_message(
+            callback.message,
+            f"✅ **Пост #{post_id} одобрен**\n\nПоставлен в очередь автопостинга.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К модерации", callback_data="adm_moderation")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_approve_post: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_post_reject:"))
+async def adm_reject_post(callback: CallbackQuery):
+    """Отклонить пост"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.answer("❌ Пост не найден", show_alert=True)
+                return
+
+            post.status = "rejected"
+            await session.commit()
+
+        await callback.answer("❌ Пост отклонён", show_alert=True)
+
+        await safe_edit_message(
+            callback.message,
+            f"❌ **Пост #{post_id} отклонён**",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К модерации", callback_data="adm_moderation")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_reject_post: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== СОЗДАНИЕ СОРЕВНОВАНИЯ ====================
+
+@router.callback_query(F.data == "adm_create_competition")
+async def adm_create_competition_start(callback: CallbackQuery, state: FSMContext):
+    """Начать создание соревнования"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    await safe_edit_message(
+        callback.message,
+        "🏆 **Создание соревнования**\n\nВведите название соревнования:",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_competitions")]
+        ])
+    )
+    await state.set_state(AdminCompetitionStates.waiting_name)
+
+
+@router.message(AdminCompetitionStates.waiting_name)
+async def adm_competition_name(message: Message, state: FSMContext):
+    """Получить название соревнования"""
+    name = message.text.strip()
+    if not name:
+        await message.answer("❌ Введите название")
+        return
+
+    await state.update_data(competition_name=name)
+
+    await message.answer(
+        f"✅ Название: **{name}**\n\nВведите дату начала (ДД.ММ.ГГГГ):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_competitions")]
+        ]),
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminCompetitionStates.waiting_start_date)
+
+
+@router.message(AdminCompetitionStates.waiting_start_date)
+async def adm_competition_start_date(message: Message, state: FSMContext):
+    """Получить дату начала соревнования"""
+    try:
+        start_date = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
+    except ValueError:
+        await message.answer("❌ Неверный формат. Введите дату в формате ДД.ММ.ГГГГ")
+        return
+
+    await state.update_data(competition_start=start_date.isoformat())
+
+    await message.answer(
+        f"✅ Начало: **{start_date.strftime('%d.%m.%Y')}**\n\nВведите дату окончания (ДД.ММ.ГГГГ):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_competitions")]
+        ]),
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminCompetitionStates.waiting_end_date)
+
+
+@router.message(AdminCompetitionStates.waiting_end_date)
+async def adm_competition_end_date(message: Message, state: FSMContext):
+    """Получить дату окончания соревнования"""
+    try:
+        end_date = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
+    except ValueError:
+        await message.answer("❌ Неверный формат. Введите дату в формате ДД.ММ.ГГГГ")
+        return
+
+    data = await state.get_data()
+    start_date = date_type.fromisoformat(data["competition_start"])
+
+    if end_date <= start_date:
+        await message.answer("❌ Дата окончания должна быть позже даты начала")
+        return
+
+    await state.update_data(competition_end=end_date.isoformat())
+
+    await message.answer(
+        f"✅ Окончание: **{end_date.strftime('%d.%m.%Y')}**\n\nВведите призовой фонд (₽, число):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_competitions")]
+        ]),
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminCompetitionStates.waiting_prize_pool)
+
+
+@router.message(AdminCompetitionStates.waiting_prize_pool)
+async def adm_competition_prize_pool(message: Message, state: FSMContext):
+    """Получить призовой фонд"""
+    try:
+        prize_pool = float(message.text.strip().replace(" ", "").replace(",", ""))
+        if prize_pool < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное число (например: 5000)")
+        return
+
+    await state.update_data(competition_prize=prize_pool)
+
+    await message.answer(
+        f"✅ Призовой фонд: **{prize_pool:,.0f}₽**\n\nВыберите метрику соревнования:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📦 По продажам", callback_data="comp_metric:sales"),
+                InlineKeyboardButton(text="💰 По выручке", callback_data="comp_metric:revenue")
+            ],
+            [InlineKeyboardButton(text="⭐ По опыту (XP)", callback_data="comp_metric:xp")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_competitions")]
+        ]),
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminCompetitionStates.waiting_metric)
+
+
+@router.callback_query(F.data.startswith("comp_metric:"), AdminCompetitionStates.waiting_metric)
+async def adm_competition_metric(callback: CallbackQuery, state: FSMContext):
+    """Выбрать метрику и создать соревнование"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    metric = callback.data.split(":")[1]
+    metric_names = {"sales": "продажи", "revenue": "выручка", "xp": "опыт (XP)"}
+    data = await state.get_data()
+
+    try:
+        async with async_session_maker() as session:
+            competition = Competition(
+                name=data["competition_name"],
+                start_date=date_type.fromisoformat(data["competition_start"]),
+                end_date=date_type.fromisoformat(data["competition_end"]),
+                prize_pool=Decimal(str(data["competition_prize"])),
+                metric=metric,
+                status="active"
+            )
+            session.add(competition)
+            await session.commit()
+            competition_id = competition.id
+
+        await state.clear()
+
+        await safe_edit_message(
+            callback.message,
+            f"🏆 **Соревнование создано!**\n\n"
+            f"📌 {data['competition_name']}\n"
+            f"📅 {date_type.fromisoformat(data['competition_start']).strftime('%d.%m.%Y')} — "
+            f"{date_type.fromisoformat(data['competition_end']).strftime('%d.%m.%Y')}\n"
+            f"💰 Призовой фонд: {float(data['competition_prize']):,.0f}₽\n"
+            f"📊 Метрика: {metric_names.get(metric, metric)}",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К соревнованиям", callback_data="adm_competitions")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_competition_metric: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode="Markdown")
+        await state.clear()
