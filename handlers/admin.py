@@ -15,9 +15,9 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func, delete
 
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MANAGER_LEVELS
-from database import async_session_maker, Channel, CategoryCPM, Manager, Order, ScheduledPost, Competition, Slot, Client
+from database import async_session_maker, Channel, CategoryCPM, Manager, Order, ManagerPayout, ScheduledPost, Competition, Slot, Client
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminCPMStates
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminCPMStates, AdminSlotStates
 
 
 logger = logging.getLogger(__name__)
@@ -102,8 +102,14 @@ async def check_admin_password(message: Message, state: FSMContext):
     if message.text == ADMIN_PASSWORD:
         authenticated_admins.add(message.from_user.id)
         await state.clear()
+        from keyboards import get_main_menu
         await message.answer(
             "✅ **Добро пожаловать в админ-панель!**",
+            reply_markup=get_main_menu(is_admin=True, is_authenticated_admin=True),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await message.answer(
+            "👇 Выберите раздел:",
             reply_markup=get_admin_panel_menu(),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -116,11 +122,17 @@ async def check_admin_password(message: Message, state: FSMContext):
 async def admin_logout(callback: CallbackQuery):
     """Выход из админки"""
     authenticated_admins.discard(callback.from_user.id)
+    from keyboards import get_main_menu
     await callback.answer("👋 Вы вышли из админ-панели", show_alert=True)
     try:
         await callback.message.delete()
     except:
         pass
+    await callback.message.answer(
+        "👋 Вы вышли из админ-панели.",
+        reply_markup=get_main_menu(is_admin=True, is_authenticated_admin=False),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 
 # ==================== АДМИН-ПАНЕЛЬ ====================
@@ -1707,3 +1719,438 @@ async def adm_competition_metric(callback: CallbackQuery, state: FSMContext):
         logger.error(f"Error in adm_competition_metric: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode="Markdown")
         await state.clear()
+
+
+# ==================== УПРАВЛЕНИЕ ВЫПЛАТАМИ МЕНЕДЖЕРАМ ====================
+
+@router.callback_query(F.data == "adm_payouts")
+async def adm_payouts(callback: CallbackQuery):
+    """Список заявок на выплату"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ManagerPayout)
+                .where(ManagerPayout.status == "pending")
+                .order_by(ManagerPayout.created_at.asc())
+            )
+            payouts = result.scalars().all()
+
+            payout_rows = []
+            for p in payouts[:15]:
+                mgr = await session.get(Manager, p.manager_id)
+                payout_rows.append({
+                    "id": p.id,
+                    "amount": float(p.amount),
+                    "method": p.method,
+                    "name": (mgr.first_name or mgr.username or f"ID {mgr.telegram_id}") if mgr else "—",
+                })
+
+        if payout_rows:
+            text = f"💸 **Заявки на выплату: {len(payout_rows)}**\n\n"
+            buttons = []
+            for p in payout_rows:
+                text += f"• #{p['id']} — {p['name']} — {p['amount']:,.0f}₽ ({p['method']})\n"
+                buttons.append([InlineKeyboardButton(
+                    text=f"💳 #{p['id']} {p['name']} {p['amount']:,.0f}₽",
+                    callback_data=f"adm_payout:{p['id']}"
+                )])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "✅ Нет ожидающих выплат"
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in adm_payouts: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_payout:"))
+async def adm_view_payout(callback: CallbackQuery):
+    """Просмотр заявки на выплату"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        payout_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            payout = await session.get(ManagerPayout, payout_id)
+            if not payout:
+                await callback.message.answer("❌ Заявка не найдена")
+                return
+            mgr = await session.get(Manager, payout.manager_id)
+
+        name = (mgr.first_name or mgr.username or f"ID {mgr.telegram_id}") if mgr else "—"
+        method_names = {"card": "💳 Карта", "sbp": "📱 СБП"}
+        created = payout.created_at.strftime("%d.%m.%Y %H:%M") if payout.created_at else "—"
+
+        text = (
+            f"💸 **Заявка #{payout_id}**\n\n"
+            f"👤 Менеджер: {name}\n"
+            f"💰 Сумма: **{float(payout.amount):,.0f}₽**\n"
+            f"📱 Способ: {method_names.get(payout.method, payout.method or '—')}\n"
+            f"📋 Реквизиты: `{payout.details or '—'}`\n"
+            f"📅 Дата заявки: {created}\n"
+            f"📊 Статус: ⏳ Ожидает"
+        )
+
+        buttons = []
+        if payout.status == "pending":
+            buttons.append([
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_payout_approve:{payout_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_payout_reject:{payout_id}")
+            ])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_payouts")])
+
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in adm_view_payout: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_payout_approve:"))
+async def adm_approve_payout(callback: CallbackQuery, bot: Bot):
+    """Одобрить выплату менеджеру"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        payout_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            payout = await session.get(ManagerPayout, payout_id)
+            if not payout:
+                await callback.answer("❌ Заявка не найдена", show_alert=True)
+                return
+
+            payout.status = "completed"
+            payout.processed_at = datetime.now(timezone.utc)
+            payout.processed_by = callback.from_user.id
+            await session.commit()
+
+            mgr = await session.get(Manager, payout.manager_id)
+            mgr_telegram_id = mgr.telegram_id if mgr else None
+
+        await callback.answer("✅ Выплата одобрена!", show_alert=True)
+
+        if mgr_telegram_id:
+            try:
+                await bot.send_message(
+                    mgr_telegram_id,
+                    f"✅ **Ваша заявка на выплату #{payout_id} одобрена!**\n\n"
+                    f"💰 Сумма: {float(payout.amount):,.0f}₽\n"
+                    f"Средства будут переведены на указанные реквизиты.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+        await safe_edit_message(
+            callback.message,
+            f"✅ **Выплата #{payout_id} одобрена**",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К выплатам", callback_data="adm_payouts")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_approve_payout: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_payout_reject:"))
+async def adm_reject_payout(callback: CallbackQuery, bot: Bot):
+    """Отклонить выплату — вернуть средства на баланс менеджера"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        payout_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            payout = await session.get(ManagerPayout, payout_id)
+            if not payout:
+                await callback.answer("❌ Заявка не найдена", show_alert=True)
+                return
+
+            payout.status = "rejected"
+            payout.processed_at = datetime.now(timezone.utc)
+            payout.processed_by = callback.from_user.id
+
+            # Возвращаем средства на баланс менеджера
+            mgr = await session.get(Manager, payout.manager_id)
+            if mgr is not None:
+                mgr.balance += payout.amount
+            await session.commit()
+
+            mgr_telegram_id = mgr.telegram_id if mgr is not None else None
+
+        await callback.answer("❌ Выплата отклонена", show_alert=True)
+
+        if mgr_telegram_id:
+            try:
+                await bot.send_message(
+                    mgr_telegram_id,
+                    f"❌ **Заявка на выплату #{payout_id} отклонена.**\n\n"
+                    f"💰 Сумма {float(payout.amount):,.0f}₽ возвращена на ваш баланс.\n"
+                    f"Свяжитесь с администратором для уточнения.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+        await safe_edit_message(
+            callback.message,
+            f"❌ **Выплата #{payout_id} отклонена**\n\nСредства возвращены на баланс менеджера.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К выплатам", callback_data="adm_payouts")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_reject_payout: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== УПРАВЛЕНИЕ СЛОТАМИ КАНАЛА ====================
+
+@router.callback_query(F.data.startswith("adm_ch_slots:"))
+async def adm_ch_slots(callback: CallbackQuery, state: FSMContext):
+    """Управление слотами канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[1])
+    await _show_slots_page(callback.message, channel_id)
+
+
+async def _show_slots_page(message, channel_id: int):
+    """Отобразить список слотов канала"""
+    from datetime import date as date_cls
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await message.answer("❌ Канал не найден")
+                return
+
+            result = await session.execute(
+                select(Slot)
+                .where(Slot.channel_id == channel_id, Slot.slot_date >= date_cls.today())
+                .order_by(Slot.slot_date, Slot.slot_time)
+            )
+            slots = result.scalars().all()
+            slots_data = [
+                {
+                    "id": s.id,
+                    "date": s.slot_date.strftime("%d.%m.%Y"),
+                    "time": s.slot_time.strftime("%H:%M"),
+                    "status": s.status,
+                }
+                for s in slots[:20]
+            ]
+
+        status_emoji = {"available": "🟢", "reserved": "🟡", "booked": "🔴"}
+
+        if slots_data:
+            text = f"📅 **Слоты канала {channel.name}**\n\n"
+            buttons = []
+            for s in slots_data:
+                emoji = status_emoji.get(s["status"], "⚪")
+                text += f"{emoji} {s['date']} {s['time']} — {s['status']}\n"
+                if s["status"] == "available":
+                    buttons.append([InlineKeyboardButton(
+                        text=f"🗑 {s['date']} {s['time']}",
+                        callback_data=f"adm_slot_del:{s['id']}"
+                    )])
+        else:
+            text = f"📅 **Слоты канала {channel.name}**\n\n_Нет предстоящих слотов_"
+            buttons = []
+
+        buttons.append([InlineKeyboardButton(
+            text="➕ Добавить слот",
+            callback_data=f"adm_slot_add:{channel_id}"
+        )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"adm_ch:{channel_id}")])
+
+        await safe_edit_message(message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in _show_slots_page: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data.startswith("adm_slot_add:"))
+async def adm_slot_add_start(callback: CallbackQuery, state: FSMContext):
+    """Начать добавление нового слота"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[1])
+    await state.update_data(slot_channel_id=channel_id)
+
+    await safe_edit_message(
+        callback.message,
+        "📅 **Добавление слота**\n\nВведите дату в формате ДД.ММ.ГГГГ:",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch_slots:{channel_id}")]
+        ])
+    )
+    await state.set_state(AdminSlotStates.waiting_date)
+
+
+@router.message(AdminSlotStates.waiting_date)
+async def adm_slot_receive_date(message: Message, state: FSMContext):
+    """Получить дату нового слота"""
+    from datetime import date as date_cls
+    try:
+        slot_date = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
+        if slot_date < date_cls.today():
+            await message.answer("❌ Дата не может быть в прошлом. Введите дату снова:")
+            return
+    except ValueError:
+        await message.answer("❌ Неверный формат. Введите дату в формате ДД.ММ.ГГГГ:")
+        return
+
+    await state.update_data(slot_date=slot_date.isoformat())
+    data = await state.get_data()
+    channel_id = data.get("slot_channel_id")
+
+    await message.answer(
+        f"✅ Дата: **{slot_date.strftime('%d.%m.%Y')}**\n\nВведите время в формате ЧЧ:ММ:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch_slots:{channel_id}")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminSlotStates.waiting_time)
+
+
+@router.message(AdminSlotStates.waiting_time)
+async def adm_slot_receive_time(message: Message, state: FSMContext):
+    """Получить время и сохранить слот"""
+    from datetime import time as time_cls, date as date_cls
+    try:
+        parsed = datetime.strptime(message.text.strip(), "%H:%M")
+        slot_time = parsed.time()
+    except ValueError:
+        await message.answer("❌ Неверный формат. Введите время в формате ЧЧ:ММ:")
+        return
+
+    data = await state.get_data()
+    channel_id = data.get("slot_channel_id")
+    slot_date = date_cls.fromisoformat(data["slot_date"])
+
+    try:
+        async with async_session_maker() as session:
+            # Проверяем, нет ли уже такого слота
+            existing = await session.execute(
+                select(Slot).where(
+                    Slot.channel_id == channel_id,
+                    Slot.slot_date == slot_date,
+                    Slot.slot_time == slot_time
+                )
+            )
+            if existing.scalar_one_or_none():
+                await message.answer(
+                    f"⚠️ Слот на {slot_date.strftime('%d.%m.%Y')} {slot_time.strftime('%H:%M')} уже существует.\n"
+                    f"Введите другое время:"
+                )
+                return
+
+            new_slot = Slot(
+                channel_id=channel_id,
+                slot_date=slot_date,
+                slot_time=slot_time,
+                status="available"
+            )
+            session.add(new_slot)
+            await session.commit()
+
+        await state.clear()
+        await message.answer(
+            f"✅ **Слот добавлен!**\n\n"
+            f"📅 {slot_date.strftime('%d.%m.%Y')} {slot_time.strftime('%H:%M')}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📅 К слотам", callback_data=f"adm_ch_slots:{channel_id}")],
+                [InlineKeyboardButton(text="◀️ К каналу", callback_data=f"adm_ch:{channel_id}")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_slot_receive_time: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("adm_slot_del:"))
+async def adm_slot_del_confirm(callback: CallbackQuery):
+    """Подтверждение удаления слота"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    slot_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            slot = await session.get(Slot, slot_id)
+            if not slot:
+                await callback.answer("❌ Слот не найден", show_alert=True)
+                return
+            channel_id = slot.channel_id
+            slot_info = f"{slot.slot_date.strftime('%d.%m.%Y')} {slot.slot_time.strftime('%H:%M')}"
+
+        await safe_edit_message(
+            callback.message,
+            f"⚠️ **Удалить слот?**\n\n📅 {slot_info}",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Да", callback_data=f"adm_slot_del_ok:{slot_id}"),
+                    InlineKeyboardButton(text="❌ Нет", callback_data=f"adm_ch_slots:{channel_id}")
+                ]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_slot_del_confirm: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_slot_del_ok:"))
+async def adm_slot_del_execute(callback: CallbackQuery):
+    """Выполнить удаление слота"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    slot_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            slot = await session.get(Slot, slot_id)
+            if not slot:
+                await callback.answer("❌ Слот не найден", show_alert=True)
+                return
+            channel_id = slot.channel_id
+            await session.delete(slot)
+            await session.commit()
+
+        await callback.answer("🗑 Слот удалён", show_alert=True)
+        await _show_slots_page(callback.message, channel_id)
+    except Exception as e:
+        logger.error(f"Error in adm_slot_del_execute: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
