@@ -59,6 +59,7 @@ async def init_db():
             "ALTER TABLE managers ADD COLUMN IF NOT EXISTS total_earned NUMERIC(12, 2) DEFAULT 0",
             "ALTER TABLE managers ADD COLUMN IF NOT EXISTS training_score INTEGER DEFAULT 0",
             "ALTER TABLE managers ADD COLUMN IF NOT EXISTS current_lesson INTEGER DEFAULT 1",
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS referrer_id INTEGER REFERENCES managers(id)",
         ]
 
         for migration in migrations:

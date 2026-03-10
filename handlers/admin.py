@@ -1471,3 +1471,213 @@ async def adm_competition_metric(callback: CallbackQuery, state: FSMContext):
         logger.error(f"Error in adm_competition_metric: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode="Markdown")
         await state.clear()
+
+
+# ==================== ТЕКСТОВЫЕ КНОПКИ АДМИНА ====================
+
+@router.message(F.text == "📢 Каналы")
+async def btn_adm_channels(message: Message):
+    """Текстовая кнопка — список каналов"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(select(Channel))
+            channels = result.scalars().all()
+            channels_data = [{"id": ch.id, "name": ch.name, "is_active": ch.is_active} for ch in channels]
+
+        if channels_data:
+            text = "📢 **Каналы:**\n\n"
+            buttons = []
+            for ch in channels_data:
+                status = "✅" if ch["is_active"] else "❌"
+                text += f"{status} **{ch['name']}** (ID: {ch['id']})\n"
+                buttons.append([InlineKeyboardButton(text=f"⚙️ {ch['name']}", callback_data=f"adm_ch:{ch['id']}")])
+            buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "📢 Каналов пока нет"
+            buttons = [
+                [InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+            ]
+
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in btn_adm_channels: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "💳 Оплаты")
+async def btn_adm_payments(message: Message):
+    """Текстовая кнопка — оплаты"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Order).where(Order.status == "payment_uploaded").order_by(Order.created_at.desc())
+            )
+            orders = result.scalars().all()
+            orders_data = [{"id": o.id, "price": float(o.final_price or 0)} for o in orders[:10]]
+
+        if orders_data:
+            text = f"💳 **Оплаты: {len(orders_data)}**\n\n"
+            buttons = []
+            for o in orders_data:
+                text += f"• #{o['id']} — {o['price']:,.0f}₽\n"
+                buttons.append([InlineKeyboardButton(text=f"📄 #{o['id']}", callback_data=f"adm_order:{o['id']}")])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "✅ Нет оплат на проверке"
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in btn_adm_payments: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "👥 Менеджеры")
+async def btn_adm_managers(message: Message):
+    """Текстовая кнопка — менеджеры"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(select(Manager).order_by(Manager.total_sales.desc()))
+            managers = result.scalars().all()
+            managers_data = [{"id": m.id, "name": m.first_name or m.username or f"ID:{m.telegram_id}", "sales": m.total_sales or 0, "level": m.level} for m in managers[:20]]
+
+        if managers_data:
+            text = "👥 **Менеджеры:**\n\n"
+            buttons = []
+            for m in managers_data:
+                text += f"• **{m['name']}** — ур.{m['level']}, {m['sales']} продаж\n"
+                buttons.append([InlineKeyboardButton(text=f"👤 {m['name']}", callback_data=f"adm_mgr:{m['id']}")])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "👥 Менеджеров пока нет"
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in btn_adm_managers: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "📊 Статистика")
+async def btn_adm_stats(message: Message):
+    """Текстовая кнопка — статистика"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        async with async_session_maker() as session:
+            total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
+            total_revenue = (await session.execute(
+                select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
+            )).scalar() or 0
+            total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
+            total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
+
+        text = (
+            "📊 **Статистика**\n\n"
+            f"📦 Заказов: **{total_orders}**\n"
+            f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
+            f"👥 Менеджеров: **{total_managers}**\n"
+            f"📢 Каналов: **{total_channels}**"
+        )
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+        ]), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in btn_adm_stats: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "📝 Модерация")
+async def btn_adm_moderation(message: Message):
+    """Текстовая кнопка — модерация"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost).where(ScheduledPost.status == "moderation").order_by(ScheduledPost.created_at.desc())
+            )
+            posts = result.scalars().all()
+            posts_data = []
+            for post in posts[:10]:
+                channel = await session.get(Channel, post.channel_id)
+                posts_data.append({"id": post.id, "channel_name": channel.name if channel else "N/A"})
+
+        if posts_data:
+            text = f"📝 **Модерация: {len(posts_data)}**\n\n"
+            buttons = []
+            for post in posts_data:
+                text += f"• #{post['id']} — {post['channel_name']}\n"
+                buttons.append([InlineKeyboardButton(text=f"📄 #{post['id']}", callback_data=f"adm_post:{post['id']}")])
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+        else:
+            text = "✅ Нет постов на модерации"
+            buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]]
+
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in btn_adm_moderation: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "🏆 Лидерборд")
+async def btn_adm_leaderboard(message: Message):
+    """Текстовая кнопка — лидерборд (соревнования)"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.is_active == True).order_by(Manager.total_sales.desc()).limit(10)
+            )
+            managers = result.scalars().all()
+
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        if managers:
+            text = "🏆 **Рейтинг менеджеров**\n\n"
+            for i, m in enumerate(managers, 1):
+                medal = medals.get(i, f"{i}.")
+                text += f"{medal} {m.first_name or m.username or 'Менеджер'} — {m.total_sales} продаж\n"
+        else:
+            text = "🏆 Рейтинг пока пуст"
+
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏆 Соревнования", callback_data="adm_competitions")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+        ]), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in btn_adm_leaderboard: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "⚙️ Настройки")
+async def btn_adm_settings(message: Message):
+    """Текстовая кнопка — настройки"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+    text = (
+        "⚙️ **Настройки**\n\n"
+        f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
+        f"🤖 Claude API: {'🟢' if CLAUDE_API_KEY else '🔴'}\n"
+        f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
+        f"👤 Админы: {len(ADMIN_IDS)}"
+    )
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+    ]), parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "🚪 Выйти")
+async def btn_adm_logout(message: Message):
+    """Текстовая кнопка — выйти из админки"""
+    if message.from_user.id in authenticated_admins:
+        authenticated_admins.discard(message.from_user.id)
+        await message.answer("👋 Вы вышли из админ-панели")
