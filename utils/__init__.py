@@ -8,7 +8,7 @@ from utils.helpers import (
 from utils.states import (
     BookingStates, AdminChannelStates, ManagerStates,
     AdminPasswordState, AutopostStates, AdminCompetitionStates,
-    AdminSlotStates
+    AdminSlotStates, AdminCPMStates
 )
 
 __all__ = [
@@ -16,5 +16,5 @@ __all__ = [
     "format_number", "format_price", "get_status_emoji", "truncate_text",
     "BookingStates", "AdminChannelStates", "ManagerStates",
     "AdminPasswordState", "AutopostStates", "AdminCompetitionStates",
-    "AdminSlotStates"
+    "AdminSlotStates", "AdminCPMStates"
 ]

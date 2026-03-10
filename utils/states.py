@@ -66,6 +66,11 @@ class AdminCompetitionStates(StatesGroup):
 
 
 class AdminSlotStates(StatesGroup):
-    """Состояния создания слота"""
+    """Состояния управления слотами"""
     waiting_date = State()
     waiting_time = State()
+
+
+class AdminCPMStates(StatesGroup):
+    """Состояния ручного редактирования CPM"""
+    waiting_cpm_value = State()

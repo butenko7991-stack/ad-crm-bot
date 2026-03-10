@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import datetime, date as date_type
+from datetime import datetime, date as date_type, timezone
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -12,12 +12,12 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MANAGER_LEVELS
-from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client
+from database import async_session_maker, Channel, CategoryCPM, Manager, Order, ScheduledPost, Competition, Slot, Client
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminCPMStates
 
 
 logger = logging.getLogger(__name__)
@@ -337,7 +337,7 @@ async def receive_new_price(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("auto_prices:"))
 async def auto_calculate_prices(callback: CallbackQuery):
-    """Авторасчёт цен по CPM"""
+    """Авторасчёт цен по CPM (используется CPM из БД, если задан вручную)"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
@@ -353,14 +353,27 @@ async def auto_calculate_prices(callback: CallbackQuery):
                 await callback.message.answer("❌ Канал не найден")
                 return
             
-            category_info = CHANNEL_CATEGORIES.get(channel.category, {"cpm": 1000})
-            cpm = float(channel.cpm or category_info.get("cpm", 1000))
             avg_reach = channel.avg_reach_24h or channel.avg_reach or 0
-            
             if avg_reach == 0:
                 await callback.answer("❌ Нет данных об охвате!", show_alert=True)
                 return
-            
+
+            # Приоритет CPM: ручной для канала → ручной для категории (БД) → конфиг
+            if channel.cpm and float(channel.cpm) > 0:
+                cpm = float(channel.cpm)
+                cpm_source = "канала"
+            else:
+                cat_key = channel.category or "other"
+                db_cpm_row = (await session.execute(
+                    select(CategoryCPM).where(CategoryCPM.category_key == cat_key)
+                )).scalar_one_or_none()
+                if db_cpm_row and db_cpm_row.cpm:
+                    cpm = float(db_cpm_row.cpm)
+                    cpm_source = "категории (ручной)"
+                else:
+                    cpm = float(CHANNEL_CATEGORIES.get(cat_key, {}).get("cpm", 1000))
+                    cpm_source = "категории (конфиг)"
+
             price_124 = int(avg_reach * cpm / 1000)
             price_148 = int(price_124 * 0.8)
             price_248 = int(price_124 * 1.6)
@@ -373,7 +386,7 @@ async def auto_calculate_prices(callback: CallbackQuery):
             callback.message,
             f"✅ **Цены рассчитаны по CPM!**\n\n"
             f"📊 Охват: {avg_reach:,}\n"
-            f"💰 CPM: {cpm:,.0f}₽\n\n"
+            f"💰 CPM ({cpm_source}): {cpm:,.0f}₽\n\n"
             f"**Новые цены:**\n"
             f"• 1/24: {price_124:,}₽\n"
             f"• 1/48: {price_148:,}₽\n"
@@ -839,25 +852,248 @@ async def adm_competitions(callback: CallbackQuery):
 
 # ==================== CPM ====================
 
+async def _get_effective_cpm(session, category_key: str) -> int:
+    """Получить CPM категории: из БД если задан, иначе из конфига"""
+    db_cpm = await session.execute(
+        select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+    )
+    db_row = db_cpm.scalar_one_or_none()
+    if db_row and db_row.cpm:
+        return db_row.cpm
+    return CHANNEL_CATEGORIES.get(category_key, {}).get("cpm", 0)
+
+
 @router.callback_query(F.data == "adm_cpm")
-async def adm_cpm(callback: CallbackQuery):
-    """CPM по тематикам"""
+async def adm_cpm(callback: CallbackQuery, state: FSMContext):
+    """CPM по тематикам — список с кнопками редактирования"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
-    
+
     await callback.answer()
-    
-    text = "💰 **CPM по тематикам**\n\n"
-    sorted_categories = sorted(CHANNEL_CATEGORIES.items(), key=lambda x: x[1]["cpm"], reverse=True)[:15]
-    for key, cat in sorted_categories:
-        text += f"{cat['name']}: **{cat['cpm']:,}₽**\n"
-    text += f"\n_Всего: {len(CHANNEL_CATEGORIES)}_"
-    
+    await state.clear()
+    await _show_cpm_page(callback.message, 0)
+
+
+@router.callback_query(F.data.startswith("adm_cpm_page:"))
+async def adm_cpm_page(callback: CallbackQuery, state: FSMContext):
+    """Пагинация списка CPM"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    page = int(callback.data.split(":")[1])
+    await _show_cpm_page(callback.message, page)
+
+
+async def _show_cpm_page(message, page: int):
+    """Отобразить страницу списка CPM категорий"""
+    PAGE_SIZE = 10
+    sorted_cats = sorted(CHANNEL_CATEGORIES.items(), key=lambda x: x[1]["cpm"], reverse=True)
+    total = len(sorted_cats)
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    page = max(0, min(page, max(0, total_pages - 1)))
+
+    slice_cats = sorted_cats[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+
+    # Получаем все переопределения из БД за один запрос
+    async with async_session_maker() as session:
+        db_result = await session.execute(select(CategoryCPM))
+        db_cpms = {row.category_key: row.cpm for row in db_result.scalars().all()}
+
+    text = f"💰 **CPM по тематикам** (стр. {page + 1}/{total_pages})\n\n"
+    buttons = []
+    for key, cat in slice_cats:
+        effective = db_cpms.get(key) or cat["cpm"]
+        marker = " ✏️" if key in db_cpms else ""
+        text += f"{cat['name']}: **{effective:,}₽**{marker}\n"
+        buttons.append([InlineKeyboardButton(
+            text=f"✏️ {cat['name']} ({effective:,}₽)",
+            callback_data=f"adm_cpm_edit:{key}"
+        )])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_cpm_page:{page - 1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_cpm_page:{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([InlineKeyboardButton(text="🔄 Сбросить все", callback_data="adm_cpm_reset_all")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+
+    text += "\n_✏️ — значение изменено вручную_"
+
     await safe_edit_message(
-        callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
+        message, text,
+        InlineKeyboardMarkup(inline_keyboard=buttons)
     )
+
+
+@router.callback_query(F.data.startswith("adm_cpm_edit:"))
+async def adm_cpm_edit_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование CPM категории"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    category_key = callback.data.split(":", 1)[1]
+    cat_info = CHANNEL_CATEGORIES.get(category_key)
+    if not cat_info:
+        await callback.answer("❌ Категория не найдена", show_alert=True)
+        return
+
+    async with async_session_maker() as session:
+        effective = await _get_effective_cpm(session, category_key)
+
+    await state.update_data(editing_cpm_key=category_key)
+
+    await safe_edit_message(
+        callback.message,
+        f"✏️ **Редактирование CPM**\n\n"
+        f"Категория: {cat_info['name']}\n"
+        f"Текущий CPM: **{effective:,}₽**\n"
+        f"(базовый из конфига: {cat_info['cpm']:,}₽)\n\n"
+        f"Введите новое значение CPM (целое число, ₽ за 1000 просмотров):",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Сбросить к базовому", callback_data=f"adm_cpm_reset:{category_key}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cpm")]
+        ])
+    )
+    await state.set_state(AdminCPMStates.waiting_cpm_value)
+
+
+@router.message(AdminCPMStates.waiting_cpm_value)
+async def adm_cpm_receive_value(message: Message, state: FSMContext):
+    """Сохранить новое значение CPM для категории"""
+    try:
+        new_cpm = int(message.text.strip().replace(" ", "").replace(",", ""))
+        if new_cpm <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите целое положительное число (например: 2500)")
+        return
+
+    data = await state.get_data()
+    category_key = data.get("editing_cpm_key")
+    if not category_key:
+        await message.answer("❌ Ошибка. Начните заново.")
+        await state.clear()
+        return
+
+    cat_info = CHANNEL_CATEGORIES.get(category_key, {})
+
+    try:
+        async with async_session_maker() as session:
+            db_result = await session.execute(
+                select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+            )
+            row = db_result.scalar_one_or_none()
+            if row:
+                row.cpm = new_cpm
+                row.updated_at = datetime.now(timezone.utc)
+                row.updated_by = message.from_user.id
+            else:
+                row = CategoryCPM(
+                    category_key=category_key,
+                    name=cat_info.get("name", category_key),
+                    cpm=new_cpm,
+                    updated_by=message.from_user.id,
+                )
+                session.add(row)
+            await session.commit()
+
+        await state.clear()
+
+        await message.answer(
+            f"✅ **CPM обновлён!**\n\n"
+            f"Категория: {cat_info.get('name', category_key)}\n"
+            f"Новый CPM: **{new_cpm:,}₽**",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💰 К списку CPM", callback_data="adm_cpm")],
+                [InlineKeyboardButton(text="◀️ Назад в панель", callback_data="adm_back")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_cpm_receive_value: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("adm_cpm_reset:"))
+async def adm_cpm_reset_one(callback: CallbackQuery, state: FSMContext):
+    """Сбросить CPM одной категории к базовому значению из конфига"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    category_key = callback.data.split(":", 1)[1]
+
+    try:
+        async with async_session_maker() as session:
+            db_result = await session.execute(
+                select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+            )
+            row = db_result.scalar_one_or_none()
+            if row:
+                await session.delete(row)
+                await session.commit()
+
+        await state.clear()
+        cat_name = CHANNEL_CATEGORIES.get(category_key, {}).get("name", category_key)
+        base_cpm = CHANNEL_CATEGORIES.get(category_key, {}).get("cpm", 0)
+        await callback.answer(f"🔄 Сброшено! Базовый CPM: {base_cpm:,}₽", show_alert=True)
+        await _show_cpm_page(callback.message, 0)
+    except Exception as e:
+        logger.error(f"Error in adm_cpm_reset_one: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_cpm_reset_all")
+async def adm_cpm_reset_all(callback: CallbackQuery, state: FSMContext):
+    """Сбросить все CPM к базовым значениям"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    await safe_edit_message(
+        callback.message,
+        "⚠️ **Сбросить все CPM к базовым значениям?**\n\n"
+        "Все вручную заданные значения будут удалены.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, сбросить", callback_data="adm_cpm_reset_all_confirm"),
+                InlineKeyboardButton(text="❌ Нет", callback_data="adm_cpm")
+            ]
+        ])
+    )
+
+
+@router.callback_query(F.data == "adm_cpm_reset_all_confirm")
+async def adm_cpm_reset_all_confirm(callback: CallbackQuery, state: FSMContext):
+    """Подтвердить сброс всех CPM"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        async with async_session_maker() as session:
+            await session.execute(delete(CategoryCPM))
+            await session.commit()
+
+        await callback.answer("🔄 Все CPM сброшены к базовым значениям", show_alert=True)
+        await _show_cpm_page(callback.message, 0)
+    except Exception as e:
+        logger.error(f"Error in adm_cpm_reset_all_confirm: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 
 # ==================== НАСТРОЙКИ ====================
