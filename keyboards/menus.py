@@ -69,16 +69,13 @@ def get_admin_panel_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="👥 Менеджеры", callback_data="adm_managers"),
-            InlineKeyboardButton(text="💸 Выплаты", callback_data="adm_payouts")
+            InlineKeyboardButton(text="📊 Статистика", callback_data="adm_stats")
         ],
         [
-            InlineKeyboardButton(text="📊 Статистика", callback_data="adm_stats"),
-            InlineKeyboardButton(text="🏆 Соревнования", callback_data="adm_competitions")
+            InlineKeyboardButton(text="🏆 Соревнования", callback_data="adm_competitions"),
+            InlineKeyboardButton(text="💰 CPM тематик", callback_data="adm_cpm")
         ],
-        [
-            InlineKeyboardButton(text="💰 CPM тематик", callback_data="adm_cpm"),
-            InlineKeyboardButton(text="⚙️ Настройки бота", callback_data="adm_settings")
-        ],
+        [InlineKeyboardButton(text="⚙️ Настройки бота", callback_data="adm_settings")]
     ])
 
 
@@ -125,7 +122,6 @@ def get_channel_settings_keyboard(channel_id: int, is_active: bool) -> InlineKey
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"adm_ch_update:{channel_id}")],
         [InlineKeyboardButton(text="💰 Изменить цены", callback_data=f"adm_ch_prices:{channel_id}")],
-        [InlineKeyboardButton(text="📅 Управление слотами", callback_data=f"adm_ch_slots:{channel_id}")],
         [InlineKeyboardButton(
             text="❌ Деактивировать" if is_active else "✅ Активировать",
             callback_data=f"adm_ch_toggle:{channel_id}"

@@ -10,12 +10,12 @@ from aiogram.filters import Command, CommandStart
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import select, func
+from sqlalchemy import select
 
-from config import ADMIN_IDS, MANAGER_LEVELS, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN
-from database import async_session_maker, Manager, Client, Channel, Order, ScheduledPost
+from config import ADMIN_IDS, MANAGER_LEVELS
+from database import async_session_maker, Manager, Client, Channel, Order
 from keyboards import (
-    get_main_menu, get_admin_panel_menu, get_manager_cabinet_menu,
+    get_main_menu, get_admin_panel_menu, get_manager_cabinet_menu, 
     get_channels_keyboard, get_training_menu
 )
 from handlers.admin import authenticated_admins
@@ -23,9 +23,6 @@ from handlers.admin import authenticated_admins
 
 logger = logging.getLogger(__name__)
 router = Router()
-
-# Максимальное количество записей в быстрых списках для администратора
-_ADMIN_LIST_LIMIT = 10
 
 
 # ==================== КОМАНДА /START ====================
@@ -48,7 +45,6 @@ async def cmd_start(message: Message, state: FSMContext):
             pass
     
     is_admin = user_id in ADMIN_IDS
-    is_authenticated = user_id in authenticated_admins
     
     # Проверяем, является ли менеджером
     async with async_session_maker() as session:
@@ -84,14 +80,10 @@ async def cmd_start(message: Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN
         )
     elif is_admin:
-        greeting = (
-            "👋 **Добро пожаловать, Администратор!**\n\nВыберите действие:"
-            if is_authenticated else
-            "👋 **Добро пожаловать, Администратор!**\n\nНажмите кнопку для входа в админ-панель."
-        )
         await message.answer(
-            greeting,
-            reply_markup=get_main_menu(is_admin=True, is_authenticated_admin=is_authenticated, is_manager=False),
+            "👋 **Добро пожаловать, Администратор!**\n\n"
+            "Нажмите кнопку для входа в админ-панель.",
+            reply_markup=get_main_menu(is_admin=True, is_manager=False),
             parse_mode=ParseMode.MARKDOWN
         )
     else:
@@ -138,11 +130,6 @@ async def cmd_admin(message: Message):
     if message.from_user.id in authenticated_admins:
         await message.answer(
             "⚙️ **Админ-панель**\n\nВыберите действие:",
-            reply_markup=get_main_menu(is_admin=True, is_authenticated_admin=True),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await message.answer(
-            "👇 Используйте кнопки ниже:",
             reply_markup=get_admin_panel_menu(),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -495,229 +482,3 @@ async def btn_templates(message: Message):
     except Exception as e:
         logger.error(f"Error in btn_templates: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
-
-
-# ==================== ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ====================
-
-@router.message(Command("orders"))
-async def cmd_orders(message: Message):
-    """Команда /orders — мои заказы"""
-    await btn_my_orders(message)
-
-
-@router.message(Command("sales"))
-async def cmd_sales(message: Message):
-    """Команда /sales — каналы для продажи"""
-    await btn_sales(message)
-
-
-# ==================== ТЕКСТОВЫЕ КНОПКИ АВТОРИЗОВАННОГО АДМИНА ====================
-
-@router.message(F.text == "📢 Каналы")
-async def admin_btn_channels(message: Message):
-    """Кнопка 'Каналы' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    try:
-        async with async_session_maker() as session:
-            result = await session.execute(select(Channel))
-            channels = result.scalars().all()
-            channels_data = [{"id": ch.id, "name": ch.name, "is_active": ch.is_active} for ch in channels]
-
-        if channels_data:
-            text = "📢 **Каналы:**\n\n"
-            buttons = []
-            for ch in channels_data:
-                status = "✅" if ch["is_active"] else "❌"
-                text += f"{status} **{ch['name']}** (ID: {ch['id']})\n"
-                buttons.append([InlineKeyboardButton(text=f"⚙️ {ch['name']}", callback_data=f"adm_ch:{ch['id']}")])
-            buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")])
-        else:
-            text = "📢 Каналов пока нет"
-            buttons = [[InlineKeyboardButton(text="➕ Добавить канал", callback_data="adm_add_channel")]]
-
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                             parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error(f"Error in admin_btn_channels: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
-
-
-@router.message(F.text == "💳 Оплаты")
-async def admin_btn_payments(message: Message):
-    """Кнопка 'Оплаты' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    try:
-        async with async_session_maker() as session:
-            result = await session.execute(
-                select(Order).where(Order.status == "payment_uploaded").order_by(Order.created_at.desc())
-            )
-            orders = result.scalars().all()
-            orders_data = [{"id": o.id, "price": float(o.final_price or 0)} for o in orders[:_ADMIN_LIST_LIMIT]]
-
-        if orders_data:
-            text = f"💳 **Оплаты на проверке: {len(orders_data)}**\n\n"
-            buttons = []
-            for o in orders_data:
-                text += f"• #{o['id']} — {o['price']:,.0f}₽\n"
-                buttons.append([InlineKeyboardButton(text=f"📄 Заказ #{o['id']}", callback_data=f"adm_order:{o['id']}")])
-        else:
-            text = "✅ Нет оплат на проверке"
-            buttons = []
-
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                             parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error(f"Error in admin_btn_payments: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
-
-
-@router.message(F.text == "👥 Менеджеры")
-async def admin_btn_managers(message: Message):
-    """Кнопка 'Менеджеры' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    try:
-        async with async_session_maker() as session:
-            result = await session.execute(
-                select(Manager).order_by(Manager.total_sales.desc())
-            )
-            managers = result.scalars().all()
-
-        if managers:
-            text = "👥 **Менеджеры:**\n\n"
-            buttons = []
-            for m in managers[:15]:
-                level_info = MANAGER_LEVELS.get(m.level, MANAGER_LEVELS[1])
-                status = "✅" if m.is_active else "❌"
-                text += f"{status} {level_info['emoji']} **{m.first_name or m.username or 'Менеджер'}** — {m.total_sales or 0} продаж\n"
-                buttons.append([InlineKeyboardButton(
-                    text=f"⚙️ {m.first_name or m.username or 'Менеджер'}",
-                    callback_data=f"adm_mgr:{m.id}"
-                )])
-        else:
-            text = "👥 Менеджеров пока нет"
-            buttons = []
-
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                             parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error(f"Error in admin_btn_managers: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
-
-
-@router.message(F.text == "📊 Статистика")
-async def admin_btn_stats(message: Message):
-    """Кнопка 'Статистика' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    try:
-        async with async_session_maker() as session:
-            total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
-            total_revenue = (await session.execute(
-                select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0
-            total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
-            total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
-
-        text = (
-            "📊 **Статистика**\n\n"
-            f"📦 Заказов: **{total_orders}**\n"
-            f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
-            f"👥 Менеджеров: **{total_managers}**\n"
-            f"📢 Каналов: **{total_channels}**"
-        )
-        await message.answer(text, parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error(f"Error in admin_btn_stats: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
-
-
-@router.message(F.text == "📝 Модерация")
-async def admin_btn_moderation(message: Message):
-    """Кнопка 'Модерация' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    try:
-        async with async_session_maker() as session:
-            result = await session.execute(
-                select(ScheduledPost).where(ScheduledPost.status == "moderation")
-                .order_by(ScheduledPost.created_at.desc())
-            )
-            posts = result.scalars().all()
-            posts_data = [{"id": p.id, "channel_id": p.channel_id} for p in posts[:_ADMIN_LIST_LIMIT]]
-
-        if posts_data:
-            text = f"📝 **Посты на модерации: {len(posts_data)}**\n\n"
-            buttons = []
-            for p in posts_data:
-                text += f"• Пост #{p['id']}\n"
-                buttons.append([InlineKeyboardButton(text=f"📄 Пост #{p['id']}", callback_data=f"adm_post:{p['id']}")])
-        else:
-            text = "✅ Нет постов на модерации"
-            buttons = []
-
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                             parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error(f"Error in admin_btn_moderation: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
-
-
-@router.message(F.text == "🏆 Лидерборд")
-async def admin_btn_leaderboard(message: Message):
-    """Кнопка 'Лидерборд' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    from services import gamification_service
-    try:
-        leaderboard = await gamification_service.get_leaderboard("sales", 10)
-        if not leaderboard:
-            await message.answer("📊 Рейтинг пока пуст")
-            return
-
-        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-        text = "🏆 **Рейтинг менеджеров**\n\n"
-        for item in leaderboard:
-            medal = medals.get(item["rank"], f"{item['rank']}.")
-            text += f"{medal} {item['emoji']} **{item['name']}** — {item['sales']} продаж\n"
-
-        await message.answer(text, parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error(f"Error in admin_btn_leaderboard: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
-
-
-@router.message(F.text == "⚙️ Настройки")
-async def admin_btn_settings(message: Message):
-    """Кнопка 'Настройки' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    text = (
-        "⚙️ **Настройки**\n\n"
-        f"📝 Автопостинг: {'🟢 Включён' if AUTOPOST_ENABLED else '🔴 Выключен'}\n"
-        f"🤖 Claude API: {'🟢 Настроен' if CLAUDE_API_KEY else '🔴 Не настроен'}\n"
-        f"📊 Telemetr API: {'🟢 Настроен' if TELEMETR_API_TOKEN else '🔴 Не настроен'}\n"
-        f"👤 Кол-во админов: {len(ADMIN_IDS)}"
-    )
-    await message.answer(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚙️ Подробные настройки", callback_data="adm_settings")]
-        ]),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-@router.message(F.text == "🚪 Выйти")
-async def admin_btn_logout(message: Message):
-    """Кнопка 'Выйти' для авторизованного администратора"""
-    if message.from_user.id not in authenticated_admins:
-        return
-    authenticated_admins.discard(message.from_user.id)
-    await message.answer(
-        "👋 Вы вышли из админ-панели.",
-        reply_markup=get_main_menu(is_admin=True, is_authenticated_admin=False),
-        parse_mode=ParseMode.MARKDOWN
-    )

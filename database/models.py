@@ -90,7 +90,6 @@ class Client(Base):
     telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(255))
     first_name = Column(String(255))
-    referrer_id = Column(Integer, ForeignKey("managers.id"), nullable=True)
     total_orders = Column(Integer, default=0)
     total_spent = Column(Numeric(12, 2), default=0)
     created_at = Column(DateTime, default=datetime.utcnow)

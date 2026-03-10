@@ -63,14 +63,3 @@ class AdminCompetitionStates(StatesGroup):
     waiting_end_date = State()
     waiting_prize_pool = State()
     waiting_metric = State()
-
-
-class AdminSlotStates(StatesGroup):
-    """Состояния управления слотами"""
-    waiting_date = State()
-    waiting_time = State()
-
-
-class AdminCPMStates(StatesGroup):
-    """Состояния ручного редактирования CPM"""
-    waiting_cpm_value = State()
