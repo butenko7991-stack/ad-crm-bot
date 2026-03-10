@@ -63,3 +63,9 @@ class AdminCompetitionStates(StatesGroup):
     waiting_end_date = State()
     waiting_prize_pool = State()
     waiting_metric = State()
+
+
+class AdminSlotStates(StatesGroup):
+    """Состояния создания слота"""
+    waiting_date = State()
+    waiting_time = State()
