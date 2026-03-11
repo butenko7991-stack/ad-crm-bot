@@ -87,7 +87,8 @@ class Client(Base):
     __tablename__ = "clients"
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, nullable=True)
+    max_id = Column(BigInteger, unique=True, nullable=True)
     username = Column(String(255))
     first_name = Column(String(255))
     total_orders = Column(Integer, default=0)
@@ -103,7 +104,8 @@ class Manager(Base):
     __tablename__ = "managers"
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, nullable=True)
+    max_id = Column(BigInteger, unique=True, nullable=True)
     username = Column(String(255))
     first_name = Column(String(255))
     

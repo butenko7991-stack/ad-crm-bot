@@ -7,6 +7,7 @@ from typing import List
 # ==================== ОСНОВНЫЕ НАСТРОЙКИ ====================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/ad_crm")
 
 # Админы
