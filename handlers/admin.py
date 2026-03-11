@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import datetime, date as date_type, timedelta
+from datetime import datetime, date as date_type, timedelta, timezone
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -22,6 +22,7 @@ from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
+from services.diagnostics import run_diagnostics, gather_business_metrics, get_improvement_suggestions
 
 
 logger = logging.getLogger(__name__)
@@ -2103,6 +2104,140 @@ async def adm_max_settings(callback: CallbackQuery):
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")]
         ])
     )
+
+
+# ==================== ДИАГНОСТИКА И AI-УЛУЧШЕНИЯ ====================
+
+@router.callback_query(F.data == "adm_diagnostics")
+async def adm_diagnostics(callback: CallbackQuery):
+    """Самодиагностика бота — проверка всех компонентов"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    # Показываем временное сообщение о проверке
+    await safe_edit_message(
+        callback.message,
+        "🔧 **Диагностика**\n\n⏳ Проверяю компоненты...",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+        ])
+    )
+
+    try:
+        results = await run_diagnostics()
+
+        db_icon, db_msg = results.get("db", ("❓", "Нет данных"))
+        claude_icon, claude_msg = results.get("claude", ("❓", "Нет данных"))
+        telemetr_icon, telemetr_msg = results.get("telemetr", ("❓", "Нет данных"))
+        queue = results.get("queue")
+
+        text = (
+            "🔧 **Диагностика бота**\n\n"
+            "**Компоненты:**\n"
+            f"{db_icon} {db_msg}\n"
+            f"{claude_icon} {claude_msg}\n"
+            f"{telemetr_icon} {telemetr_msg}\n"
+        )
+
+        if queue is not None:
+            text += "\n**Очередь и задачи:**\n"
+            text += f"📋 Постов в очереди: **{queue['pending_posts']}**\n"
+
+            if queue["overdue_posts"] > 0:
+                text += f"⚠️ Просроченных постов: **{queue['overdue_posts']}** — требуют внимания!\n"
+
+            if queue["moderation_posts"] > 0:
+                text += f"🔍 На модерации: **{queue['moderation_posts']}**\n"
+
+            if queue["pending_payments"] > 0:
+                text += f"💳 Оплат на проверке: **{queue['pending_payments']}** — ожидают подтверждения!\n"
+
+            if queue["overdue_posts"] == 0 and queue["pending_payments"] == 0:
+                text += "✅ Все задачи в норме\n"
+        else:
+            text += "\n⚠️ Не удалось проверить очередь.\n"
+
+        text += f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC"
+
+        buttons = [
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_diagnostics: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка диагностики", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_ai_improve")
+async def adm_ai_improve(callback: CallbackQuery):
+    """AI-анализ метрик бота и рекомендации по улучшению"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    # Показываем временное сообщение
+    await safe_edit_message(
+        callback.message,
+        "🤖 **AI-улучшения**\n\n⏳ Анализирую метрики и формирую рекомендации...",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+        ])
+    )
+
+    try:
+        metrics = await gather_business_metrics()
+        suggestion = await get_improvement_suggestions(metrics)
+
+        if metrics:
+            change = metrics.get("revenue_change_pct")
+            change_str = ""
+            if change is not None:
+                direction = "▲" if change >= 0 else "▼"
+                change_str = f" ({direction}{abs(change):.1f}%)"
+
+            summary = (
+                f"📊 **Текущие показатели:**\n"
+                f"• Выручка за месяц: **{metrics.get('revenue_month', 0):,.0f}₽**{change_str}\n"
+                f"• Конверсия: **{metrics.get('conversion_rate_pct', 0):.1f}%**  "
+                f"| Отмены: **{metrics.get('cancel_rate_pct', 0):.1f}%**\n"
+                f"• Новых клиентов: **{metrics.get('new_clients_month', 0)}** за месяц\n"
+                f"• Активных менеджеров: **{metrics.get('active_managers', 0)}**\n\n"
+            )
+        else:
+            summary = ""
+
+        if suggestion:
+            text = f"🤖 **AI-рекомендации по улучшению**\n\n{summary}{suggestion}"
+        else:
+            text = (
+                f"🤖 **AI-рекомендации по улучшению**\n\n{summary}"
+                "⚠️ Не удалось получить AI-рекомендации. Проверьте настройки Claude API."
+            )
+
+        buttons = [
+            [InlineKeyboardButton(text="🔄 Обновить анализ", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_ai_improve: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 
 # ==================== ПРОСМОТР ЗАКАЗА ====================
