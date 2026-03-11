@@ -18,6 +18,7 @@ from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABL
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
+from services import gamification_service
 
 
 logger = logging.getLogger(__name__)
@@ -968,10 +969,30 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
 
             order.status = "payment_confirmed"
             order.paid_at = datetime.utcnow()
+
+            # Начисляем комиссию менеджеру
+            manager_telegram_id = None
+            if order.manager_id:
+                manager = await session.get(Manager, order.manager_id)
+                if manager and manager.is_active:
+                    commission = order.final_price * manager.commission_rate / 100
+                    manager.total_sales = (manager.total_sales or 0) + 1
+                    manager.total_revenue = (manager.total_revenue or Decimal("0")) + order.final_price
+                    manager.balance = (manager.balance or Decimal("0")) + commission
+                    manager.total_earned = (manager.total_earned or Decimal("0")) + commission
+                    manager_telegram_id = manager.telegram_id
+
             await session.commit()
 
             client = await session.get(Client, order.client_id)
             client_telegram_id = client.telegram_id if client else None
+
+        # Начисляем XP менеджеру через gamification
+        if order.manager_id:
+            try:
+                await gamification_service.process_sale(order.manager_id, float(order.final_price))
+            except Exception as e:
+                logger.warning(f"Gamification processing failed for order {order_id}: {e}")
 
         await callback.answer("✅ Оплата подтверждена!", show_alert=True)
 
