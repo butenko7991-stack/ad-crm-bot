@@ -75,7 +75,10 @@ def get_admin_panel_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🏆 Соревнования", callback_data="adm_competitions"),
             InlineKeyboardButton(text="💰 CPM тематик", callback_data="adm_cpm")
         ],
-        [InlineKeyboardButton(text="⚙️ Настройки бота", callback_data="adm_settings")]
+        [
+            InlineKeyboardButton(text="📅 Автопостинг", callback_data="adm_autoposting"),
+            InlineKeyboardButton(text="⚙️ Настройки бота", callback_data="adm_settings")
+        ],
     ])
 
 
@@ -261,3 +264,76 @@ def get_confirm_keyboard(confirm_data: str, cancel_data: str = "cancel") -> Inli
             InlineKeyboardButton(text="❌ Нет", callback_data=cancel_data)
         ]
     ])
+
+
+# ==================== CPM ====================
+
+def get_cpm_categories_keyboard(categories: list, page: int = 0, per_page: int = 10) -> InlineKeyboardMarkup:
+    """Клавиатура списка CPM-тематик с кнопками редактирования"""
+    start = page * per_page
+    end = start + per_page
+    page_cats = categories[start:end]
+
+    buttons = []
+    for key, cat in page_cats:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{cat['name']}: {cat['cpm']:,}₽",
+                callback_data=f"cpm_info:{key}"
+            ),
+            InlineKeyboardButton(text="✏️", callback_data=f"cpm_edit:{key}")
+        ])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"cpm_page:{page - 1}"))
+    if end < len(categories):
+        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"cpm_page:{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# ==================== АВТОПОСТИНГ ====================
+
+def get_autoposting_menu() -> InlineKeyboardMarkup:
+    """Меню раздела Автопостинг"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Запланированные", callback_data="autopost_pending"),
+            InlineKeyboardButton(text="✅ Опубликованные", callback_data="autopost_posted"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Аналитика постов", callback_data="autopost_analytics"),
+            InlineKeyboardButton(text="🤖 AI-рекомендации", callback_data="autopost_ai_recommend"),
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+    ])
+
+
+def get_post_analytics_keyboard(analytics_list: list) -> InlineKeyboardMarkup:
+    """Клавиатура списка аналитики постов"""
+    buttons = []
+    for item in analytics_list[:10]:
+        label = f"#{item.id} — 👁{item.views} 👍{item.reactions} ↩️{item.forwards}"
+        buttons.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"pa_view:{item.id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_post_analytics_actions_keyboard(analytics_id: int, has_ai: bool = False) -> InlineKeyboardMarkup:
+    """Кнопки действий для записи аналитики поста"""
+    buttons = []
+    if not has_ai:
+        buttons.append([InlineKeyboardButton(
+            text="🤖 Получить AI-рекомендации",
+            callback_data=f"pa_ai:{analytics_id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_analytics")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+

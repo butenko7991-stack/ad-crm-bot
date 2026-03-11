@@ -22,6 +22,20 @@ class AdminChannelStates(StatesGroup):
     waiting_manual_subscribers = State()
     waiting_manual_reach = State()
     waiting_manual_err = State()
+    waiting_cpm = State()  # Ручной ввод CPM для канала
+
+
+class AdminCPMStates(StatesGroup):
+    """Состояния ручного ввода CPM по тематикам"""
+    waiting_cpm_value = State()
+
+
+class AdminAutopostingStates(StatesGroup):
+    """Состояния управления автопостингом"""
+    waiting_post_views = State()
+    waiting_post_reactions = State()
+    waiting_post_forwards = State()
+    waiting_post_saves = State()
 
 
 class ManagerStates(StatesGroup):
