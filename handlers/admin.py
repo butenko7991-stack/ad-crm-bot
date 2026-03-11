@@ -943,6 +943,10 @@ async def adm_view_order(callback: CallbackQuery):
                 InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"adm_confirm_payment:{order_id}"),
                 InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_reject_payment:{order_id}")
             ])
+        if order.status == "payment_confirmed":
+            buttons.append([
+                InlineKeyboardButton(text="📢 Отметить как опубликован", callback_data=f"adm_mark_posted:{order_id}")
+            ])
         buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_payments")])
 
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -1007,6 +1011,18 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
             except Exception:
                 pass
 
+        if manager_telegram_id:
+            try:
+                await bot.send_message(
+                    manager_telegram_id,
+                    f"💰 **Продажа засчитана!**\n\n"
+                    f"Заказ #{order_id} оплачен.\n"
+                    f"Сумма заказа: **{float(order.final_price):,.0f}₽**",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
         await safe_edit_message(
             callback.message,
             f"✅ **Оплата по заказу #{order_id} подтверждена**",
@@ -1063,6 +1079,65 @@ async def adm_reject_payment(callback: CallbackQuery, bot: Bot):
         )
     except Exception as e:
         logger.error(f"Error in adm_reject_payment: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_mark_posted:"))
+async def adm_mark_posted(callback: CallbackQuery, bot: Bot):
+    """Отметить заказ как опубликованный"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    try:
+        order_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            order = await session.get(Order, order_id)
+            if not order:
+                await callback.answer("❌ Заказ не найден", show_alert=True)
+                return
+
+            if order.status != "payment_confirmed":
+                await callback.answer("❌ Заказ не в статусе «оплачен»", show_alert=True)
+                return
+
+            order.status = "posted"
+            order.posted_at = datetime.utcnow()
+
+            # Помечаем слот как забронированный
+            if order.slot_id:
+                slot = await session.get(Slot, order.slot_id)
+                if slot:
+                    slot.status = "booked"
+
+            await session.commit()
+
+            client = await session.get(Client, order.client_id)
+            client_telegram_id = client.telegram_id if client else None
+
+        await callback.answer("📢 Заказ отмечен как опубликованный!", show_alert=True)
+
+        if client_telegram_id:
+            try:
+                await bot.send_message(
+                    client_telegram_id,
+                    f"📢 **Ваш пост по заказу #{order_id} опубликован!**\n\n"
+                    f"Спасибо за использование нашего сервиса.",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+        await safe_edit_message(
+            callback.message,
+            f"📢 **Заказ #{order_id} отмечен как опубликованный**",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К оплатам", callback_data="adm_payments")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_mark_posted: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
 

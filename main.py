@@ -5,15 +5,19 @@ CRM Bot для продажи рекламы в Telegram-каналах
 import asyncio
 import logging
 import traceback
+from datetime import datetime
 from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import Update
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
 
 from config import BOT_TOKEN, ADMIN_IDS
-from database import init_db
+from database import init_db, async_session_maker
+from database.models import Slot
 from handlers import setup_routers
 
 
@@ -23,6 +27,28 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+async def cleanup_expired_slots():
+    """Освобождаем слоты, у которых истёк срок резервации"""
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Slot).where(
+                    Slot.status == "reserved",
+                    Slot.reserved_until < datetime.utcnow()
+                )
+            )
+            expired_slots = result.scalars().all()
+            if expired_slots:
+                for slot in expired_slots:
+                    slot.status = "available"
+                    slot.reserved_by = None
+                    slot.reserved_until = None
+                await session.commit()
+                logger.info(f"Освобождено {len(expired_slots)} просроченных слотов")
+    except Exception:
+        logger.error(f"Ошибка очистки слотов: {traceback.format_exc()}")
 
 
 async def global_error_handler(update: Update, exception: Exception) -> bool:
@@ -58,6 +84,17 @@ async def main():
     logger.info("Инициализация базы данных...")
     await init_db()
     
+    # Планировщик задач
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        cleanup_expired_slots,
+        trigger="interval",
+        minutes=5,
+        id="cleanup_expired_slots"
+    )
+    scheduler.start()
+    logger.info("Планировщик задач запущен")
+    
     # Запуск бота
     logger.info("🚀 Бот запускается...")
     
@@ -71,6 +108,7 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
+        scheduler.shutdown(wait=False)
         await bot.session.close()
 
 

@@ -227,6 +227,12 @@ async def cmd_training(message: Message):
     )
 
 
+@router.message(Command("sales"))
+async def cmd_sales(message: Message):
+    """Команда /sales — каналы для продажи"""
+    await btn_sales(message)
+
+
 # ==================== ТЕКСТОВЫЕ КНОПКИ ====================
 
 @router.message(F.text == "📢 Каталог каналов")
