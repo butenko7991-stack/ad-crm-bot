@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import datetime, date as date_type, timedelta, timezone
+from datetime import datetime, date as date_type, time as time_type, timedelta, timezone
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -19,7 +19,7 @@ from database import async_session_maker, Channel, Manager, Order, ScheduledPost
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates
-from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, gather_business_metrics, get_improvement_suggestions
@@ -554,6 +554,229 @@ async def adm_toggle_channel(callback: CallbackQuery):
             await safe_edit_message(callback.message, text, get_channel_settings_keyboard(channel_id, is_active))
     except Exception as e:
         logger.error(f"Error in adm_toggle_channel: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== УПРАВЛЕНИЕ СЛОТАМИ КАНАЛА ====================
+
+@router.callback_query(F.data.startswith("adm_ch_slots:"))
+async def adm_channel_slots(callback: CallbackQuery):
+    """Просмотр слотов канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.answer("❌ Канал не найден", show_alert=True)
+                return
+
+            slots_result = await session.execute(
+                select(Slot)
+                .where(Slot.channel_id == channel_id, Slot.slot_date >= date_type.today())
+                .order_by(Slot.slot_date, Slot.slot_time)
+                .limit(30)
+            )
+            slots = slots_result.scalars().all()
+
+        channel_name = channel.name
+        if not slots:
+            text = f"📅 **Слоты канала {channel_name}**\n\n_Нет предстоящих слотов._"
+        else:
+            text = f"📅 **Слоты канала {channel_name}** ({len(slots)}):\n\n"
+            for s in slots:
+                icon = "✅" if s.status == "available" else "🔒"
+                text += f"{icon} {s.slot_date.strftime('%d.%m')} {s.slot_time.strftime('%H:%M')} — {s.status}\n"
+
+        buttons = [
+            [InlineKeyboardButton(text="➕ Сгенерировать слоты", callback_data=f"adm_slots_gen:{channel_id}")],
+        ]
+        if slots:
+            buttons.append([InlineKeyboardButton(
+                text="🗑 Удалить все предстоящие слоты",
+                callback_data=f"adm_slots_clear:{channel_id}"
+            )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"adm_ch:{channel_id}")])
+
+        await safe_edit_message(
+            callback.message,
+            text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_channel_slots: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_slots_gen:"))
+async def adm_slots_gen_start(callback: CallbackQuery, state: FSMContext):
+    """Начало генерации слотов — запрос параметров"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[1])
+    await state.update_data(slot_channel_id=channel_id)
+
+    await safe_edit_message(
+        callback.message,
+        "📅 **Генерация слотов**\n\n"
+        "Введите параметры в формате:\n"
+        "`<кол-во дней> <время1> [время2] ...`\n\n"
+        "Например: `14 09:00 12:00 18:00`\n"
+        "_(14 дней, каждый день в 09:00, 12:00 и 18:00)_",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch_slots:{channel_id}")]
+        ])
+    )
+    await state.set_state(AdminSlotStates.waiting_slot_config)
+
+
+@router.message(AdminSlotStates.waiting_slot_config)
+async def adm_slots_gen_create(message: Message, state: FSMContext):
+    """Создание слотов по введённым параметрам"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    data = await state.get_data()
+    channel_id = data.get("slot_channel_id")
+    await state.clear()
+
+    try:
+        parts = message.text.strip().split()
+        if len(parts) < 2:
+            await message.answer(
+                "❌ Неверный формат. Пример: `14 09:00 12:00 18:00`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        days = int(parts[0])
+        if days < 1 or days > 90:
+            await message.answer("❌ Количество дней должно быть от 1 до 90.")
+            return
+
+        times = []
+        for t_str in parts[1:]:
+            if ":" not in t_str:
+                await message.answer(
+                    f"❌ Неверный формат времени: `{t_str}`. Используйте формат ЧЧ:ММ (например: `09:00`).",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+            h_str, m_str = t_str.split(":", 1)
+            h, m = int(h_str), int(m_str)
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                await message.answer(
+                    f"❌ Недопустимое время: `{t_str}`. Часы — 0–23, минуты — 0–59.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+            times.append(time_type(h, m))
+
+        if not times:
+            await message.answer("❌ Укажите хотя бы одно время.")
+            return
+
+        created = 0
+        skipped = 0
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await message.answer("❌ Канал не найден.")
+                return
+
+            for day_offset in range(days):
+                slot_date = date_type.today() + timedelta(days=day_offset)
+                for t in times:
+                    # Проверяем, существует ли уже слот на эту дату/время
+                    existing = await session.execute(
+                        select(Slot).where(
+                            Slot.channel_id == channel_id,
+                            Slot.slot_date == slot_date,
+                            Slot.slot_time == t
+                        )
+                    )
+                    if existing.scalar_one_or_none():
+                        skipped += 1
+                        continue
+
+                    slot = Slot(
+                        channel_id=channel_id,
+                        slot_date=slot_date,
+                        slot_time=t,
+                        status="available"
+                    )
+                    session.add(slot)
+                    created += 1
+
+            await session.commit()
+
+        text = (
+            f"✅ **Слоты созданы**\n\n"
+            f"📢 Канал: **{channel.name}**\n"
+            f"📅 Дней: {days}\n"
+            f"🕐 Времена: {', '.join(t.strftime('%H:%M') for t in times)}\n\n"
+            f"Создано: **{created}** слотов\n"
+            f"Пропущено (уже существуют): {skipped}"
+        )
+        await message.answer(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📅 Слоты канала", callback_data=f"adm_ch_slots:{channel_id}")],
+                [InlineKeyboardButton(text="◀️ К каналу", callback_data=f"adm_ch:{channel_id}")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except (ValueError, IndexError):
+        await message.answer(
+            "❌ Неверный формат. Пример: `14 09:00 12:00 18:00`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_slots_gen_create: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data.startswith("adm_slots_clear:"))
+async def adm_slots_clear(callback: CallbackQuery):
+    """Удалить все предстоящие доступные слоты канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            slots_result = await session.execute(
+                select(Slot).where(
+                    Slot.channel_id == channel_id,
+                    Slot.slot_date >= date_type.today(),
+                    Slot.status == "available"
+                )
+            )
+            slots = slots_result.scalars().all()
+            count = len(slots)
+            for s in slots:
+                await session.delete(s)
+            await session.commit()
+
+        channel_name = channel.name if channel else f"#{channel_id}"
+        await callback.answer(f"🗑 Удалено {count} слотов", show_alert=True)
+        # Обновляем экран слотов
+        callback.data = f"adm_ch_slots:{channel_id}"
+        await adm_channel_slots(callback)
+    except Exception as e:
+        logger.error(f"Error in adm_slots_clear: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
