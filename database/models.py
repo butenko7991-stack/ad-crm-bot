@@ -231,3 +231,27 @@ class AIInsight(Base):
     answer = Column(Text)
     feedback = Column(String(20))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PostAnalytics(Base):
+    """Аналитика размещённых рекламных постов"""
+    __tablename__ = "post_analytics"
+
+    id = Column(Integer, primary_key=True)
+    scheduled_post_id = Column(Integer, ForeignKey("scheduled_posts.id"), nullable=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+
+    # Метрики поста
+    views = Column(Integer, default=0)
+    reactions = Column(Integer, default=0)
+    forwards = Column(Integer, default=0)
+    saves = Column(Integer, default=0)
+    comments = Column(Integer, default=0)
+
+    # AI-рекомендация на основе метрик
+    ai_recommendation = Column(Text)
+
+    # Временные метки
+    recorded_at = Column(DateTime, default=datetime.utcnow)
+    recorded_by = Column(BigInteger)  # Admin who entered metrics

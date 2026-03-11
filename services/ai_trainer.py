@@ -177,6 +177,83 @@ class AITrainerService:
         if user_id in self.conversation_history:
             del self.conversation_history[user_id]
 
+    async def get_post_recommendations(
+        self,
+        channel_name: str,
+        views: int,
+        reactions: int,
+        forwards: int,
+        saves: int,
+        comments: int = 0,
+        avg_channel_views: int = 0,
+        cpm: float = 0,
+    ) -> Optional[str]:
+        """Получить AI-рекомендации по метрикам рекламного поста"""
+
+        if not self.api_key:
+            logger.warning("Claude API key not configured")
+            return "⚠️ AI-анализ временно недоступен. Обратитесь к администратору."
+
+        # Рассчитываем ER и другие производные метрики
+        engagement = reactions + forwards + saves + comments
+        er_percent = round(engagement / views * 100, 2) if views > 0 else 0
+        reach_ratio = round(views / avg_channel_views * 100, 1) if avg_channel_views > 0 else None
+
+        prompt_parts = [
+            f"Канал: {channel_name}",
+            f"Просмотры поста: {views}",
+            f"Реакции: {reactions}",
+            f"Пересылки: {forwards}",
+            f"Сохранения: {saves}",
+            f"Комментарии: {comments}",
+            f"Engagement Rate: {er_percent}%",
+        ]
+        if reach_ratio is not None:
+            prompt_parts.append(f"Охват vs средний охват канала: {reach_ratio}%")
+        if cpm > 0:
+            prompt_parts.append(f"CPM канала: {cpm:,.0f}₽")
+
+        post_data = "\n".join(prompt_parts)
+
+        system_prompt = (
+            "Ты — эксперт по анализу рекламных постов в Telegram-каналах. "
+            "На основе метрик поста дай краткие конкретные рекомендации:\n"
+            "1. Оценка эффективности поста (хорошо/средне/плохо)\n"
+            "2. Что работает и что не работает\n"
+            "3. Как улучшить следующий пост (контент, время, формат)\n"
+            "4. Стоит ли повторно размещать рекламу в этом канале\n"
+            "Ответ до 600 символов. Используй эмодзи."
+        )
+
+        try:
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            payload = {
+                "model": CLAUDE_MODEL,
+                "max_tokens": 512,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": post_data}],
+            }
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(self.base_url, headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["content"][0]["text"]
+                    else:
+                        error = await resp.text()
+                        logger.error(f"Claude API error (post recommendations): {resp.status} - {error}")
+                        return None
+        except asyncio.TimeoutError:
+            logger.error("Claude API timeout (post recommendations)")
+            return "⏱ Ответ занял слишком много времени. Попробуй ещё раз."
+        except Exception as e:
+            logger.error(f"AI post recommendations error: {e}")
+            return None
+
 
 # Глобальный экземпляр сервиса
 ai_trainer_service = AITrainerService()

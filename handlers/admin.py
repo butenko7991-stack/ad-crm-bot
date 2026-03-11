@@ -15,10 +15,13 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MANAGER_LEVELS
-from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client
+from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
+from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
+from utils.states import AdminCPMStates, AdminAutopostingStates
 from services import gamification_service
+from services.ai_trainer import ai_trainer_service
 
 
 logger = logging.getLogger(__name__)
@@ -250,6 +253,7 @@ async def adm_channel_prices(callback: CallbackQuery, state: FSMContext):
                     InlineKeyboardButton(text="Навсегда", callback_data=f"set_price:native:{channel_id}")
                 ],
                 [InlineKeyboardButton(text="📊 Авторасчёт по CPM", callback_data=f"auto_prices:{channel_id}")],
+                [InlineKeyboardButton(text="✏️ Ввести CPM вручную", callback_data=f"set_channel_cpm:{channel_id}")],
                 [InlineKeyboardButton(text="◀️ Назад", callback_data=f"adm_ch:{channel_id}")]
             ])
         )
@@ -387,6 +391,87 @@ async def auto_calculate_prices(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in auto_calculate_prices: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.callback_query(F.data.startswith("set_channel_cpm:"))
+async def set_channel_cpm_start(callback: CallbackQuery, state: FSMContext):
+    """Начать ручной ввод CPM для конкретного канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.answer("❌ Канал не найден", show_alert=True)
+                return
+            current_cpm = float(channel.cpm or 0)
+            channel_name = channel.name
+
+        await state.update_data(editing_channel_id=channel_id, editing_price_type="cpm")
+        await safe_edit_message(
+            callback.message,
+            f"✏️ **Ввести CPM вручную для {channel_name}**\n\n"
+            f"Текущий CPM: **{current_cpm:,.0f}₽**\n\n"
+            f"Введите новую цену за 1000 просмотров (CPM) в рублях:",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch_prices:{channel_id}")]
+            ])
+        )
+        await state.set_state(AdminChannelStates.waiting_cpm)
+    except Exception as e:
+        logger.error(f"Error in set_channel_cpm_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminChannelStates.waiting_cpm)
+async def receive_channel_cpm(message: Message, state: FSMContext):
+    """Сохранить новый CPM для канала"""
+    try:
+        new_cpm = float(message.text.strip().replace(" ", "").replace(",", ""))
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите число!")
+        return
+
+    if new_cpm < 0:
+        await message.answer("❌ CPM не может быть отрицательным!")
+        return
+
+    data = await state.get_data()
+    channel_id = data.get("editing_channel_id")
+    if not channel_id:
+        await message.answer("❌ Ошибка. Начните заново.")
+        await state.clear()
+        return
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await message.answer("❌ Канал не найден")
+                await state.clear()
+                return
+            channel.cpm = new_cpm
+            await session.commit()
+
+        await state.clear()
+        await message.answer(
+            f"✅ CPM канала установлен: **{new_cpm:,.0f}₽** за 1000 просмотров\n\n"
+            f"Используйте «📊 Авторасчёт по CPM» для пересчёта цен.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💰 К ценам канала", callback_data=f"adm_ch_prices:{channel_id}")],
+                [InlineKeyboardButton(text="📊 Авторасчёт", callback_data=f"auto_prices:{channel_id}")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in receive_channel_cpm: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await state.clear()
 
 
 # ==================== ОБНОВЛЕНИЕ СТАТИСТИКИ ====================
@@ -842,23 +927,726 @@ async def adm_competitions(callback: CallbackQuery):
 
 @router.callback_query(F.data == "adm_cpm")
 async def adm_cpm(callback: CallbackQuery):
-    """CPM по тематикам"""
+    """CPM по тематикам — страница 0"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
-    
     await callback.answer()
-    
-    text = "💰 **CPM по тематикам**\n\n"
-    sorted_categories = sorted(CHANNEL_CATEGORIES.items(), key=lambda x: x[1]["cpm"], reverse=True)[:15]
-    for key, cat in sorted_categories:
-        text += f"{cat['name']}: **{cat['cpm']:,}₽**\n"
-    text += f"\n_Всего: {len(CHANNEL_CATEGORIES)}_"
-    
+    await _show_cpm_page(callback, page=0)
+
+
+@router.callback_query(F.data.startswith("cpm_page:"))
+async def adm_cpm_page(callback: CallbackQuery):
+    """Пагинация списка CPM"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    await callback.answer()
+    page = int(callback.data.split(":")[1])
+    await _show_cpm_page(callback, page=page)
+
+
+async def _show_cpm_page(callback: CallbackQuery, page: int):
+    """Вспомогательная функция: показать страницу CPM"""
+    PER_PAGE = 10
+    # Загружаем переопределения из БД
+    overrides: dict = {}
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(select(CategoryCPM))
+            for row in result.scalars():
+                overrides[row.category_key] = row.cpm
+    except Exception:
+        pass
+
+    sorted_categories = sorted(CHANNEL_CATEGORIES.items(), key=lambda x: x[1]["cpm"], reverse=True)
+    # Применяем переопределения
+    effective = [(k, {"name": v["name"], "cpm": overrides.get(k, v["cpm"])}) for k, v in sorted_categories]
+
+    total = len(effective)
+    start = page * PER_PAGE
+    text = (
+        f"💰 **CPM по тематикам** (стр. {page + 1}/{(total + PER_PAGE - 1) // PER_PAGE})\n\n"
+        "Нажмите ✏️ рядом с тематикой, чтобы изменить CPM вручную."
+    )
+
     await safe_edit_message(
         callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
+        get_cpm_categories_keyboard(effective, page=page, per_page=PER_PAGE)
     )
+
+
+@router.callback_query(F.data.startswith("cpm_info:"))
+async def adm_cpm_info(callback: CallbackQuery):
+    """Показать детали CPM тематики"""
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cpm_edit:"))
+async def adm_cpm_edit_start(callback: CallbackQuery, state: FSMContext):
+    """Начать ручной ввод CPM для тематики"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    category_key = callback.data.split(":")[1]
+    cat_info = CHANNEL_CATEGORIES.get(category_key)
+    if not cat_info:
+        await callback.answer("❌ Тематика не найдена", show_alert=True)
+        return
+
+    # Проверяем текущее переопределение в БД
+    current_cpm = cat_info["cpm"]
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+            )
+            db_row = result.scalar_one_or_none()
+            if db_row:
+                current_cpm = db_row.cpm
+    except Exception:
+        pass
+
+    await state.update_data(editing_cpm_key=category_key, editing_cpm_name=cat_info["name"])
+    await safe_edit_message(
+        callback.message,
+        f"✏️ **Изменить CPM: {cat_info['name']}**\n\n"
+        f"Текущий CPM: **{current_cpm:,}₽**\n\n"
+        f"Введите новое значение CPM (руб. за 1000 просмотров):",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cpm")]
+        ])
+    )
+    await state.set_state(AdminCPMStates.waiting_cpm_value)
+
+
+@router.message(AdminCPMStates.waiting_cpm_value)
+async def adm_cpm_receive_value(message: Message, state: FSMContext):
+    """Сохранить новое значение CPM для тематики"""
+    try:
+        new_cpm = int(message.text.strip().replace(" ", "").replace(",", ""))
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите целое число!")
+        return
+
+    if new_cpm < 0:
+        await message.answer("❌ CPM не может быть отрицательным!")
+        return
+
+    data = await state.get_data()
+    category_key = data.get("editing_cpm_key")
+    category_name = data.get("editing_cpm_name", "")
+
+    if not category_key:
+        await message.answer("❌ Ошибка. Начните заново.")
+        await state.clear()
+        return
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(CategoryCPM).where(CategoryCPM.category_key == category_key)
+            )
+            db_row = result.scalar_one_or_none()
+            if db_row:
+                db_row.cpm = new_cpm
+                db_row.updated_at = datetime.utcnow()
+                db_row.updated_by = message.from_user.id
+            else:
+                session.add(CategoryCPM(
+                    category_key=category_key,
+                    name=category_name,
+                    cpm=new_cpm,
+                    updated_by=message.from_user.id,
+                ))
+            await session.commit()
+
+        await state.clear()
+        await message.answer(
+            f"✅ CPM для **{category_name}** установлен: **{new_cpm:,}₽**",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💰 К CPM тематик", callback_data="adm_cpm")],
+                [InlineKeyboardButton(text="◀️ В панель", callback_data="adm_back")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error saving CPM: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await state.clear()
+
+
+# ==================== АВТОПОСТИНГ ====================
+
+@router.callback_query(F.data == "adm_autoposting")
+async def adm_autoposting(callback: CallbackQuery):
+    """Раздел Автопостинг"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            pending_count = (await session.execute(
+                select(func.count(ScheduledPost.id)).where(ScheduledPost.status == "pending")
+            )).scalar() or 0
+            posted_count = (await session.execute(
+                select(func.count(ScheduledPost.id)).where(ScheduledPost.status == "posted")
+            )).scalar() or 0
+            analytics_count = (await session.execute(
+                select(func.count(PostAnalytics.id))
+            )).scalar() or 0
+
+        text = (
+            "📅 **Автопостинг**\n\n"
+            f"📋 Запланированных постов: **{pending_count}**\n"
+            f"✅ Опубликованных постов: **{posted_count}**\n"
+            f"📊 Записей аналитики: **{analytics_count}**\n\n"
+            "Выберите раздел:"
+        )
+        await safe_edit_message(callback.message, text, get_autoposting_menu())
+    except Exception as e:
+        logger.error(f"Error in adm_autoposting: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "autopost_pending")
+async def autopost_pending(callback: CallbackQuery):
+    """Список запланированных постов"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost)
+                .where(ScheduledPost.status.in_(["pending", "moderation"]))
+                .order_by(ScheduledPost.scheduled_time.asc())
+                .limit(20)
+            )
+            posts = result.scalars().all()
+
+            if not posts:
+                await safe_edit_message(
+                    callback.message,
+                    "📋 **Запланированных постов нет**",
+                    InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                    ])
+                )
+                return
+
+            text = f"📋 **Запланированные посты** ({len(posts)})\n\n"
+            buttons = []
+            for post in posts:
+                channel = await session.get(Channel, post.channel_id)
+                ch_name = channel.name if channel else f"#{post.channel_id}"
+                sched = post.scheduled_time.strftime("%d.%m %H:%M") if post.scheduled_time else "—"
+                status_icon = "⏳" if post.status == "pending" else "🔍"
+                text_preview = (post.content[:30] + "…") if post.content else "📎 медиа"
+                buttons.append([InlineKeyboardButton(
+                    text=f"{status_icon} {ch_name} | {sched} | {text_preview}",
+                    callback_data=f"adm_post:{post.id}"
+                )])
+
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")])
+            await safe_edit_message(
+                callback.message, text,
+                InlineKeyboardMarkup(inline_keyboard=buttons)
+            )
+    except Exception as e:
+        logger.error(f"Error in autopost_pending: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "autopost_posted")
+async def autopost_posted(callback: CallbackQuery):
+    """Список опубликованных постов"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost)
+                .where(ScheduledPost.status == "posted")
+                .order_by(ScheduledPost.posted_at.desc())
+                .limit(20)
+            )
+            posts = result.scalars().all()
+
+            if not posts:
+                await safe_edit_message(
+                    callback.message,
+                    "✅ **Опубликованных постов нет**",
+                    InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                    ])
+                )
+                return
+
+            text = f"✅ **Опубликованные посты** ({len(posts)})\n\n"
+            buttons = []
+            for post in posts:
+                channel = await session.get(Channel, post.channel_id)
+                ch_name = channel.name if channel else f"#{post.channel_id}"
+                posted = post.posted_at.strftime("%d.%m %H:%M") if post.posted_at else "—"
+                text_preview = (post.content[:30] + "…") if post.content else "📎 медиа"
+                buttons.append([InlineKeyboardButton(
+                    text=f"✅ {ch_name} | {posted} | {text_preview}",
+                    callback_data=f"autopost_view_posted:{post.id}"
+                )])
+
+            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")])
+            await safe_edit_message(
+                callback.message, text,
+                InlineKeyboardMarkup(inline_keyboard=buttons)
+            )
+    except Exception as e:
+        logger.error(f"Error in autopost_posted: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("autopost_view_posted:"))
+async def autopost_view_posted(callback: CallbackQuery):
+    """Просмотр опубликованного поста с возможностью добавить аналитику"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.answer("❌ Пост не найден", show_alert=True)
+                return
+
+            channel = await session.get(Channel, post.channel_id)
+            ch_name = channel.name if channel else "—"
+
+            # Проверяем, есть ли уже аналитика
+            existing = (await session.execute(
+                select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post_id)
+            )).scalar_one_or_none()
+
+        posted = post.posted_at.strftime("%d.%m.%Y %H:%M") if post.posted_at else "—"
+        text = (
+            f"✅ **Пост #{post_id}**\n\n"
+            f"📢 Канал: {ch_name}\n"
+            f"📅 Опубликован: {posted}\n"
+        )
+        if post.content:
+            text += f"\n📝 Текст:\n{post.content[:300]}{'…' if len(post.content) > 300 else ''}\n"
+
+        buttons = []
+        if existing:
+            text += (
+                f"\n📊 **Аналитика:**\n"
+                f"👁 Просмотры: {existing.views}\n"
+                f"👍 Реакции: {existing.reactions}\n"
+                f"↩️ Пересылки: {existing.forwards}\n"
+                f"🔖 Сохранения: {existing.saves}\n"
+            )
+            if existing.ai_recommendation:
+                text += f"\n🤖 **AI-рекомендация:**\n{existing.ai_recommendation[:400]}\n"
+            buttons.append([InlineKeyboardButton(
+                text="📊 Обновить метрики",
+                callback_data=f"pa_enter:{post_id}"
+            )])
+        else:
+            buttons.append([InlineKeyboardButton(
+                text="📊 Внести метрики поста",
+                callback_data=f"pa_enter:{post_id}"
+            )])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_posted")])
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in autopost_view_posted: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== АНАЛИТИКА ПОСТОВ ====================
+
+@router.callback_query(F.data == "autopost_analytics")
+async def autopost_analytics(callback: CallbackQuery):
+    """Список аналитики рекламных постов"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(PostAnalytics).order_by(PostAnalytics.recorded_at.desc()).limit(20)
+            )
+            analytics_list = result.scalars().all()
+
+        if not analytics_list:
+            await safe_edit_message(
+                callback.message,
+                "📊 **Аналитика постов**\n\nЗаписей пока нет.\n\nДобавьте метрики к опубликованным постам.",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Опубликованные посты", callback_data="autopost_posted")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
+        text = f"📊 **Аналитика постов** ({len(analytics_list)})\n\n"
+        await safe_edit_message(
+            callback.message, text,
+            get_post_analytics_keyboard(analytics_list)
+        )
+    except Exception as e:
+        logger.error(f"Error in autopost_analytics: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("pa_view:"))
+async def pa_view(callback: CallbackQuery):
+    """Просмотр записи аналитики поста"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        analytics_id = int(callback.data.split(":")[1])
+        async with async_session_maker() as session:
+            analytics = await session.get(PostAnalytics, analytics_id)
+            if not analytics:
+                await callback.answer("❌ Запись не найдена", show_alert=True)
+                return
+            channel = await session.get(Channel, analytics.channel_id)
+
+        ch_name = channel.name if channel else "—"
+        recorded = analytics.recorded_at.strftime("%d.%m.%Y %H:%M")
+        total_engage = analytics.reactions + analytics.forwards + analytics.saves + analytics.comments
+        er = round(total_engage / analytics.views * 100, 2) if analytics.views > 0 else 0
+
+        text = (
+            f"📊 **Аналитика поста #{analytics_id}**\n\n"
+            f"📢 Канал: {ch_name}\n"
+            f"📅 Записано: {recorded}\n\n"
+            f"👁 Просмотры: **{analytics.views:,}**\n"
+            f"👍 Реакции: **{analytics.reactions:,}**\n"
+            f"↩️ Пересылки: **{analytics.forwards:,}**\n"
+            f"🔖 Сохранения: **{analytics.saves:,}**\n"
+            f"💬 Комментарии: **{analytics.comments:,}**\n"
+            f"📈 Engagement Rate: **{er}%**\n"
+        )
+        if analytics.ai_recommendation:
+            text += f"\n🤖 **AI-рекомендация:**\n{analytics.ai_recommendation}\n"
+
+        await safe_edit_message(
+            callback.message, text,
+            get_post_analytics_actions_keyboard(analytics_id, has_ai=bool(analytics.ai_recommendation))
+        )
+    except Exception as e:
+        logger.error(f"Error in pa_view: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("pa_enter:"))
+async def pa_enter_start(callback: CallbackQuery, state: FSMContext):
+    """Начало ввода метрик поста"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    post_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.answer("❌ Пост не найден", show_alert=True)
+                return
+
+        await state.update_data(pa_post_id=post_id, pa_channel_id=post.channel_id)
+        await safe_edit_message(
+            callback.message,
+            "📊 **Ввод метрик поста**\n\n👁 Введите количество **просмотров**:",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"autopost_view_posted:{post_id}")]
+            ])
+        )
+        await state.set_state(AdminAutopostingStates.waiting_post_views)
+    except Exception as e:
+        logger.error(f"Error in pa_enter_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminAutopostingStates.waiting_post_views)
+async def pa_receive_views(message: Message, state: FSMContext):
+    """Получить просмотры"""
+    try:
+        views = int(message.text.strip().replace(" ", "").replace(",", ""))
+        if views < 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите целое неотрицательное число!")
+        return
+
+    await state.update_data(pa_views=views)
+    await message.answer(
+        f"✅ Просмотры: {views:,}\n\n👍 Введите количество **реакций**:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="autopost_analytics")]
+        ])
+    )
+    await state.set_state(AdminAutopostingStates.waiting_post_reactions)
+
+
+@router.message(AdminAutopostingStates.waiting_post_reactions)
+async def pa_receive_reactions(message: Message, state: FSMContext):
+    """Получить реакции"""
+    try:
+        reactions = int(message.text.strip().replace(" ", "").replace(",", ""))
+        if reactions < 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите целое неотрицательное число!")
+        return
+
+    await state.update_data(pa_reactions=reactions)
+    await message.answer(
+        f"✅ Реакции: {reactions:,}\n\n↩️ Введите количество **пересылок**:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="autopost_analytics")]
+        ])
+    )
+    await state.set_state(AdminAutopostingStates.waiting_post_forwards)
+
+
+@router.message(AdminAutopostingStates.waiting_post_forwards)
+async def pa_receive_forwards(message: Message, state: FSMContext):
+    """Получить пересылки"""
+    try:
+        forwards = int(message.text.strip().replace(" ", "").replace(",", ""))
+        if forwards < 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите целое неотрицательное число!")
+        return
+
+    await state.update_data(pa_forwards=forwards)
+    await message.answer(
+        f"✅ Пересылки: {forwards:,}\n\n🔖 Введите количество **сохранений**:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="autopost_analytics")]
+        ])
+    )
+    await state.set_state(AdminAutopostingStates.waiting_post_saves)
+
+
+@router.message(AdminAutopostingStates.waiting_post_saves)
+async def pa_receive_saves(message: Message, state: FSMContext):
+    """Получить сохранения и сохранить запись аналитики"""
+    try:
+        saves = int(message.text.strip().replace(" ", "").replace(",", ""))
+        if saves < 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите целое неотрицательное число!")
+        return
+
+    data = await state.get_data()
+    post_id = data.get("pa_post_id")
+    channel_id = data.get("pa_channel_id")
+    views = data.get("pa_views", 0)
+    reactions = data.get("pa_reactions", 0)
+    forwards = data.get("pa_forwards", 0)
+
+    await state.clear()
+
+    try:
+        async with async_session_maker() as session:
+            # Проверяем, есть ли уже запись для этого поста
+            existing = (await session.execute(
+                select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post_id)
+            )).scalar_one_or_none()
+
+            if existing:
+                existing.views = views
+                existing.reactions = reactions
+                existing.forwards = forwards
+                existing.saves = saves
+                existing.recorded_at = datetime.utcnow()
+                existing.recorded_by = message.from_user.id
+                existing.ai_recommendation = None  # Сбрасываем старую рекомендацию
+                analytics = existing
+            else:
+                analytics = PostAnalytics(
+                    scheduled_post_id=post_id,
+                    channel_id=channel_id,
+                    views=views,
+                    reactions=reactions,
+                    forwards=forwards,
+                    saves=saves,
+                    recorded_by=message.from_user.id,
+                )
+                session.add(analytics)
+
+            await session.commit()
+            await session.refresh(analytics)
+            analytics_id = analytics.id
+
+        total_engage = reactions + forwards + saves
+        er = round(total_engage / views * 100, 2) if views > 0 else 0
+
+        await message.answer(
+            f"✅ **Метрики поста сохранены!**\n\n"
+            f"👁 Просмотры: **{views:,}**\n"
+            f"👍 Реакции: **{reactions:,}**\n"
+            f"↩️ Пересылки: **{forwards:,}**\n"
+            f"🔖 Сохранения: **{saves:,}**\n"
+            f"📈 Engagement Rate: **{er}%**\n\n"
+            f"Получите AI-рекомендации по этому посту:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🤖 AI-рекомендации", callback_data=f"pa_ai:{analytics_id}")],
+                [InlineKeyboardButton(text="📊 Все аналитики", callback_data="autopost_analytics")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in pa_receive_saves: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@router.callback_query(F.data.startswith("pa_ai:"))
+async def pa_ai_recommend(callback: CallbackQuery):
+    """Получить AI-рекомендацию по аналитике поста"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer("🤖 Генерирую рекомендацию…")
+
+    try:
+        analytics_id = int(callback.data.split(":")[1])
+        async with async_session_maker() as session:
+            analytics = await session.get(PostAnalytics, analytics_id)
+            if not analytics:
+                await callback.answer("❌ Запись не найдена", show_alert=True)
+                return
+            channel = await session.get(Channel, analytics.channel_id)
+
+        ch_name = channel.name if channel else "Канал"
+        avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
+        cpm = float(channel.cpm or 0) if channel else 0
+
+        recommendation = await ai_trainer_service.get_post_recommendations(
+            channel_name=ch_name,
+            views=analytics.views,
+            reactions=analytics.reactions,
+            forwards=analytics.forwards,
+            saves=analytics.saves,
+            comments=analytics.comments,
+            avg_channel_views=avg_views,
+            cpm=cpm,
+        )
+
+        if recommendation:
+            async with async_session_maker() as session:
+                analytics = await session.get(PostAnalytics, analytics_id)
+                if analytics:
+                    analytics.ai_recommendation = recommendation
+                    await session.commit()
+
+            total_engage = analytics.reactions + analytics.forwards + analytics.saves + analytics.comments
+            er = round(total_engage / analytics.views * 100, 2) if analytics.views > 0 else 0
+
+            text = (
+                f"🤖 **AI-рекомендации для поста #{analytics_id}**\n\n"
+                f"📢 Канал: {ch_name}\n"
+                f"👁 Просмотры: {analytics.views:,} | 📈 ER: {er}%\n\n"
+                f"{recommendation}"
+            )
+        else:
+            text = "⚠️ Не удалось получить AI-рекомендацию. Проверьте настройки Claude API."
+
+        await safe_edit_message(
+            callback.message, text,
+            get_post_analytics_actions_keyboard(analytics_id, has_ai=bool(recommendation))
+        )
+    except Exception as e:
+        logger.error(f"Error in pa_ai_recommend: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "autopost_ai_recommend")
+async def autopost_ai_recommend_overview(callback: CallbackQuery):
+    """Обзор AI-рекомендаций по всем постам с аналитикой"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            # Топ-5 постов по Engagement Rate
+            result = await session.execute(
+                select(PostAnalytics)
+                .where(PostAnalytics.views > 0)
+                .order_by(PostAnalytics.recorded_at.desc())
+                .limit(10)
+            )
+            analytics_list = result.scalars().all()
+
+        if not analytics_list:
+            await safe_edit_message(
+                callback.message,
+                "🤖 **AI-рекомендации**\n\nЕщё нет данных для анализа.\nВнесите метрики для опубликованных постов.",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Опубликованные посты", callback_data="autopost_posted")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
+        # Рассчитываем ER для каждого поста
+        ranked = []
+        for a in analytics_list:
+            total_engage = a.reactions + a.forwards + a.saves + a.comments
+            er = round(total_engage / a.views * 100, 2) if a.views > 0 else 0
+            ranked.append((a, er))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+
+        text = "🤖 **AI-рекомендации по постам**\n\n📈 Топ постов по вовлечённости:\n\n"
+        buttons = []
+        for i, (a, er) in enumerate(ranked[:5], 1):
+            has_rec = "✅" if a.ai_recommendation else "💡"
+            text += f"{i}. #{a.id} — 👁{a.views:,} | ER: {er}% {has_rec}\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"#{a.id} — ER {er}% {'(есть рек.)' if a.ai_recommendation else '→ получить'}",
+                callback_data=f"pa_ai:{a.id}" if not a.ai_recommendation else f"pa_view:{a.id}"
+            )])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")])
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in autopost_ai_recommend_overview: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 
 # ==================== НАСТРОЙКИ ====================
