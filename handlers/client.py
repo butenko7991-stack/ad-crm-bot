@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from config import CHANNEL_CATEGORIES, ADMIN_IDS, LOYALTY_DISCOUNTS
 from database import async_session_maker, Channel, Slot, Client, Order, Manager, PromoCode
-from keyboards import get_channels_keyboard, get_dates_keyboard, get_times_keyboard, get_format_keyboard
+from keyboards import get_channels_keyboard, get_dates_keyboard, get_calendar_keyboard, get_times_keyboard, get_format_keyboard
 from utils import BookingStates
 
 
@@ -153,6 +153,44 @@ async def back_to_dates(callback: CallbackQuery, state: FSMContext):
     # Перенаправляем на выбор канала
     callback.data = f"channel:{channel_id}"
     await select_channel(callback, state)
+
+
+@router.callback_query(F.data == "cal_ignore")
+async def cal_ignore(callback: CallbackQuery):
+    """Нажатие на нередактируемую ячейку календаря — просто гасим уведомление"""
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cal_nav:"), BookingStates.selecting_date)
+async def cal_nav(callback: CallbackQuery, state: FSMContext):
+    """Навигация по месяцам в клиентском календаре"""
+    await callback.answer()
+
+    try:
+        _, year_s, month_s = callback.data.split(":")
+        year, month = int(year_s), int(month_s)
+    except (ValueError, IndexError):
+        logger.warning(f"cal_nav: malformed callback data: {callback.data!r}")
+        return
+    if not channel_id:
+        return
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Slot).where(
+                    Slot.channel_id == channel_id,
+                    Slot.status == "available",
+                    Slot.slot_date >= date.today()
+                )
+            )
+            slots = result.scalars().all()
+
+        await callback.message.edit_reply_markup(
+            reply_markup=get_calendar_keyboard(slots, year, month)
+        )
+    except Exception as e:
+        logger.error(f"Error in cal_nav: {traceback.format_exc()}")
 
 
 @router.callback_query(F.data.startswith("date:"), BookingStates.selecting_date)

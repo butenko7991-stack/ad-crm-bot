@@ -86,3 +86,8 @@ class AdminPromoStates(StatesGroup):
     waiting_code = State()
     waiting_discount = State()
     waiting_max_uses = State()
+
+
+class AdminSlotStates(StatesGroup):
+    """Состояния управления слотами канала"""
+    waiting_slot_config = State()  # Ожидание ввода параметров генерации слотов

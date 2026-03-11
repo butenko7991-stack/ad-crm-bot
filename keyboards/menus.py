@@ -1,6 +1,7 @@
 """
 Клавиатуры и меню
 """
+import calendar
 from typing import List, Optional
 from datetime import date
 
@@ -10,6 +11,15 @@ from aiogram.types import (
 )
 
 from config import CHANNEL_CATEGORIES, MANAGER_LEVELS
+
+# Локализованные названия месяцев (именительный падеж)
+_MONTH_NAMES = [
+    "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+]
+
+# Сокращённые названия дней недели (Пн–Вс)
+_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
 # ==================== ГЛАВНЫЕ МЕНЮ ====================
@@ -133,6 +143,7 @@ def get_channel_settings_keyboard(channel_id: int, is_active: bool) -> InlineKey
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"adm_ch_update:{channel_id}")],
         [InlineKeyboardButton(text="💰 Изменить цены", callback_data=f"adm_ch_prices:{channel_id}")],
+        [InlineKeyboardButton(text="📅 Слоты", callback_data=f"adm_ch_slots:{channel_id}")],
         [InlineKeyboardButton(
             text="❌ Деактивировать" if is_active else "✅ Активировать",
             callback_data=f"adm_ch_toggle:{channel_id}"
@@ -166,27 +177,79 @@ def get_category_keyboard() -> InlineKeyboardMarkup:
 
 # ==================== БРОНИРОВАНИЕ ====================
 
-def get_dates_keyboard(slots: list) -> InlineKeyboardMarkup:
-    """Клавиатура выбора даты"""
-    dates = sorted(set(s.slot_date for s in slots))
-    buttons = []
-    row = []
-    
-    for d in dates[:14]:
-        row.append(InlineKeyboardButton(
-            text=d.strftime("%d.%m"),
-            callback_data=f"date:{d.isoformat()}"
-        ))
-        if len(row) == 4:
-            buttons.append(row)
-            row = []
-    
-    if row:
+def get_calendar_keyboard(
+    slots: list,
+    year: int,
+    month: int,
+    back_cb: str = "back_to_channels",
+    date_cb_prefix: str = "date",
+    nav_cb_prefix: str = "cal_nav",
+) -> InlineKeyboardMarkup:
+    """Календарь-клавиатура с подсвеченными доступными датами.
+
+    Аргументы:
+        slots          — список объектов Slot (должны иметь поле slot_date: date)
+        year, month    — отображаемый месяц
+        back_cb        — callback_data кнопки «Назад»
+        date_cb_prefix — префикс callback_data при выборе даты (``date`` или ``mgr_post_date``)
+        nav_cb_prefix  — префикс callback_data для навигации по месяцам
+    """
+    today = date.today()
+
+    # Набор дат, для которых есть доступные слоты
+    available_dates = {s.slot_date for s in slots}
+
+    buttons: list = []
+
+    # ── Строка навигации: ◀️  Месяц ГГГГ  ▶️ ──────────────────────────
+    prev_month = month - 1 if month > 1 else 12
+    prev_year  = year if month > 1 else year - 1
+    next_month = month + 1 if month < 12 else 1
+    next_year  = year if month < 12 else year + 1
+
+    header_text = f"{_MONTH_NAMES[month]} {year}"
+    buttons.append([
+        InlineKeyboardButton(text="◀️", callback_data=f"{nav_cb_prefix}:{prev_year}:{prev_month}"),
+        InlineKeyboardButton(text=header_text, callback_data="cal_ignore"),
+        InlineKeyboardButton(text="▶️", callback_data=f"{nav_cb_prefix}:{next_year}:{next_month}"),
+    ])
+
+    # ── Заголовок дней недели ──────────────────────────────────────────
+    buttons.append([
+        InlineKeyboardButton(text=d, callback_data="cal_ignore") for d in _WEEKDAYS
+    ])
+
+    # ── Дни месяца ────────────────────────────────────────────────────
+    cal = calendar.monthcalendar(year, month)
+    for week in cal:
+        row = []
+        for weekday, day in enumerate(week):
+            if day == 0:
+                # Пустая ячейка (до начала / после конца месяца)
+                row.append(InlineKeyboardButton(text=" ", callback_data="cal_ignore"))
+            else:
+                current = date(year, month, day)
+                if current in available_dates and current >= today:
+                    # День со слотами — можно выбрать
+                    row.append(InlineKeyboardButton(
+                        text=str(day),
+                        callback_data=f"{date_cb_prefix}:{current.isoformat()}"
+                    ))
+                else:
+                    # Нет слотов или прошедший день
+                    row.append(InlineKeyboardButton(text="·", callback_data="cal_ignore"))
         buttons.append(row)
-    
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_channels")])
-    
+
+    # ── Кнопка «Назад» ────────────────────────────────────────────────
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb)])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_dates_keyboard(slots: list) -> InlineKeyboardMarkup:
+    """Клавиатура выбора даты (отображает текущий месяц с доступными датами)."""
+    today = date.today()
+    return get_calendar_keyboard(slots, today.year, today.month)
 
 
 def get_times_keyboard(slots: list, channel_prices: dict) -> InlineKeyboardMarkup:

@@ -63,6 +63,9 @@ async def init_db():
             "ALTER TABLE managers ADD COLUMN IF NOT EXISTS max_id BIGINT",
             "ALTER TABLE clients ADD COLUMN IF NOT EXISTS max_id BIGINT",
             "ALTER TABLE scheduled_posts ALTER COLUMN order_id DROP NOT NULL",
+            "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS scheduled_time TIMESTAMP",
+            "UPDATE scheduled_posts SET scheduled_time = scheduled_at WHERE scheduled_time IS NULL AND scheduled_at IS NOT NULL",
+            "ALTER TABLE scheduled_posts ALTER COLUMN scheduled_at DROP NOT NULL",
         ]
 
         for migration in migrations:
