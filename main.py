@@ -1,5 +1,5 @@
 """
-CRM Bot для продажи рекламы в Telegram-каналах
+CRM Bot для продажи рекламы в Telegram-каналах и сети Max
 Точка входа
 """
 import asyncio
@@ -15,7 +15,7 @@ from aiogram.types import Update
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
-from config import BOT_TOKEN, ADMIN_IDS
+from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
 from database import init_db, async_session_maker
 from database.models import Slot
 from handlers import setup_routers
@@ -58,6 +58,29 @@ async def global_error_handler(update: Update, exception: Exception) -> bool:
     # Логируем полную ошибку
     logger.error(f"Ошибка: {exception}\n{traceback.format_exc()}")
     return True
+
+
+async def run_max_bot():
+    """Запускает бота в сети Max (если MAX_BOT_TOKEN задан)."""
+    if not MAX_BOT_TOKEN:
+        logger.info("MAX_BOT_TOKEN не задан — бот в сети Max не запускается")
+        return
+
+    try:
+        from maxapi import Bot as MaxBot
+        from max_bot import setup_max_dispatcher
+    except ImportError:
+        logger.error("Библиотека maxapi не установлена. Установите её: pip install maxapi")
+        return
+
+    max_bot = MaxBot(MAX_BOT_TOKEN)
+    max_dp = setup_max_dispatcher()
+
+    logger.info("🚀 Max-бот запускается...")
+    try:
+        await max_dp.start_polling(max_bot)
+    except Exception:
+        logger.error(f"Ошибка Max-бота: {traceback.format_exc()}")
 
 
 async def main():
@@ -106,7 +129,11 @@ async def main():
             logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
     
     try:
-        await dp.start_polling(bot)
+        # Запускаем Telegram-бот и Max-бот параллельно
+        await asyncio.gather(
+            dp.start_polling(bot),
+            run_max_bot(),
+        )
     finally:
         scheduler.shutdown(wait=False)
         await bot.session.close()

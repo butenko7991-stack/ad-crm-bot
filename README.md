@@ -1,12 +1,13 @@
 # AD-CRM-Bot
 
-Telegram-бот для управления продажами рекламы в Telegram-каналах. Полноценная CRM-система для команды менеджеров с автоматизацией, геймификацией и AI-тренером.
+CRM-бот для управления продажами рекламы. Работает одновременно в **Telegram** и **Max** (ex-ICQ New, мессенджер VK). Полноценная CRM-система для команды менеджеров с автоматизацией, геймификацией и AI-тренером.
 
 ## 🛠 Технологии
 
 | Компонент | Технология |
 |-----------|-----------|
-| Бот-фреймворк | [Aiogram 3.4+](https://docs.aiogram.dev/) |
+| Telegram-бот | [Aiogram 3.4+](https://docs.aiogram.dev/) |
+| Max-бот | [maxapi 0.9+](https://github.com/max-messenger/max-botapi-python) |
 | База данных | PostgreSQL + SQLAlchemy 2.0 (async) |
 | Драйвер БД | asyncpg |
 | HTTP | aiohttp |
@@ -22,7 +23,8 @@ Telegram-бот для управления продажами рекламы в
 Создайте `.env` файл:
 
 ```env
-BOT_TOKEN=ваш_токен_бота
+BOT_TOKEN=ваш_токен_telegram_бота
+MAX_BOT_TOKEN=ваш_токен_max_бота   # опционально, для сети Max
 DATABASE_URL=postgresql+asyncpg://user:pass@localhost/ad_crm
 ADMIN_IDS=123456789,987654321
 ADMIN_PASSWORD=ваш_пароль
@@ -30,6 +32,8 @@ CLAUDE_API_KEY=ваш_ключ_claude   # опционально
 TELEMETR_API_TOKEN=ваш_токен     # опционально
 AUTOPOST_ENABLED=true
 ```
+
+> **Токен для Max:** Зарегистрируйте бота через [@MaxBotAPI](https://max.ru/botapi) и добавьте полученный токен в `MAX_BOT_TOKEN`. Если переменная не задана, бот запустится только в Telegram.
 
 ### 2. Установка зависимостей
 
@@ -57,13 +61,18 @@ ad-crm-bot/
 │   ├── session.py             # Подключение к БД
 │   └── __init__.py
 │
-├── handlers/                  # Обработчики команд и кнопок
+├── handlers/                  # Обработчики команд и кнопок (Telegram)
 │   ├── __init__.py
 │   ├── common.py              # /start, /help, роли
 │   ├── admin.py               # Панель администратора
 │   ├── manager.py             # Кабинет менеджера
 │   ├── client.py              # Бронирование рекламы
 │   └── training.py            # Обучение менеджеров
+│
+├── max_bot/                   # Поддержка сети Max
+│   ├── __init__.py
+│   ├── handlers.py            # Обработчики для Max (аналог handlers/)
+│   └── keyboards.py           # Клавиатуры для Max (InlineKeyboardBuilder)
 │
 ├── services/                  # Бизнес-логика
 │   ├── ai_trainer.py          # AI-тренер (Claude API)
