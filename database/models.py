@@ -92,6 +92,7 @@ class Client(Base):
     first_name = Column(String(255))
     total_orders = Column(Integer, default=0)
     total_spent = Column(Numeric(12, 2), default=0)
+    referrer_id = Column(Integer, ForeignKey("managers.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     orders = relationship("Order", back_populates="client")

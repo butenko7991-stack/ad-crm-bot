@@ -64,10 +64,13 @@ async def cmd_start(message: Message, state: FSMContext):
                 client = Client(
                     telegram_id=user_id,
                     username=user.username,
-                    first_name=user.first_name
+                    first_name=user.first_name,
+                    referrer_id=ref_manager_id
                 )
                 session.add(client)
-                await session.commit()
+            elif client.referrer_id is None:
+                client.referrer_id = ref_manager_id
+            await session.commit()
     
     if manager:
         level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
@@ -222,6 +225,12 @@ async def cmd_training(message: Message):
         reply_markup=get_training_menu(),
         parse_mode=ParseMode.MARKDOWN
     )
+
+
+@router.message(Command("sales"))
+async def cmd_sales(message: Message):
+    """Команда /sales — каналы для продажи"""
+    await btn_sales(message)
 
 
 # ==================== ТЕКСТОВЫЕ КНОПКИ ====================

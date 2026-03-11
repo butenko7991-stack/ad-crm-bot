@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -371,12 +371,18 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             
             slot.status = "reserved"
             slot.reserved_by = user.id
-            slot.reserved_until = datetime.utcnow()
+            slot.reserved_until = datetime.utcnow() + timedelta(hours=24)
+            
+            # Определяем менеджера по реферальной ссылке клиента
+            manager_id = None
+            if client.referrer_id:
+                manager_id = client.referrer_id
             
             # Создаём заказ
             order = Order(
                 slot_id=slot.id,
                 client_id=client.id,
+                manager_id=manager_id,
                 format_type=data.get("format_type", "1/24"),
                 base_price=Decimal(str(data.get("price", 0))),
                 final_price=Decimal(str(data.get("price", 0))),
