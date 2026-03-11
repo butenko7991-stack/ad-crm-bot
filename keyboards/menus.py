@@ -83,6 +83,9 @@ def get_admin_panel_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics"),
             InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve"),
         ],
+        [
+            InlineKeyboardButton(text="🎟 Промокоды", callback_data="adm_promo"),
+        ],
     ])
 
 

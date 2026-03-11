@@ -156,7 +156,8 @@ class Order(Base):
     ad_content = Column(Text)
     ad_file_id = Column(String(500))
     ad_file_type = Column(String(20))
-    
+    promo_code = Column(String(50))
+
     created_at = Column(DateTime, default=datetime.utcnow)
     paid_at = Column(DateTime)
     posted_at = Column(DateTime)
@@ -257,3 +258,18 @@ class PostAnalytics(Base):
     # Временные метки
     recorded_at = Column(DateTime, default=datetime.utcnow)
     recorded_by = Column(BigInteger)  # Admin who entered metrics
+
+
+class PromoCode(Base):
+    """Промокоды для скидок на размещение рекламы"""
+    __tablename__ = "promo_codes"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), unique=True, nullable=False)
+    discount_percent = Column(Numeric(5, 2), nullable=False, default=10)
+    max_uses = Column(Integer, nullable=True)   # None = неограниченно
+    uses_count = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    expires_at = Column(DateTime, nullable=True)  # None = без срока
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(BigInteger)

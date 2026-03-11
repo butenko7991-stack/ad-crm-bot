@@ -15,10 +15,10 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS
-from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics
+from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
@@ -2284,9 +2284,20 @@ async def adm_view_order(callback: CallbackQuery):
             f"📢 Канал: {channel_name}\n"
             f"📅 Слот: {slot_info}\n"
             f"📋 Формат: {order.format_type}\n"
-            f"💰 Сумма: **{float(order.final_price):,.0f}₽**\n"
-            f"📊 Статус: {status_text}\n"
+            f"💰 Базовая цена: {float(order.base_price):,.0f}₽\n"
         )
+
+        if order.discount_percent and float(order.discount_percent) > 0:
+            saved = float(order.base_price) - float(order.final_price)
+            promo_label = f" (промокод: {order.promo_code})" if order.promo_code else " (лояльность)"
+            text += (
+                f"🏷 Скидка{promo_label}: **{float(order.discount_percent):.0f}%** (−{saved:,.0f}₽)\n"
+                f"💵 Итого: **{float(order.final_price):,.0f}₽**\n"
+            )
+        else:
+            text += f"💵 Итого: **{float(order.final_price):,.0f}₽**\n"
+
+        text += f"📊 Статус: {status_text}\n"
 
         if order.ad_content:
             text += f"\n📝 Текст:\n{order.ad_content[:300]}{'...' if len(order.ad_content) > 300 else ''}\n"
@@ -3203,3 +3214,201 @@ async def btn_adm_logout(message: Message):
     if message.from_user.id in authenticated_admins:
         authenticated_admins.discard(message.from_user.id)
         await message.answer("👋 Вы вышли из админ-панели")
+
+
+# ==================== ПРОМОКОДЫ ====================
+
+@router.callback_query(F.data == "adm_promo")
+async def adm_promo_list(callback: CallbackQuery):
+    """Список промокодов"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(PromoCode).order_by(PromoCode.created_at.desc()).limit(20)
+            )
+            promos = result.scalars().all()
+
+        if not promos:
+            text = "🎟 **Промокоды**\n\nПромокодов пока нет."
+        else:
+            text = "🎟 **Промокоды**\n\n"
+            for p in promos:
+                status = "🟢" if p.is_active else "🔴"
+                uses = f"{p.uses_count}/{p.max_uses}" if p.max_uses else str(p.uses_count)
+                exp = p.expires_at.strftime("%d.%m.%Y") if p.expires_at else "∞"
+                text += f"{status} `{p.code}` — **{float(p.discount_percent):.0f}%** | использований: {uses} | до {exp}\n"
+
+        buttons = [
+            [InlineKeyboardButton(text="➕ Создать промокод", callback_data="adm_promo_create")],
+        ]
+
+        # Кнопки деактивации для активных кодов
+        if promos:
+            active = [p for p in promos if p.is_active]
+            for p in active[:5]:
+                buttons.append([InlineKeyboardButton(
+                    text=f"❌ Деактивировать {p.code}",
+                    callback_data=f"adm_promo_deactivate:{p.id}"
+                )])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in adm_promo_list: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_promo_create")
+async def adm_promo_create_start(callback: CallbackQuery, state: FSMContext):
+    """Начало создания промокода"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    await callback.answer()
+    await safe_edit_message(
+        callback.message,
+        "🎟 **Создание промокода**\n\nВведите код промокода (только латинские буквы и цифры, например `SUMMER25`):",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_promo")]
+        ])
+    )
+    await state.set_state(AdminPromoStates.waiting_code)
+
+
+@router.message(AdminPromoStates.waiting_code)
+async def adm_promo_receive_code(message: Message, state: FSMContext):
+    """Получить код промокода"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    code = (message.text or "").strip().upper()
+    if not code or not code.isalnum():
+        await message.answer("❌ Код должен содержать только латинские буквы и цифры. Попробуйте ещё раз.")
+        return
+
+    # Проверяем уникальность
+    try:
+        async with async_session_maker() as session:
+            existing = (await session.execute(
+                select(PromoCode).where(PromoCode.code == code)
+            )).scalar_one_or_none()
+        if existing:
+            await message.answer("❌ Такой промокод уже существует. Введите другой.")
+            return
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+        return
+
+    await state.update_data(promo_code=code)
+    await message.answer(
+        f"✅ Код: `{code}`\n\nВведите размер скидки в % (например `15` для 15%):",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminPromoStates.waiting_discount)
+
+
+@router.message(AdminPromoStates.waiting_discount)
+async def adm_promo_receive_discount(message: Message, state: FSMContext):
+    """Получить скидку промокода"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    text = (message.text or "").strip().replace("%", "")
+    try:
+        discount = float(text)
+        if not (1 <= discount <= 100):
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите число от 1 до 100.")
+        return
+
+    await state.update_data(promo_discount=discount)
+    await message.answer(
+        "Введите максимальное число использований (например `50`) или `0` для неограниченного:"
+    )
+    await state.set_state(AdminPromoStates.waiting_max_uses)
+
+
+@router.message(AdminPromoStates.waiting_max_uses)
+async def adm_promo_receive_max_uses(message: Message, state: FSMContext):
+    """Получить лимит использований и сохранить промокод"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    text = (message.text or "").strip()
+    try:
+        max_uses_val = int(text)
+        if max_uses_val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите целое число ≥ 0.")
+        return
+
+    data = await state.get_data()
+    code = data["promo_code"]
+    discount = data["promo_discount"]
+    max_uses = max_uses_val if max_uses_val > 0 else None
+
+    try:
+        async with async_session_maker() as session:
+            promo = PromoCode(
+                code=code,
+                discount_percent=discount,
+                max_uses=max_uses,
+                uses_count=0,
+                is_active=True,
+                created_by=message.from_user.id,
+            )
+            session.add(promo)
+            await session.commit()
+
+        await state.clear()
+        max_label = str(max_uses) if max_uses else "∞"
+        await message.answer(
+            f"✅ **Промокод создан!**\n\n"
+            f"🎟 Код: `{code}`\n"
+            f"🏷 Скидка: **{discount:.0f}%**\n"
+            f"🔢 Лимит использований: **{max_label}**",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎟 К промокодам", callback_data="adm_promo")],
+                [InlineKeyboardButton(text="◀️ Главное меню", callback_data="adm_back")],
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error creating promo: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка при создании промокода: {str(e)[:100]}")
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("adm_promo_deactivate:"))
+async def adm_promo_deactivate(callback: CallbackQuery):
+    """Деактивировать промокод"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    promo_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            promo = await session.get(PromoCode, promo_id)
+            if promo:
+                promo.is_active = False
+                await session.commit()
+                await callback.answer(f"✅ Промокод {promo.code} деактивирован")
+            else:
+                await callback.answer("❌ Промокод не найден", show_alert=True)
+                return
+        # Обновляем список
+        callback.data = "adm_promo"
+        await adm_promo_list(callback)
+    except Exception as e:
+        logger.error(f"Error deactivating promo: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)

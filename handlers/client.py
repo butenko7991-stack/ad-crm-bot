@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -13,8 +13,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
 
-from config import CHANNEL_CATEGORIES, ADMIN_IDS
-from database import async_session_maker, Channel, Slot, Client, Order, Manager
+from config import CHANNEL_CATEGORIES, ADMIN_IDS, LOYALTY_DISCOUNTS
+from database import async_session_maker, Channel, Slot, Client, Order, Manager, PromoCode
 from keyboards import get_channels_keyboard, get_dates_keyboard, get_times_keyboard, get_format_keyboard
 from utils import BookingStates
 
@@ -298,41 +298,158 @@ async def receive_content(message: Message, state: FSMContext):
         ad_file_id=file_id,
         ad_file_type=file_type
     )
-    
+
+    await message.answer(
+        "🎟 **Промокод**\n\n"
+        "Есть промокод на скидку? Введите его или нажмите «Пропустить».",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏭ Пропустить", callback_data="skip_promo")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    await state.set_state(BookingStates.entering_promo)
+
+
+# ==================== ПРОМОКОД ====================
+
+def _get_loyalty_discount(total_orders: int) -> int:
+    """Вернуть % скидки по программе лояльности на основе числа предыдущих заказов."""
+    discount = 0
+    for min_orders, pct in sorted(LOYALTY_DISCOUNTS.items()):
+        if total_orders >= min_orders:
+            discount = pct
+    return discount
+
+
+async def _validate_promo(code: str) -> tuple[int, str]:
+    """Валидировать промокод. Возвращает (discount_percent, error_message)."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(PromoCode).where(PromoCode.code == code.upper())
+            )
+            promo = result.scalar_one_or_none()
+
+        if not promo:
+            return 0, "❌ Промокод не найден."
+        if not promo.is_active:
+            return 0, "❌ Промокод деактивирован."
+        if promo.expires_at and promo.expires_at < now:
+            return 0, "❌ Срок действия промокода истёк."
+        if promo.max_uses and promo.uses_count >= promo.max_uses:
+            return 0, "❌ Промокод исчерпан."
+        return int(promo.discount_percent), ""
+    except Exception as e:
+        logger.error(f"Error validating promo: {e}")
+        return 0, "⚠️ Ошибка проверки промокода."
+
+
+async def _show_order_confirmation(msg_or_callback, state: FSMContext):
+    """Показать итоговый экран подтверждения с учётом скидки."""
     data = await state.get_data()
     channel_name = data.get("channel_name", "Канал")
     format_type = data.get("format_type", "1/24")
-    price = data.get("price", 0)
+    base_price = data.get("price", 0)
     selected_date = data.get("selected_date", "")
-    
-    # Показываем превью
+    content_text = data.get("ad_content", "")
+    file_type = data.get("ad_file_type")
+    discount_pct = data.get("discount_pct", 0)
+    discount_source = data.get("discount_source", "")
+
+    final_price = int(base_price * (1 - discount_pct / 100))
+
     text = (
         f"✅ **Подтверждение заказа**\n\n"
         f"📢 Канал: {channel_name}\n"
         f"📅 Дата: {selected_date}\n"
         f"📋 Формат: {format_type}\n"
-        f"💰 Цена: **{price:,}₽**\n\n"
+        f"💰 Цена: **{base_price:,}₽**\n"
     )
-    
+
+    if discount_pct > 0:
+        saved = base_price - final_price
+        text += (
+            f"🏷 Скидка {discount_source}: **{discount_pct}%** (−{saved:,}₽)\n"
+            f"💵 Итого: **{final_price:,}₽**\n"
+        )
+    text += "\n"
+
     if content_text:
         text += f"📝 Текст:\n{content_text[:200]}{'...' if len(content_text) > 200 else ''}\n\n"
-    
-    if file_id:
+    if file_type:
         text += f"📎 Медиа: {file_type}\n\n"
-    
+
     text += "Всё верно?"
-    
-    await message.answer(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_order"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
-            ]
-        ]),
-        parse_mode=ParseMode.MARKDOWN
-    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_order"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"),
+        ]
+    ])
+
+    if hasattr(msg_or_callback, "message"):
+        await msg_or_callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await msg_or_callback.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
     await state.set_state(BookingStates.confirming)
+
+
+@router.message(BookingStates.entering_promo)
+async def receive_promo_code(message: Message, state: FSMContext):
+    """Обработка введённого промокода"""
+    code = (message.text or "").strip()
+    if not code:
+        await message.answer("❌ Введите промокод или нажмите «Пропустить».")
+        return
+
+    discount_pct, error = await _validate_promo(code)
+    if error:
+        await message.answer(
+            f"{error}\n\nВведите другой промокод или нажмите «Пропустить».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⏭ Пропустить", callback_data="skip_promo")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+            ]),
+        )
+        return
+
+    await state.update_data(promo_code=code.upper(), discount_pct=discount_pct, discount_source=f"промокод {code.upper()}")
+    await _show_order_confirmation(message, state)
+
+
+@router.callback_query(F.data == "skip_promo", BookingStates.entering_promo)
+async def skip_promo(callback: CallbackQuery, state: FSMContext):
+    """Пропустить ввод промокода — применить лояльность если есть"""
+    await callback.answer()
+
+    # Проверяем программу лояльности
+    user = callback.from_user
+    loyalty_discount = 0
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Client).where(Client.telegram_id == user.id)
+            )
+            client = result.scalar_one_or_none()
+            if client:
+                loyalty_discount = _get_loyalty_discount(client.total_orders or 0)
+    except Exception as e:
+        logger.error(f"Error checking loyalty: {e}")
+
+    if loyalty_discount > 0:
+        await state.update_data(
+            promo_code=None,
+            discount_pct=loyalty_discount,
+            discount_source="лояльность",
+        )
+    else:
+        await state.update_data(promo_code=None, discount_pct=0, discount_source="")
+
+    await _show_order_confirmation(callback, state)
 
 
 # ==================== ПОДТВЕРЖДЕНИЕ ====================
@@ -344,6 +461,8 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     
     data = await state.get_data()
     user = callback.from_user
+    discount_pct = data.get("discount_pct", 0)
+    promo_code_used = data.get("promo_code")
     
     try:
         async with async_session_maker() as session:
@@ -378,31 +497,71 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             if client.referrer_id:
                 manager_id = client.referrer_id
             
+            # Рассчитываем итоговую цену с учётом скидки
+            base_price = Decimal(str(data.get("price", 0)))
+            if discount_pct > 0:
+                final_price = base_price * (1 - Decimal(str(discount_pct)) / 100)
+            else:
+                final_price = base_price
+
             # Создаём заказ
             order = Order(
                 slot_id=slot.id,
                 client_id=client.id,
                 manager_id=manager_id,
                 format_type=data.get("format_type", "1/24"),
-                base_price=Decimal(str(data.get("price", 0))),
-                final_price=Decimal(str(data.get("price", 0))),
+                base_price=base_price,
+                discount_percent=Decimal(str(discount_pct)),
+                final_price=final_price.quantize(Decimal("0.01")),
+                promo_code=promo_code_used,
                 ad_content=data.get("ad_content"),
                 ad_file_id=data.get("ad_file_id"),
                 ad_file_type=data.get("ad_file_type"),
                 status="pending"
             )
             session.add(order)
+
+            # Обновляем счётчик использований промокода
+            if promo_code_used:
+                promo_result = await session.execute(
+                    select(PromoCode).where(PromoCode.code == promo_code_used)
+                )
+                promo = promo_result.scalar_one_or_none()
+                if promo:
+                    promo.uses_count = (promo.uses_count or 0) + 1
+                    # Автоматически деактивируем исчерпанный промокод
+                    if promo.max_uses and promo.uses_count >= promo.max_uses:
+                        promo.is_active = False
+
+            # Обновляем статистику клиента
+            client.total_orders = (client.total_orders or 0) + 1
+            client.total_spent = (client.total_spent or Decimal("0")) + final_price.quantize(Decimal("0.01"))
+
             await session.commit()
             
             order_id = order.id
             price = float(order.final_price)
+            base = float(base_price)
         
         await state.clear()
+
+        # Формируем сообщение об успехе
+        confirm_text = (
+            f"✅ **Заказ #{order_id} создан!**\n\n"
+        )
+        if discount_pct > 0:
+            saved = base - price
+            confirm_text += (
+                f"💰 Базовая цена: {base:,.0f}₽\n"
+                f"🏷 Скидка: **{discount_pct}%** (−{saved:,.0f}₽)\n"
+                f"💵 К оплате: **{price:,.0f}₽**\n\n"
+            )
+        else:
+            confirm_text += f"💰 К оплате: **{price:,.0f}₽**\n\n"
+        confirm_text += "📤 Отправьте скриншот оплаты для подтверждения."
         
         await callback.message.edit_text(
-            f"✅ **Заказ #{order_id} создан!**\n\n"
-            f"💰 К оплате: **{price:,.0f}₽**\n\n"
-            f"📤 Отправьте скриншот оплаты для подтверждения.",
+            confirm_text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📤 Загрузить скриншот", callback_data=f"upload_payment:{order_id}")]
             ]),

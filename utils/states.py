@@ -10,6 +10,7 @@ class BookingStates(StatesGroup):
     selecting_time = State()
     selecting_format = State()
     entering_content = State()
+    entering_promo = State()
     confirming = State()
     uploading_payment = State()
 
@@ -78,3 +79,10 @@ class AdminCompetitionStates(StatesGroup):
     waiting_end_date = State()
     waiting_prize_pool = State()
     waiting_metric = State()
+
+
+class AdminPromoStates(StatesGroup):
+    """Состояния создания промокода"""
+    waiting_code = State()
+    waiting_discount = State()
+    waiting_max_uses = State()
