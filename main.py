@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
 from database import init_db, async_session_maker
-from database.models import Slot
+from database.models import Slot, ScheduledPost, Channel
 from handlers import setup_routers
 
 
@@ -49,6 +49,85 @@ async def cleanup_expired_slots():
                 logger.info(f"Освобождено {len(expired_slots)} просроченных слотов")
     except Exception:
         logger.error(f"Ошибка очистки слотов: {traceback.format_exc()}")
+
+
+async def publish_scheduled_posts(bot: Bot):
+    """Публикуем посты, время которых наступило, и уведомляем админов"""
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost).where(
+                    ScheduledPost.status == "pending",
+                    ScheduledPost.scheduled_time <= datetime.utcnow()
+                )
+            )
+            posts = result.scalars().all()
+
+            for post in posts:
+                channel = await session.get(Channel, post.channel_id)
+                if not channel:
+                    logger.warning(f"Канал #{post.channel_id} не найден для поста #{post.id}")
+                    post.status = "error"
+                    await session.commit()
+                    continue
+
+                channel_tg_id = channel.telegram_id
+                caption = post.content or None
+
+                try:
+                    if post.file_id and post.file_type == "photo":
+                        sent = await bot.send_photo(
+                            chat_id=channel_tg_id,
+                            photo=post.file_id,
+                            caption=caption,
+                        )
+                    elif post.file_id and post.file_type == "video":
+                        sent = await bot.send_video(
+                            chat_id=channel_tg_id,
+                            video=post.file_id,
+                            caption=caption,
+                        )
+                    elif post.file_id and post.file_type == "document":
+                        sent = await bot.send_document(
+                            chat_id=channel_tg_id,
+                            document=post.file_id,
+                            caption=caption,
+                        )
+                    else:
+                        sent = await bot.send_message(
+                            chat_id=channel_tg_id,
+                            text=post.content or "",
+                        )
+
+                    post.status = "posted"
+                    post.posted_at = datetime.utcnow()
+                    post.message_id = sent.message_id
+                    await session.commit()
+                    logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
+
+                    # Уведомляем администраторов
+                    ch_name = channel.name
+                    content_len = len(post.content) if post.content else 0
+                    text_preview = (post.content[:50] + "…") if content_len > 50 else (post.content or "📎 медиа")
+                    notify_text = (
+                        f"✅ Пост #{post.id} опубликован!\n\n"
+                        f"📢 Канал: {ch_name}\n"
+                        f"🕐 Время публикации: {post.posted_at.strftime('%d.%m.%Y %H:%M')} UTC\n"
+                        f"📝 Превью: {text_preview}"
+                    )
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(admin_id, notify_text)
+                        except Exception:
+                            logger.warning(f"Не удалось уведомить админа {admin_id} о посте #{post.id}", exc_info=True)
+
+                except Exception:
+                    logger.error(f"Ошибка публикации поста #{post.id}: {traceback.format_exc()}")
+                    post.status = "error"
+                    await session.commit()
+
+    except Exception:
+        logger.error(f"Ошибка в publish_scheduled_posts: {traceback.format_exc()}")
 
 
 async def global_error_handler(update: Update, exception: Exception) -> bool:
@@ -114,6 +193,13 @@ async def main():
         trigger="interval",
         minutes=5,
         id="cleanup_expired_slots"
+    )
+    scheduler.add_job(
+        publish_scheduled_posts,
+        trigger="interval",
+        minutes=1,
+        id="publish_scheduled_posts",
+        args=[bot],
     )
     scheduler.start()
     logger.info("Планировщик задач запущен")
