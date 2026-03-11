@@ -79,6 +79,13 @@ def get_admin_panel_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📅 Автопостинг", callback_data="adm_autoposting"),
             InlineKeyboardButton(text="⚙️ Настройки бота", callback_data="adm_settings")
         ],
+        [
+            InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics"),
+            InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve"),
+        ],
+        [
+            InlineKeyboardButton(text="🎟 Промокоды", callback_data="adm_promo"),
+        ],
     ])
 
 
@@ -97,6 +104,7 @@ def get_manager_cabinet_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💰 Вывод средств", callback_data="request_payout"),
             InlineKeyboardButton(text="🏆 Рейтинг", callback_data="mgr_leaderboard")
         ],
+        [InlineKeyboardButton(text="📝 Подать пост на модерацию", callback_data="mgr_submit_post")],
         [InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link")]
     ])
 
@@ -301,6 +309,7 @@ def get_cpm_categories_keyboard(categories: list, page: int = 0, per_page: int =
 def get_autoposting_menu() -> InlineKeyboardMarkup:
     """Меню раздела Автопостинг"""
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать пост", callback_data="autopost_create")],
         [
             InlineKeyboardButton(text="📋 Запланированные", callback_data="autopost_pending"),
             InlineKeyboardButton(text="✅ Опубликованные", callback_data="autopost_posted"),

@@ -33,12 +33,22 @@ async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]
         return None
 
 
+def _apply_err_adjustment(price: float, err_percent: float) -> float:
+    """Применить корректировку цены по показателю ERR."""
+    if err_percent > 20:
+        return price * 1.2
+    if err_percent > 15:
+        return price * 1.1
+    return price
+
+
 def calculate_recommended_price(
     avg_reach: int,
     category: str,
     err_percent: float = 0,
     format_type: str = "1/24",
-    cpm_override: int = None
+    cpm_override: int = None,
+    avg_reach_48h: int = 0
 ) -> int:
     """
     Рассчитать рекомендуемую цену размещения.
@@ -52,21 +62,23 @@ def calculate_recommended_price(
     
     # Базовая цена = (охват × CPM) / 1000
     base_price = (avg_reach * base_cpm) / 1000
+    base_price = _apply_err_adjustment(base_price, err_percent)
     
-    # Корректировка по ERR
-    if err_percent > 20:
-        base_price *= 1.2
-    elif err_percent > 15:
-        base_price *= 1.1
-    
-    # Корректировка по формату
-    format_multipliers = {
-        "1/24": 1.0,
-        "1/48": 0.8,
-        "2/48": 1.6,
-        "native": 2.5
-    }
-    base_price *= format_multipliers.get(format_type, 1.0)
+    # Корректировка по формату:
+    # 1/24 — базовая цена
+    # 1/48 — цена по охвату 48ч (если доступен) или 1.5x от 1/24
+    # 2/48 — два поста = 2x от 1/24
+    # native — навсегда = 2.5x от 1/24
+    if format_type == "1/48":
+        if avg_reach_48h > 0:
+            base_price = (avg_reach_48h * base_cpm) / 1000
+            base_price = _apply_err_adjustment(base_price, err_percent)
+        else:
+            base_price *= 1.5
+    elif format_type == "2/48":
+        base_price *= 2.0
+    elif format_type == "native":
+        base_price *= 2.5
     
     return int(base_price)
 

@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import datetime, date as date_type
+from datetime import datetime, date as date_type, timedelta, timezone
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -14,14 +14,15 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
-from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MANAGER_LEVELS
-from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics
+from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS
+from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
-from utils.states import AdminCPMStates, AdminAutopostingStates
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
+from services.diagnostics import run_diagnostics, gather_business_metrics, get_improvement_suggestions
 
 
 logger = logging.getLogger(__name__)
@@ -360,24 +361,36 @@ async def auto_calculate_prices(callback: CallbackQuery):
             
             category_info = CHANNEL_CATEGORIES.get(channel.category, {"cpm": 1000})
             cpm = float(channel.cpm or category_info.get("cpm", 1000))
-            avg_reach = channel.avg_reach_24h or channel.avg_reach or 0
+            avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
+            avg_reach_48h = channel.avg_reach_48h or 0
             
-            if avg_reach == 0:
+            if avg_reach_24h == 0:
                 await callback.answer("❌ Нет данных об охвате!", show_alert=True)
                 return
             
-            price_124 = int(avg_reach * cpm / 1000)
-            price_148 = int(price_124 * 0.8)
-            price_248 = int(price_124 * 1.6)
+            # 1/24: базовая цена по охвату 24ч
+            price_124 = int(avg_reach_24h * cpm / 1000)
+            # 1/48: по охвату 48ч (если доступен) или 1.5x от 1/24
+            if avg_reach_48h > 0:
+                price_148 = int(avg_reach_48h * cpm / 1000)
+            else:
+                price_148 = int(price_124 * 1.5)
+            # 2/48: два поста = 2x от 1/24
+            price_248 = int(price_124 * 2.0)
+            # Навсегда: 2.5x от 1/24
             price_native = int(price_124 * 2.5)
             
             channel.prices = {"1/24": price_124, "1/48": price_148, "2/48": price_248, "native": price_native}
             await session.commit()
         
+        reach_info = f"📊 Охват 24ч: {avg_reach_24h:,}"
+        if avg_reach_48h > 0:
+            reach_info += f"\n📊 Охват 48ч: {avg_reach_48h:,}"
+        
         await safe_edit_message(
             callback.message,
             f"✅ **Цены рассчитаны по CPM!**\n\n"
-            f"📊 Охват: {avg_reach:,}\n"
+            f"{reach_info}\n"
             f"💰 CPM: {cpm:,.0f}₽\n\n"
             f"**Новые цены:**\n"
             f"• 1/24: {price_124:,}₽\n"
@@ -861,20 +874,99 @@ async def adm_stats(callback: CallbackQuery):
     await callback.answer()
     
     try:
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=7)
+        month_start = today_start - timedelta(days=30)
+
         async with async_session_maker() as session:
+            # Общие заказы
             total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
+            # Заказы по статусам
+            pending_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "pending")
+            )).scalar() or 0
+            payment_uploaded = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
+            )).scalar() or 0
+            confirmed_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
+            )).scalar() or 0
+            cancelled_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "cancelled")
+            )).scalar() or 0
+
+            # Выручка (подтверждённые заказы)
             total_revenue = (await session.execute(
                 select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
             )).scalar() or 0
+            revenue_today = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= today_start
+                )
+            )).scalar() or 0
+            revenue_week = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= week_start
+                )
+            )).scalar() or 0
+            revenue_month = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= month_start
+                )
+            )).scalar() or 0
+
+            # Заказы за период
+            orders_today = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= today_start)
+            )).scalar() or 0
+            orders_week = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= week_start)
+            )).scalar() or 0
+            orders_month = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= month_start)
+            )).scalar() or 0
+
+            # Менеджеры
             total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
+            active_managers = (await session.execute(
+                select(func.count(Manager.id)).where(Manager.is_active == True)
+            )).scalar() or 0
+
+            # Каналы
             total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
-        
+            active_channels = (await session.execute(
+                select(func.count(Channel.id)).where(Channel.is_active == True)
+            )).scalar() or 0
+
+            # Клиенты
+            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
+
         text = (
-            "📊 **Статистика**\n\n"
-            f"📦 Заказов: **{total_orders}**\n"
-            f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
-            f"👥 Менеджеров: **{total_managers}**\n"
-            f"📢 Каналов: **{total_channels}**"
+            "📊 **Детальная статистика**\n\n"
+            "💰 **Выручка:**\n"
+            f"• Сегодня: **{float(revenue_today):,.0f}₽**\n"
+            f"• За 7 дней: **{float(revenue_week):,.0f}₽**\n"
+            f"• За 30 дней: **{float(revenue_month):,.0f}₽**\n"
+            f"• Всего: **{float(total_revenue):,.0f}₽**\n\n"
+            "📦 **Заказы:**\n"
+            f"• Сегодня: **{orders_today}**\n"
+            f"• За 7 дней: **{orders_week}**\n"
+            f"• За 30 дней: **{orders_month}**\n"
+            f"• Всего: **{total_orders}**\n\n"
+            "📋 **Статусы заказов:**\n"
+            f"• ⏳ Ожидают: **{pending_orders}**\n"
+            f"• 💳 Оплата на проверке: **{payment_uploaded}**\n"
+            f"• ✅ Подтверждены: **{confirmed_orders}**\n"
+            f"• ❌ Отменены: **{cancelled_orders}**\n\n"
+            "📢 **Каналы:**\n"
+            f"• Активных: **{active_channels}** из **{total_channels}**\n\n"
+            "👥 **Пользователи:**\n"
+            f"• Клиентов: **{total_clients}**\n"
+            f"• Менеджеров: **{active_managers}** активных из **{total_managers}**"
         )
         
         await safe_edit_message(
@@ -1649,6 +1741,306 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
+# ==================== СОЗДАНИЕ ПОСТА (АВТОПОСТИНГ) ====================
+
+@router.callback_query(F.data == "autopost_create")
+async def autopost_create_start(callback: CallbackQuery, state: FSMContext):
+    """Шаг 1 — выбор канала для нового поста"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Channel).where(Channel.is_active == True).order_by(Channel.name)
+            )
+            channels = result.scalars().all()
+            channels_data = [{"id": ch.id, "name": ch.name} for ch in channels]
+
+        if not channels_data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Нет активных каналов для публикации.",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
+        buttons = []
+        for ch in channels_data:
+            buttons.append([InlineKeyboardButton(
+                text=f"📢 {ch['name']}",
+                callback_data=f"autopost_create_ch:{ch['id']}"
+            )])
+        buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")])
+
+        await safe_edit_message(
+            callback.message,
+            "➕ **Создание поста**\n\nШаг 1/4 — Выберите канал для публикации:",
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+        await state.set_state(AdminCreatePostStates.selecting_channel)
+    except Exception as e:
+        logger.error(f"Error in autopost_create_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("autopost_create_ch:"), AdminCreatePostStates.selecting_channel)
+async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
+    """Шаг 2 — ввод даты и времени публикации"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    channel_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.answer("❌ Канал не найден", show_alert=True)
+                return
+            channel_name = channel.name
+
+        await state.update_data(create_channel_id=channel_id, create_channel_name=channel_name)
+
+        now_hint = datetime.utcnow().strftime("%d.%m.%Y %H:%M")
+        await safe_edit_message(
+            callback.message,
+            f"➕ **Создание поста**\n\n"
+            f"📢 Канал: **{channel_name}**\n\n"
+            f"Шаг 2/4 — Введите дату и время публикации в формате:\n"
+            f"`ДД.ММ.ГГГГ ЧЧ:ММ`\n\n"
+            f"Например: `{now_hint}`",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+            ])
+        )
+        await state.set_state(AdminCreatePostStates.entering_datetime)
+    except Exception as e:
+        logger.error(f"Error in autopost_create_channel: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminCreatePostStates.entering_datetime)
+async def autopost_create_datetime(message: Message, state: FSMContext):
+    """Шаг 3 — ввод времени удаления (часы)"""
+    raw = (message.text or "").strip()
+    try:
+        scheduled_time = datetime.strptime(raw, "%d.%m.%Y %H:%M")
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат даты. Используйте: `ДД.ММ.ГГГГ ЧЧ:ММ`\n"
+            "Например: `25.03.2026 14:00`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if scheduled_time < datetime.utcnow():
+        await message.answer(
+            "❌ Дата публикации должна быть в будущем. Введите корректное время.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await state.update_data(create_scheduled_time=scheduled_time.isoformat())
+
+    await message.answer(
+        f"✅ Время: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n\n"
+        f"Шаг 3/4 — Через сколько часов удалить пост?\n"
+        f"Введите число (0 = не удалять, 24 = удалить через 24ч, 48 = через 48ч и т.д.):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="24ч", callback_data="autopost_del:24"),
+                InlineKeyboardButton(text="48ч", callback_data="autopost_del:48"),
+                InlineKeyboardButton(text="Не удалять", callback_data="autopost_del:0"),
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminCreatePostStates.entering_delete_hours)
+
+
+@router.callback_query(F.data.startswith("autopost_del:"), AdminCreatePostStates.entering_delete_hours)
+async def autopost_create_delete_hours_btn(callback: CallbackQuery, state: FSMContext):
+    """Шаг 3 (кнопкой) — выбрано время удаления"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    delete_hours = int(callback.data.split(":")[1])
+    await state.update_data(create_delete_hours=delete_hours)
+
+    await safe_edit_message(
+        callback.message,
+        f"✅ Удалить через: **{'не удалять' if delete_hours == 0 else f'{delete_hours}ч'}**\n\n"
+        f"Шаг 4/4 — Отправьте рекламный контент поста\n"
+        f"(текст, или текст с фото/видео/документом):",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+        ])
+    )
+    await state.set_state(AdminCreatePostStates.entering_content)
+
+
+@router.message(AdminCreatePostStates.entering_delete_hours)
+async def autopost_create_delete_hours_text(message: Message, state: FSMContext):
+    """Шаг 3 (текстом) — ввод времени удаления"""
+    raw = (message.text or "").strip()
+    try:
+        delete_hours = int(raw)
+        if delete_hours < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите целое число ≥ 0 (например: 24).")
+        return
+
+    await state.update_data(create_delete_hours=delete_hours)
+
+    await message.answer(
+        f"✅ Удалить через: **{'не удалять' if delete_hours == 0 else f'{delete_hours}ч'}**\n\n"
+        f"Шаг 4/4 — Отправьте рекламный контент поста\n"
+        f"(текст, или текст с фото/видео/документом):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminCreatePostStates.entering_content)
+
+
+@router.message(AdminCreatePostStates.entering_content)
+async def autopost_create_content(message: Message, state: FSMContext):
+    """Шаг 4 — получение контента, показ превью и подтверждение"""
+    content_text = message.text or message.caption or ""
+    file_id = None
+    file_type = None
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "video"
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+
+    if not content_text and not file_id:
+        await message.answer(
+            "❌ Отправьте текст или медиафайл (фото/видео/документ).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+            ])
+        )
+        return
+
+    await state.update_data(
+        create_content=content_text,
+        create_file_id=file_id,
+        create_file_type=file_type
+    )
+
+    data = await state.get_data()
+    channel_name = data.get("create_channel_name", "—")
+    scheduled_time_iso = data.get("create_scheduled_time", "")
+    delete_hours = data.get("create_delete_hours", 24)
+
+    try:
+        scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
+        sched_str = scheduled_dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        sched_str = scheduled_time_iso
+
+    delete_str = "не удалять" if delete_hours == 0 else f"через {delete_hours}ч"
+
+    preview = (
+        f"📋 **Подтверждение создания поста**\n\n"
+        f"📢 Канал: **{channel_name}**\n"
+        f"📅 Время публикации: **{sched_str}**\n"
+        f"🗑 Удалить: **{delete_str}**\n"
+    )
+    if content_text:
+        preview += f"\n📝 Текст:\n{content_text[:400]}{'...' if len(content_text) > 400 else ''}\n"
+    if file_id:
+        preview += f"\n📎 Медиафайл: {file_type}\n"
+
+    preview += "\nСоздать пост?"
+
+    await message.answer(
+        preview,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Создать", callback_data="autopost_create_confirm"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")
+            ]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminCreatePostStates.confirming)
+
+
+@router.callback_query(F.data == "autopost_create_confirm", AdminCreatePostStates.confirming)
+async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
+    """Финальное сохранение поста в БД"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    data = await state.get_data()
+
+    try:
+        scheduled_time = datetime.fromisoformat(data["create_scheduled_time"])
+
+        async with async_session_maker() as session:
+            post = ScheduledPost(
+                channel_id=data["create_channel_id"],
+                content=data.get("create_content") or None,
+                file_id=data.get("create_file_id"),
+                file_type=data.get("create_file_type"),
+                scheduled_time=scheduled_time,
+                delete_after_hours=data.get("create_delete_hours", 24),
+                status="pending",
+                created_by=callback.from_user.id
+            )
+            session.add(post)
+            await session.commit()
+            post_id = post.id
+
+        await state.clear()
+
+        channel_name = data.get("create_channel_name", "—")
+        delete_hours = data.get("create_delete_hours", 24)
+        delete_str = "не удалять" if delete_hours == 0 else f"через {delete_hours}ч"
+
+        await safe_edit_message(
+            callback.message,
+            f"✅ **Пост #{post_id} создан!**\n\n"
+            f"📢 Канал: **{channel_name}**\n"
+            f"📅 Публикация: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n"
+            f"🗑 Удаление: **{delete_str}**\n\n"
+            f"Пост поставлен в очередь автопостинга.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Запланированные", callback_data="autopost_pending")],
+                [InlineKeyboardButton(text="◀️ Автопостинг", callback_data="adm_autoposting")]
+            ])
+        )
+    except Exception as e:
+        await state.clear()
+        logger.error(f"Error in autopost_create_confirm: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка при создании поста:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+
+
 # ==================== НАСТРОЙКИ ====================
 
 @router.callback_query(F.data == "adm_settings")
@@ -1665,13 +2057,187 @@ async def adm_settings(callback: CallbackQuery):
         f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
         f"🤖 Claude API: {'🟢' if CLAUDE_API_KEY else '🔴'}\n"
         f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
+        f"🔵 Max Bot: {'🟢 Подключён' if MAX_BOT_TOKEN else '🔴 Не подключён'}\n"
         f"👤 Админы: {len(ADMIN_IDS)}"
     )
     
+    buttons = [
+        [InlineKeyboardButton(text="🔵 Настройки Max Bot", callback_data="adm_max_settings")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+    ]
+    
     await safe_edit_message(
         callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
+        InlineKeyboardMarkup(inline_keyboard=buttons)
     )
+
+
+@router.callback_query(F.data == "adm_max_settings")
+async def adm_max_settings(callback: CallbackQuery):
+    """Информация о подключении Max Bot"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    if MAX_BOT_TOKEN:
+        status_text = "🟢 **Max Bot подключён**\n\nБот в сети Max активен и принимает пользователей."
+    else:
+        status_text = (
+            "🔴 **Max Bot не подключён**\n\n"
+            "Для подключения бота в сеть Max:\n"
+            "1. Перейдите на **dev.max.ru** и создайте бота\n"
+            "2. Получите токен бота\n"
+            "3. Установите переменную окружения:\n"
+            "`MAX_BOT_TOKEN=ваш_токен`\n"
+            "4. Перезапустите приложение\n\n"
+            "После подключения пользователи Max смогут:\n"
+            "• Просматривать каталог каналов\n"
+            "• Бронировать рекламные слоты\n"
+            "• Управлять своим профилем менеджера"
+        )
+    
+    await safe_edit_message(
+        callback.message, status_text,
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")]
+        ])
+    )
+
+
+# ==================== ДИАГНОСТИКА И AI-УЛУЧШЕНИЯ ====================
+
+@router.callback_query(F.data == "adm_diagnostics")
+async def adm_diagnostics(callback: CallbackQuery):
+    """Самодиагностика бота — проверка всех компонентов"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    # Показываем временное сообщение о проверке
+    await safe_edit_message(
+        callback.message,
+        "🔧 **Диагностика**\n\n⏳ Проверяю компоненты...",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+        ])
+    )
+
+    try:
+        results = await run_diagnostics()
+
+        db_icon, db_msg = results.get("db", ("❓", "Нет данных"))
+        claude_icon, claude_msg = results.get("claude", ("❓", "Нет данных"))
+        telemetr_icon, telemetr_msg = results.get("telemetr", ("❓", "Нет данных"))
+        queue = results.get("queue")
+
+        text = (
+            "🔧 **Диагностика бота**\n\n"
+            "**Компоненты:**\n"
+            f"{db_icon} {db_msg}\n"
+            f"{claude_icon} {claude_msg}\n"
+            f"{telemetr_icon} {telemetr_msg}\n"
+        )
+
+        if queue is not None:
+            text += "\n**Очередь и задачи:**\n"
+            text += f"📋 Постов в очереди: **{queue['pending_posts']}**\n"
+
+            if queue["overdue_posts"] > 0:
+                text += f"⚠️ Просроченных постов: **{queue['overdue_posts']}** — требуют внимания!\n"
+
+            if queue["moderation_posts"] > 0:
+                text += f"🔍 На модерации: **{queue['moderation_posts']}**\n"
+
+            if queue["pending_payments"] > 0:
+                text += f"💳 Оплат на проверке: **{queue['pending_payments']}** — ожидают подтверждения!\n"
+
+            if queue["overdue_posts"] == 0 and queue["pending_payments"] == 0:
+                text += "✅ Все задачи в норме\n"
+        else:
+            text += "\n⚠️ Не удалось проверить очередь.\n"
+
+        text += f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC"
+
+        buttons = [
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_diagnostics: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка диагностики", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_ai_improve")
+async def adm_ai_improve(callback: CallbackQuery):
+    """AI-анализ метрик бота и рекомендации по улучшению"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    # Показываем временное сообщение
+    await safe_edit_message(
+        callback.message,
+        "🤖 **AI-улучшения**\n\n⏳ Анализирую метрики и формирую рекомендации...",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+        ])
+    )
+
+    try:
+        metrics = await gather_business_metrics()
+        suggestion = await get_improvement_suggestions(metrics)
+
+        if metrics:
+            change = metrics.get("revenue_change_pct")
+            change_str = ""
+            if change is not None:
+                direction = "▲" if change >= 0 else "▼"
+                change_str = f" ({direction}{abs(change):.1f}%)"
+
+            summary = (
+                f"📊 **Текущие показатели:**\n"
+                f"• Выручка за месяц: **{metrics.get('revenue_month', 0):,.0f}₽**{change_str}\n"
+                f"• Конверсия: **{metrics.get('conversion_rate_pct', 0):.1f}%**  "
+                f"| Отмены: **{metrics.get('cancel_rate_pct', 0):.1f}%**\n"
+                f"• Новых клиентов: **{metrics.get('new_clients_month', 0)}** за месяц\n"
+                f"• Активных менеджеров: **{metrics.get('active_managers', 0)}**\n\n"
+            )
+        else:
+            summary = ""
+
+        if suggestion:
+            text = f"🤖 **AI-рекомендации по улучшению**\n\n{summary}{suggestion}"
+        else:
+            text = (
+                f"🤖 **AI-рекомендации по улучшению**\n\n{summary}"
+                "⚠️ Не удалось получить AI-рекомендации. Проверьте настройки Claude API."
+            )
+
+        buttons = [
+            [InlineKeyboardButton(text="🔄 Обновить анализ", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_ai_improve: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 
 # ==================== ПРОСМОТР ЗАКАЗА ====================
@@ -1718,9 +2284,20 @@ async def adm_view_order(callback: CallbackQuery):
             f"📢 Канал: {channel_name}\n"
             f"📅 Слот: {slot_info}\n"
             f"📋 Формат: {order.format_type}\n"
-            f"💰 Сумма: **{float(order.final_price):,.0f}₽**\n"
-            f"📊 Статус: {status_text}\n"
+            f"💰 Базовая цена: {float(order.base_price):,.0f}₽\n"
         )
+
+        if order.discount_percent and float(order.discount_percent) > 0:
+            saved = float(order.base_price) - float(order.final_price)
+            promo_label = f" (промокод: {order.promo_code})" if order.promo_code else " (лояльность)"
+            text += (
+                f"🏷 Скидка{promo_label}: **{float(order.discount_percent):.0f}%** (−{saved:,.0f}₽)\n"
+                f"💵 Итого: **{float(order.final_price):,.0f}₽**\n"
+            )
+        else:
+            text += f"💵 Итого: **{float(order.final_price):,.0f}₽**\n"
+
+        text += f"📊 Статус: {status_text}\n"
 
         if order.ad_content:
             text += f"\n📝 Текст:\n{order.ad_content[:300]}{'...' if len(order.ad_content) > 300 else ''}\n"
@@ -2456,20 +3033,90 @@ async def btn_adm_stats(message: Message):
     if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
         return
     try:
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=7)
+        month_start = today_start - timedelta(days=30)
+
         async with async_session_maker() as session:
             total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
+            pending_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "pending")
+            )).scalar() or 0
+            payment_uploaded = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
+            )).scalar() or 0
+            confirmed_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
+            )).scalar() or 0
+            cancelled_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "cancelled")
+            )).scalar() or 0
+
             total_revenue = (await session.execute(
                 select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
             )).scalar() or 0
+            revenue_today = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= today_start
+                )
+            )).scalar() or 0
+            revenue_week = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= week_start
+                )
+            )).scalar() or 0
+            revenue_month = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= month_start
+                )
+            )).scalar() or 0
+
+            orders_today = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= today_start)
+            )).scalar() or 0
+            orders_week = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= week_start)
+            )).scalar() or 0
+            orders_month = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= month_start)
+            )).scalar() or 0
+
             total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
+            active_managers = (await session.execute(
+                select(func.count(Manager.id)).where(Manager.is_active == True)
+            )).scalar() or 0
             total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
+            active_channels = (await session.execute(
+                select(func.count(Channel.id)).where(Channel.is_active == True)
+            )).scalar() or 0
+            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
 
         text = (
-            "📊 **Статистика**\n\n"
-            f"📦 Заказов: **{total_orders}**\n"
-            f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
-            f"👥 Менеджеров: **{total_managers}**\n"
-            f"📢 Каналов: **{total_channels}**"
+            "📊 **Детальная статистика**\n\n"
+            "💰 **Выручка:**\n"
+            f"• Сегодня: **{float(revenue_today):,.0f}₽**\n"
+            f"• За 7 дней: **{float(revenue_week):,.0f}₽**\n"
+            f"• За 30 дней: **{float(revenue_month):,.0f}₽**\n"
+            f"• Всего: **{float(total_revenue):,.0f}₽**\n\n"
+            "📦 **Заказы:**\n"
+            f"• Сегодня: **{orders_today}**\n"
+            f"• За 7 дней: **{orders_week}**\n"
+            f"• За 30 дней: **{orders_month}**\n"
+            f"• Всего: **{total_orders}**\n\n"
+            "📋 **Статусы заказов:**\n"
+            f"• ⏳ Ожидают: **{pending_orders}**\n"
+            f"• 💳 Оплата на проверке: **{payment_uploaded}**\n"
+            f"• ✅ Подтверждены: **{confirmed_orders}**\n"
+            f"• ❌ Отменены: **{cancelled_orders}**\n\n"
+            "📢 **Каналы:**\n"
+            f"• Активных: **{active_channels}** из **{total_channels}**\n\n"
+            "👥 **Пользователи:**\n"
+            f"• Клиентов: **{total_clients}**\n"
+            f"• Менеджеров: **{active_managers}** активных из **{total_managers}**"
         )
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
@@ -2552,9 +3199,11 @@ async def btn_adm_settings(message: Message):
         f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
         f"🤖 Claude API: {'🟢' if CLAUDE_API_KEY else '🔴'}\n"
         f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
+        f"🔵 Max Bot: {'🟢 Подключён' if MAX_BOT_TOKEN else '🔴 Не подключён'}\n"
         f"👤 Админы: {len(ADMIN_IDS)}"
     )
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔵 Настройки Max Bot", callback_data="adm_max_settings")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
     ]), parse_mode=ParseMode.MARKDOWN)
 
@@ -2565,3 +3214,201 @@ async def btn_adm_logout(message: Message):
     if message.from_user.id in authenticated_admins:
         authenticated_admins.discard(message.from_user.id)
         await message.answer("👋 Вы вышли из админ-панели")
+
+
+# ==================== ПРОМОКОДЫ ====================
+
+@router.callback_query(F.data == "adm_promo")
+async def adm_promo_list(callback: CallbackQuery):
+    """Список промокодов"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(PromoCode).order_by(PromoCode.created_at.desc()).limit(20)
+            )
+            promos = result.scalars().all()
+
+        if not promos:
+            text = "🎟 **Промокоды**\n\nПромокодов пока нет."
+        else:
+            text = "🎟 **Промокоды**\n\n"
+            for p in promos:
+                status = "🟢" if p.is_active else "🔴"
+                uses = f"{p.uses_count}/{p.max_uses}" if p.max_uses else str(p.uses_count)
+                exp = p.expires_at.strftime("%d.%m.%Y") if p.expires_at else "∞"
+                text += f"{status} `{p.code}` — **{float(p.discount_percent):.0f}%** | использований: {uses} | до {exp}\n"
+
+        buttons = [
+            [InlineKeyboardButton(text="➕ Создать промокод", callback_data="adm_promo_create")],
+        ]
+
+        # Кнопки деактивации для активных кодов
+        if promos:
+            active = [p for p in promos if p.is_active]
+            for p in active[:5]:
+                buttons.append([InlineKeyboardButton(
+                    text=f"❌ Деактивировать {p.code}",
+                    callback_data=f"adm_promo_deactivate:{p.id}"
+                )])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
+
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in adm_promo_list: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_promo_create")
+async def adm_promo_create_start(callback: CallbackQuery, state: FSMContext):
+    """Начало создания промокода"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    await callback.answer()
+    await safe_edit_message(
+        callback.message,
+        "🎟 **Создание промокода**\n\nВведите код промокода (только латинские буквы и цифры, например `SUMMER25`):",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_promo")]
+        ])
+    )
+    await state.set_state(AdminPromoStates.waiting_code)
+
+
+@router.message(AdminPromoStates.waiting_code)
+async def adm_promo_receive_code(message: Message, state: FSMContext):
+    """Получить код промокода"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    code = (message.text or "").strip().upper()
+    if not code or not code.isalnum():
+        await message.answer("❌ Код должен содержать только латинские буквы и цифры. Попробуйте ещё раз.")
+        return
+
+    # Проверяем уникальность
+    try:
+        async with async_session_maker() as session:
+            existing = (await session.execute(
+                select(PromoCode).where(PromoCode.code == code)
+            )).scalar_one_or_none()
+        if existing:
+            await message.answer("❌ Такой промокод уже существует. Введите другой.")
+            return
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+        return
+
+    await state.update_data(promo_code=code)
+    await message.answer(
+        f"✅ Код: `{code}`\n\nВведите размер скидки в % (например `15` для 15%):",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminPromoStates.waiting_discount)
+
+
+@router.message(AdminPromoStates.waiting_discount)
+async def adm_promo_receive_discount(message: Message, state: FSMContext):
+    """Получить скидку промокода"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    text = (message.text or "").strip().replace("%", "")
+    try:
+        discount = float(text)
+        if not (1 <= discount <= 100):
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите число от 1 до 100.")
+        return
+
+    await state.update_data(promo_discount=discount)
+    await message.answer(
+        "Введите максимальное число использований (например `50`) или `0` для неограниченного:"
+    )
+    await state.set_state(AdminPromoStates.waiting_max_uses)
+
+
+@router.message(AdminPromoStates.waiting_max_uses)
+async def adm_promo_receive_max_uses(message: Message, state: FSMContext):
+    """Получить лимит использований и сохранить промокод"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    text = (message.text or "").strip()
+    try:
+        max_uses_val = int(text)
+        if max_uses_val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите целое число ≥ 0.")
+        return
+
+    data = await state.get_data()
+    code = data["promo_code"]
+    discount = data["promo_discount"]
+    max_uses = max_uses_val if max_uses_val > 0 else None
+
+    try:
+        async with async_session_maker() as session:
+            promo = PromoCode(
+                code=code,
+                discount_percent=discount,
+                max_uses=max_uses,
+                uses_count=0,
+                is_active=True,
+                created_by=message.from_user.id,
+            )
+            session.add(promo)
+            await session.commit()
+
+        await state.clear()
+        max_label = str(max_uses) if max_uses else "∞"
+        await message.answer(
+            f"✅ **Промокод создан!**\n\n"
+            f"🎟 Код: `{code}`\n"
+            f"🏷 Скидка: **{discount:.0f}%**\n"
+            f"🔢 Лимит использований: **{max_label}**",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎟 К промокодам", callback_data="adm_promo")],
+                [InlineKeyboardButton(text="◀️ Главное меню", callback_data="adm_back")],
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error creating promo: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка при создании промокода: {str(e)[:100]}")
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("adm_promo_deactivate:"))
+async def adm_promo_deactivate(callback: CallbackQuery):
+    """Деактивировать промокод"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    promo_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            promo = await session.get(PromoCode, promo_id)
+            if promo:
+                promo.is_active = False
+                await session.commit()
+                await callback.answer(f"✅ Промокод {promo.code} деактивирован")
+            else:
+                await callback.answer("❌ Промокод не найден", show_alert=True)
+                return
+        # Обновляем список
+        callback.data = "adm_promo"
+        await adm_promo_list(callback)
+    except Exception as e:
+        logger.error(f"Error deactivating promo: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)

@@ -10,6 +10,7 @@ class BookingStates(StatesGroup):
     selecting_time = State()
     selecting_format = State()
     entering_content = State()
+    entering_promo = State()
     confirming = State()
     uploading_payment = State()
 
@@ -38,6 +39,15 @@ class AdminAutopostingStates(StatesGroup):
     waiting_post_saves = State()
 
 
+class AdminCreatePostStates(StatesGroup):
+    """Состояния создания нового поста через автопостинг"""
+    selecting_channel = State()
+    entering_datetime = State()
+    entering_delete_hours = State()
+    entering_content = State()
+    confirming = State()
+
+
 class ManagerStates(StatesGroup):
     """Состояния менеджера"""
     viewing_lesson = State()
@@ -46,6 +56,15 @@ class ManagerStates(StatesGroup):
     payout_amount = State()
     payout_method = State()
     payout_details = State()
+
+
+class ManagerPostStates(StatesGroup):
+    """Состояния подачи поста менеджером на модерацию"""
+    selecting_date = State()
+    selecting_time = State()
+    selecting_format = State()
+    entering_content = State()
+    confirming = State()
 
 
 class AdminPasswordState(StatesGroup):
@@ -60,3 +79,10 @@ class AdminCompetitionStates(StatesGroup):
     waiting_end_date = State()
     waiting_prize_pool = State()
     waiting_metric = State()
+
+
+class AdminPromoStates(StatesGroup):
+    """Состояния создания промокода"""
+    waiting_code = State()
+    waiting_discount = State()
+    waiting_max_uses = State()
