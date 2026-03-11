@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -13,15 +13,23 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
 
-from config import MANAGER_LEVELS, CHANNEL_CATEGORIES
-from database import async_session_maker, Manager, Order, Client, Channel, ManagerPayout
+from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS
+from database import async_session_maker, Manager, Order, Client, Channel, ManagerPayout, Slot, ScheduledPost
 from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu
-from utils import ManagerStates
+from utils import ManagerStates, ManagerPostStates
 from services import gamification_service
 
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+# Часы удаления поста по формату размещения
+FORMAT_DELETE_HOURS = {
+    "1/24": 24,
+    "1/48": 48,
+    "2/48": 48,
+    "native": 0,
+}
 
 
 # ==================== РЕГИСТРАЦИЯ МЕНЕДЖЕРА ====================
@@ -169,6 +177,7 @@ async def analyze_channel_for_manager(callback: CallbackQuery):
             text += f"\n📤 Отправьте клиенту реф-ссылку!"
         
         buttons = [
+            [InlineKeyboardButton(text="📝 Подать пост на модерацию", callback_data=f"mgr_submit_post:{channel_id}")],
             [InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link")],
             [InlineKeyboardButton(text="◀️ К каналам", callback_data="back_to_sales")]
         ]
@@ -693,3 +702,416 @@ async def payout_history(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in payout_history: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+# ==================== ПОДАЧА ПОСТА НА МОДЕРАЦИЮ ====================
+
+@router.callback_query(F.data == "mgr_submit_post")
+async def mgr_submit_post_start(callback: CallbackQuery, state: FSMContext):
+    """Начало подачи поста: выбор канала"""
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+            if not manager:
+                await callback.message.answer("❌ Вы не менеджер")
+                return
+
+            channels_result = await session.execute(
+                select(Channel).where(Channel.is_active == True)
+            )
+            channels = channels_result.scalars().all()
+            channels_data = [{"id": ch.id, "name": ch.name, "prices": ch.prices or {}} for ch in channels]
+
+        if not channels_data:
+            await callback.message.edit_text(
+                "😔 Нет доступных каналов для размещения.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]
+                ])
+            )
+            return
+
+        buttons = []
+        for ch in channels_data:
+            price_124 = ch["prices"].get("1/24", 0)
+            buttons.append([InlineKeyboardButton(
+                text=f"📢 {ch['name']} — от {price_124:,}₽",
+                callback_data=f"mgr_submit_post:{ch['id']}"
+            )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")])
+
+        await callback.message.edit_text(
+            "📝 **Подача поста на модерацию**\n\nВыберите канал для размещения:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in mgr_submit_post_start: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data.startswith("mgr_submit_post:"))
+async def mgr_submit_post_channel(callback: CallbackQuery, state: FSMContext):
+    """Выбран канал: показать доступные даты"""
+    await callback.answer()
+
+    channel_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+            if not manager:
+                await callback.message.answer("❌ Вы не менеджер")
+                return
+
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.message.answer("❌ Канал не найден")
+                return
+
+            slots_result = await session.execute(
+                select(Slot).where(
+                    Slot.channel_id == channel_id,
+                    Slot.status == "available",
+                    Slot.slot_date >= date.today()
+                ).order_by(Slot.slot_date)
+            )
+            slots = slots_result.scalars().all()
+
+        if not slots:
+            await callback.message.edit_text(
+                f"😔 Нет доступных слотов в канале **{channel.name}**.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Выбрать другой канал", callback_data="mgr_submit_post")]
+                ]),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        await state.update_data(
+            mgr_channel_id=channel_id,
+            mgr_channel_name=channel.name,
+            mgr_prices=channel.prices or {}
+        )
+
+        # Уникальные даты
+        unique_dates = sorted(set(s.slot_date for s in slots))
+        buttons = []
+        row = []
+        for d in unique_dates[:14]:
+            row.append(InlineKeyboardButton(
+                text=d.strftime("%d.%m"),
+                callback_data=f"mgr_post_date:{d.isoformat()}"
+            ))
+            if len(row) == 4:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_submit_post")])
+
+        await callback.message.edit_text(
+            f"📢 **{channel.name}**\n\n📅 Выберите дату размещения:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await state.set_state(ManagerPostStates.selecting_date)
+    except Exception as e:
+        logger.error(f"Error in mgr_submit_post_channel: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data.startswith("mgr_post_date:"))
+async def mgr_post_select_date(callback: CallbackQuery, state: FSMContext):
+    """Выбор даты: показать доступные слоты времени"""
+    await callback.answer()
+
+    date_str = callback.data.split(":")[1]
+    selected_date = date.fromisoformat(date_str)
+
+    data = await state.get_data()
+    channel_id = data.get("mgr_channel_id")
+    channel_name = data.get("mgr_channel_name", "Канал")
+
+    try:
+        async with async_session_maker() as session:
+            slots_result = await session.execute(
+                select(Slot).where(
+                    Slot.channel_id == channel_id,
+                    Slot.slot_date == selected_date,
+                    Slot.status == "available"
+                ).order_by(Slot.slot_time)
+            )
+            slots = slots_result.scalars().all()
+
+        if not slots:
+            await callback.message.edit_text("😔 На эту дату нет доступных слотов.")
+            return
+
+        await state.update_data(mgr_selected_date=date_str)
+
+        buttons = []
+        for slot in slots:
+            time_str = slot.slot_time.strftime("%H:%M")
+            buttons.append([InlineKeyboardButton(
+                text=f"🕐 {time_str}",
+                callback_data=f"mgr_post_time:{slot.id}"
+            )])
+        buttons.append([InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=f"mgr_submit_post:{channel_id}"
+        )])
+
+        await callback.message.edit_text(
+            f"📢 **{channel_name}**\n"
+            f"📅 {selected_date.strftime('%d.%m.%Y')}\n\n"
+            f"🕐 Выберите время:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await state.set_state(ManagerPostStates.selecting_time)
+    except Exception as e:
+        logger.error(f"Error in mgr_post_select_date: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data.startswith("mgr_post_time:"))
+async def mgr_post_select_time(callback: CallbackQuery, state: FSMContext):
+    """Выбор времени: предложить формат размещения"""
+    await callback.answer()
+
+    slot_id = int(callback.data.split(":")[1])
+
+    data = await state.get_data()
+    channel_name = data.get("mgr_channel_name", "Канал")
+    prices = data.get("mgr_prices", {})
+    selected_date = data.get("mgr_selected_date", "")
+
+    await state.update_data(mgr_slot_id=slot_id)
+
+    format_names = {
+        "1/24": f"1/24 (24ч) — {prices.get('1/24', 0):,}₽",
+        "1/48": f"1/48 (48ч) — {prices.get('1/48', 0):,}₽",
+        "2/48": f"2/48 (2 поста) — {prices.get('2/48', 0):,}₽",
+        "native": f"Навсегда — {prices.get('native', 0):,}₽",
+    }
+
+    buttons = []
+    for fmt, label in format_names.items():
+        if prices.get(fmt, 0) > 0:
+            buttons.append([InlineKeyboardButton(
+                text=label,
+                callback_data=f"mgr_post_format:{fmt}"
+            )])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"mgr_post_date:{selected_date}")])
+
+    await callback.message.edit_text(
+        f"📢 **{channel_name}**\n"
+        f"📅 {selected_date}\n\n"
+        f"📋 Выберите формат размещения:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(ManagerPostStates.selecting_format)
+
+
+@router.callback_query(F.data.startswith("mgr_post_format:"))
+async def mgr_post_select_format(callback: CallbackQuery, state: FSMContext):
+    """Выбор формата: запросить рекламный контент"""
+    await callback.answer()
+
+    format_type = callback.data.split(":")[1]
+
+    data = await state.get_data()
+    channel_name = data.get("mgr_channel_name", "Канал")
+    prices = data.get("mgr_prices", {})
+    selected_date = data.get("mgr_selected_date", "")
+    price = prices.get(format_type, 0)
+
+    format_labels = {
+        "1/24": "1/24 (24 часа)",
+        "1/48": "1/48 (48 часов)",
+        "2/48": "2/48 (2 поста за 48ч)",
+        "native": "Навсегда"
+    }
+
+    await state.update_data(mgr_format_type=format_type, mgr_price=price)
+
+    await callback.message.edit_text(
+        f"📝 **Отправьте рекламный материал**\n\n"
+        f"📢 Канал: {channel_name}\n"
+        f"📅 Дата: {selected_date}\n"
+        f"📋 Формат: {format_labels.get(format_type, format_type)}\n"
+        f"💰 Цена: **{price:,}₽**\n\n"
+        f"Отправьте текст поста (можно с фото или видео):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(ManagerPostStates.entering_content)
+
+
+@router.message(ManagerPostStates.entering_content)
+async def mgr_post_receive_content(message: Message, state: FSMContext):
+    """Получение рекламного контента от менеджера"""
+    content_text = message.text or message.caption or ""
+    file_id = None
+    file_type = None
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "video"
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+
+    if not content_text and not file_id:
+        await message.answer(
+            "❌ Отправьте текст поста или медиафайл (фото/видео).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")]
+            ])
+        )
+        return
+
+    await state.update_data(
+        mgr_ad_content=content_text,
+        mgr_ad_file_id=file_id,
+        mgr_ad_file_type=file_type
+    )
+
+    data = await state.get_data()
+    channel_name = data.get("mgr_channel_name", "Канал")
+    format_type = data.get("mgr_format_type", "1/24")
+    price = data.get("mgr_price", 0)
+    selected_date = data.get("mgr_selected_date", "")
+
+    format_labels = {
+        "1/24": "1/24 (24 часа)",
+        "1/48": "1/48 (48 часов)",
+        "2/48": "2/48 (2 поста за 48ч)",
+        "native": "Навсегда"
+    }
+
+    text = (
+        f"✅ **Подтверждение подачи поста**\n\n"
+        f"📢 Канал: {channel_name}\n"
+        f"📅 Дата: {selected_date}\n"
+        f"📋 Формат: {format_labels.get(format_type, format_type)}\n"
+        f"💰 Цена: **{price:,}₽**\n\n"
+    )
+    if content_text:
+        text += f"📝 Текст:\n{content_text[:300]}{'...' if len(content_text) > 300 else ''}\n\n"
+    if file_id:
+        text += f"📎 Медиафайл: {file_type}\n\n"
+    text += "Отправить пост на модерацию администратору?"
+
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправить на модерацию", callback_data="mgr_post_confirm"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")
+            ]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(ManagerPostStates.confirming)
+
+
+@router.callback_query(F.data == "mgr_post_confirm", ManagerPostStates.confirming)
+async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Создание ScheduledPost со статусом moderation"""
+    await callback.answer()
+
+    data = await state.get_data()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+            if not manager:
+                await callback.message.answer("❌ Вы не менеджер")
+                await state.clear()
+                return
+
+            slot_id = data.get("mgr_slot_id")
+            slot = await session.get(Slot, slot_id)
+            if not slot or slot.status != "available":
+                await callback.message.edit_text(
+                    "❌ Выбранный слот уже недоступен. Попробуйте снова.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]
+                    ])
+                )
+                await state.clear()
+                return
+
+            channel_id = data.get("mgr_channel_id")
+            selected_date_str = data.get("mgr_selected_date", "")
+            scheduled_time = datetime.combine(
+                date.fromisoformat(selected_date_str),
+                slot.slot_time
+            )
+
+            post = ScheduledPost(
+                channel_id=channel_id,
+                content=data.get("mgr_ad_content", ""),
+                file_id=data.get("mgr_ad_file_id"),
+                file_type=data.get("mgr_ad_file_type"),
+                scheduled_time=scheduled_time,
+                delete_after_hours=FORMAT_DELETE_HOURS.get(
+                    data.get("mgr_format_type", "1/24"), 24
+                ),
+                status="moderation",
+                created_by=callback.from_user.id
+            )
+            session.add(post)
+            await session.commit()
+            post_id = post.id
+
+        await state.clear()
+
+        await callback.message.edit_text(
+            f"✅ **Пост #{post_id} отправлен на модерацию!**\n\n"
+            f"Администратор рассмотрит его в ближайшее время.\n"
+            f"После одобрения пост будет автоматически опубликован в указанное время.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        # Уведомляем администраторов
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    f"📝 **Новый пост на модерацию #{post_id}**\n\n"
+                    f"От менеджера: {callback.from_user.first_name or callback.from_user.username}\n"
+                    f"📢 Канал ID: {channel_id}\n"
+                    f"📅 Запланирован: {scheduled_time.strftime('%d.%m.%Y %H:%M')}\n\n"
+                    f"Проверьте в разделе 📝 Модерация.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.error(f"Error in mgr_post_confirm: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:200]}")
+        await state.clear()

@@ -3,7 +3,7 @@
 """
 import logging
 import traceback
-from datetime import datetime, date as date_type
+from datetime import datetime, date as date_type, timedelta
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
@@ -14,7 +14,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
-from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MANAGER_LEVELS
+from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard
@@ -360,24 +360,36 @@ async def auto_calculate_prices(callback: CallbackQuery):
             
             category_info = CHANNEL_CATEGORIES.get(channel.category, {"cpm": 1000})
             cpm = float(channel.cpm or category_info.get("cpm", 1000))
-            avg_reach = channel.avg_reach_24h or channel.avg_reach or 0
+            avg_reach_24h = channel.avg_reach_24h or channel.avg_reach or 0
+            avg_reach_48h = channel.avg_reach_48h or 0
             
-            if avg_reach == 0:
+            if avg_reach_24h == 0:
                 await callback.answer("❌ Нет данных об охвате!", show_alert=True)
                 return
             
-            price_124 = int(avg_reach * cpm / 1000)
-            price_148 = int(price_124 * 0.8)
-            price_248 = int(price_124 * 1.6)
+            # 1/24: базовая цена по охвату 24ч
+            price_124 = int(avg_reach_24h * cpm / 1000)
+            # 1/48: по охвату 48ч (если доступен) или 1.5x от 1/24
+            if avg_reach_48h > 0:
+                price_148 = int(avg_reach_48h * cpm / 1000)
+            else:
+                price_148 = int(price_124 * 1.5)
+            # 2/48: два поста = 2x от 1/24
+            price_248 = int(price_124 * 2.0)
+            # Навсегда: 2.5x от 1/24
             price_native = int(price_124 * 2.5)
             
             channel.prices = {"1/24": price_124, "1/48": price_148, "2/48": price_248, "native": price_native}
             await session.commit()
         
+        reach_info = f"📊 Охват 24ч: {avg_reach_24h:,}"
+        if avg_reach_48h > 0:
+            reach_info += f"\n📊 Охват 48ч: {avg_reach_48h:,}"
+        
         await safe_edit_message(
             callback.message,
             f"✅ **Цены рассчитаны по CPM!**\n\n"
-            f"📊 Охват: {avg_reach:,}\n"
+            f"{reach_info}\n"
             f"💰 CPM: {cpm:,.0f}₽\n\n"
             f"**Новые цены:**\n"
             f"• 1/24: {price_124:,}₽\n"
@@ -861,20 +873,99 @@ async def adm_stats(callback: CallbackQuery):
     await callback.answer()
     
     try:
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=7)
+        month_start = today_start - timedelta(days=30)
+
         async with async_session_maker() as session:
+            # Общие заказы
             total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
+            # Заказы по статусам
+            pending_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "pending")
+            )).scalar() or 0
+            payment_uploaded = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
+            )).scalar() or 0
+            confirmed_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
+            )).scalar() or 0
+            cancelled_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "cancelled")
+            )).scalar() or 0
+
+            # Выручка (подтверждённые заказы)
             total_revenue = (await session.execute(
                 select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
             )).scalar() or 0
+            revenue_today = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= today_start
+                )
+            )).scalar() or 0
+            revenue_week = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= week_start
+                )
+            )).scalar() or 0
+            revenue_month = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= month_start
+                )
+            )).scalar() or 0
+
+            # Заказы за период
+            orders_today = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= today_start)
+            )).scalar() or 0
+            orders_week = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= week_start)
+            )).scalar() or 0
+            orders_month = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= month_start)
+            )).scalar() or 0
+
+            # Менеджеры
             total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
+            active_managers = (await session.execute(
+                select(func.count(Manager.id)).where(Manager.is_active == True)
+            )).scalar() or 0
+
+            # Каналы
             total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
-        
+            active_channels = (await session.execute(
+                select(func.count(Channel.id)).where(Channel.is_active == True)
+            )).scalar() or 0
+
+            # Клиенты
+            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
+
         text = (
-            "📊 **Статистика**\n\n"
-            f"📦 Заказов: **{total_orders}**\n"
-            f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
-            f"👥 Менеджеров: **{total_managers}**\n"
-            f"📢 Каналов: **{total_channels}**"
+            "📊 **Детальная статистика**\n\n"
+            "💰 **Выручка:**\n"
+            f"• Сегодня: **{float(revenue_today):,.0f}₽**\n"
+            f"• За 7 дней: **{float(revenue_week):,.0f}₽**\n"
+            f"• За 30 дней: **{float(revenue_month):,.0f}₽**\n"
+            f"• Всего: **{float(total_revenue):,.0f}₽**\n\n"
+            "📦 **Заказы:**\n"
+            f"• Сегодня: **{orders_today}**\n"
+            f"• За 7 дней: **{orders_week}**\n"
+            f"• За 30 дней: **{orders_month}**\n"
+            f"• Всего: **{total_orders}**\n\n"
+            "📋 **Статусы заказов:**\n"
+            f"• ⏳ Ожидают: **{pending_orders}**\n"
+            f"• 💳 Оплата на проверке: **{payment_uploaded}**\n"
+            f"• ✅ Подтверждены: **{confirmed_orders}**\n"
+            f"• ❌ Отменены: **{cancelled_orders}**\n\n"
+            "📢 **Каналы:**\n"
+            f"• Активных: **{active_channels}** из **{total_channels}**\n\n"
+            "👥 **Пользователи:**\n"
+            f"• Клиентов: **{total_clients}**\n"
+            f"• Менеджеров: **{active_managers}** активных из **{total_managers}**"
         )
         
         await safe_edit_message(
@@ -1665,12 +1756,52 @@ async def adm_settings(callback: CallbackQuery):
         f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
         f"🤖 Claude API: {'🟢' if CLAUDE_API_KEY else '🔴'}\n"
         f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
+        f"🔵 Max Bot: {'🟢 Подключён' if MAX_BOT_TOKEN else '🔴 Не подключён'}\n"
         f"👤 Админы: {len(ADMIN_IDS)}"
     )
     
+    buttons = [
+        [InlineKeyboardButton(text="🔵 Настройки Max Bot", callback_data="adm_max_settings")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
+    ]
+    
     await safe_edit_message(
         callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
+        InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+
+
+@router.callback_query(F.data == "adm_max_settings")
+async def adm_max_settings(callback: CallbackQuery):
+    """Информация о подключении Max Bot"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    if MAX_BOT_TOKEN:
+        status_text = "🟢 **Max Bot подключён**\n\nБот в сети Max активен и принимает пользователей."
+    else:
+        status_text = (
+            "🔴 **Max Bot не подключён**\n\n"
+            "Для подключения бота в сеть Max:\n"
+            "1. Перейдите на **dev.max.ru** и создайте бота\n"
+            "2. Получите токен бота\n"
+            "3. Установите переменную окружения:\n"
+            "`MAX_BOT_TOKEN=ваш_токен`\n"
+            "4. Перезапустите приложение\n\n"
+            "После подключения пользователи Max смогут:\n"
+            "• Просматривать каталог каналов\n"
+            "• Бронировать рекламные слоты\n"
+            "• Управлять своим профилем менеджера"
+        )
+    
+    await safe_edit_message(
+        callback.message, status_text,
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")]
+        ])
     )
 
 
@@ -2456,20 +2587,90 @@ async def btn_adm_stats(message: Message):
     if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
         return
     try:
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=7)
+        month_start = today_start - timedelta(days=30)
+
         async with async_session_maker() as session:
             total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
+            pending_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "pending")
+            )).scalar() or 0
+            payment_uploaded = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
+            )).scalar() or 0
+            confirmed_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
+            )).scalar() or 0
+            cancelled_orders = (await session.execute(
+                select(func.count(Order.id)).where(Order.status == "cancelled")
+            )).scalar() or 0
+
             total_revenue = (await session.execute(
                 select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
             )).scalar() or 0
+            revenue_today = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= today_start
+                )
+            )).scalar() or 0
+            revenue_week = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= week_start
+                )
+            )).scalar() or 0
+            revenue_month = (await session.execute(
+                select(func.sum(Order.final_price)).where(
+                    Order.status == "payment_confirmed",
+                    Order.paid_at >= month_start
+                )
+            )).scalar() or 0
+
+            orders_today = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= today_start)
+            )).scalar() or 0
+            orders_week = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= week_start)
+            )).scalar() or 0
+            orders_month = (await session.execute(
+                select(func.count(Order.id)).where(Order.created_at >= month_start)
+            )).scalar() or 0
+
             total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
+            active_managers = (await session.execute(
+                select(func.count(Manager.id)).where(Manager.is_active == True)
+            )).scalar() or 0
             total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
+            active_channels = (await session.execute(
+                select(func.count(Channel.id)).where(Channel.is_active == True)
+            )).scalar() or 0
+            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
 
         text = (
-            "📊 **Статистика**\n\n"
-            f"📦 Заказов: **{total_orders}**\n"
-            f"💰 Выручка: **{float(total_revenue):,.0f}₽**\n"
-            f"👥 Менеджеров: **{total_managers}**\n"
-            f"📢 Каналов: **{total_channels}**"
+            "📊 **Детальная статистика**\n\n"
+            "💰 **Выручка:**\n"
+            f"• Сегодня: **{float(revenue_today):,.0f}₽**\n"
+            f"• За 7 дней: **{float(revenue_week):,.0f}₽**\n"
+            f"• За 30 дней: **{float(revenue_month):,.0f}₽**\n"
+            f"• Всего: **{float(total_revenue):,.0f}₽**\n\n"
+            "📦 **Заказы:**\n"
+            f"• Сегодня: **{orders_today}**\n"
+            f"• За 7 дней: **{orders_week}**\n"
+            f"• За 30 дней: **{orders_month}**\n"
+            f"• Всего: **{total_orders}**\n\n"
+            "📋 **Статусы заказов:**\n"
+            f"• ⏳ Ожидают: **{pending_orders}**\n"
+            f"• 💳 Оплата на проверке: **{payment_uploaded}**\n"
+            f"• ✅ Подтверждены: **{confirmed_orders}**\n"
+            f"• ❌ Отменены: **{cancelled_orders}**\n\n"
+            "📢 **Каналы:**\n"
+            f"• Активных: **{active_channels}** из **{total_channels}**\n\n"
+            "👥 **Пользователи:**\n"
+            f"• Клиентов: **{total_clients}**\n"
+            f"• Менеджеров: **{active_managers}** активных из **{total_managers}**"
         )
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
@@ -2552,9 +2753,11 @@ async def btn_adm_settings(message: Message):
         f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
         f"🤖 Claude API: {'🟢' if CLAUDE_API_KEY else '🔴'}\n"
         f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
+        f"🔵 Max Bot: {'🟢 Подключён' if MAX_BOT_TOKEN else '🔴 Не подключён'}\n"
         f"👤 Админы: {len(ADMIN_IDS)}"
     )
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔵 Настройки Max Bot", callback_data="adm_max_settings")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
     ]), parse_mode=ParseMode.MARKDOWN)
 

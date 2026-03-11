@@ -48,6 +48,15 @@ class ManagerStates(StatesGroup):
     payout_details = State()
 
 
+class ManagerPostStates(StatesGroup):
+    """Состояния подачи поста менеджером на модерацию"""
+    selecting_date = State()
+    selecting_time = State()
+    selecting_format = State()
+    entering_content = State()
+    confirming = State()
+
+
 class AdminPasswordState(StatesGroup):
     """Состояние ввода пароля админа"""
     waiting_admin_password = State()
