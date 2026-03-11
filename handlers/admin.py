@@ -19,7 +19,7 @@ from database import async_session_maker, Channel, Manager, Order, ScheduledPost
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
-from utils.states import AdminCPMStates, AdminAutopostingStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
 
@@ -1738,6 +1738,306 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in autopost_ai_recommend_overview: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== СОЗДАНИЕ ПОСТА (АВТОПОСТИНГ) ====================
+
+@router.callback_query(F.data == "autopost_create")
+async def autopost_create_start(callback: CallbackQuery, state: FSMContext):
+    """Шаг 1 — выбор канала для нового поста"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Channel).where(Channel.is_active == True).order_by(Channel.name)
+            )
+            channels = result.scalars().all()
+            channels_data = [{"id": ch.id, "name": ch.name} for ch in channels]
+
+        if not channels_data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Нет активных каналов для публикации.",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
+        buttons = []
+        for ch in channels_data:
+            buttons.append([InlineKeyboardButton(
+                text=f"📢 {ch['name']}",
+                callback_data=f"autopost_create_ch:{ch['id']}"
+            )])
+        buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")])
+
+        await safe_edit_message(
+            callback.message,
+            "➕ **Создание поста**\n\nШаг 1/4 — Выберите канал для публикации:",
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+        await state.set_state(AdminCreatePostStates.selecting_channel)
+    except Exception as e:
+        logger.error(f"Error in autopost_create_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("autopost_create_ch:"), AdminCreatePostStates.selecting_channel)
+async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
+    """Шаг 2 — ввод даты и времени публикации"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    channel_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.answer("❌ Канал не найден", show_alert=True)
+                return
+            channel_name = channel.name
+
+        await state.update_data(create_channel_id=channel_id, create_channel_name=channel_name)
+
+        now_hint = datetime.utcnow().strftime("%d.%m.%Y %H:%M")
+        await safe_edit_message(
+            callback.message,
+            f"➕ **Создание поста**\n\n"
+            f"📢 Канал: **{channel_name}**\n\n"
+            f"Шаг 2/4 — Введите дату и время публикации в формате:\n"
+            f"`ДД.ММ.ГГГГ ЧЧ:ММ`\n\n"
+            f"Например: `{now_hint}`",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+            ])
+        )
+        await state.set_state(AdminCreatePostStates.entering_datetime)
+    except Exception as e:
+        logger.error(f"Error in autopost_create_channel: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminCreatePostStates.entering_datetime)
+async def autopost_create_datetime(message: Message, state: FSMContext):
+    """Шаг 3 — ввод времени удаления (часы)"""
+    raw = (message.text or "").strip()
+    try:
+        scheduled_time = datetime.strptime(raw, "%d.%m.%Y %H:%M")
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат даты. Используйте: `ДД.ММ.ГГГГ ЧЧ:ММ`\n"
+            "Например: `25.03.2026 14:00`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if scheduled_time < datetime.utcnow():
+        await message.answer(
+            "❌ Дата публикации должна быть в будущем. Введите корректное время.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await state.update_data(create_scheduled_time=scheduled_time.isoformat())
+
+    await message.answer(
+        f"✅ Время: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n\n"
+        f"Шаг 3/4 — Через сколько часов удалить пост?\n"
+        f"Введите число (0 = не удалять, 24 = удалить через 24ч, 48 = через 48ч и т.д.):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="24ч", callback_data="autopost_del:24"),
+                InlineKeyboardButton(text="48ч", callback_data="autopost_del:48"),
+                InlineKeyboardButton(text="Не удалять", callback_data="autopost_del:0"),
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminCreatePostStates.entering_delete_hours)
+
+
+@router.callback_query(F.data.startswith("autopost_del:"), AdminCreatePostStates.entering_delete_hours)
+async def autopost_create_delete_hours_btn(callback: CallbackQuery, state: FSMContext):
+    """Шаг 3 (кнопкой) — выбрано время удаления"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    delete_hours = int(callback.data.split(":")[1])
+    await state.update_data(create_delete_hours=delete_hours)
+
+    await safe_edit_message(
+        callback.message,
+        f"✅ Удалить через: **{'не удалять' if delete_hours == 0 else f'{delete_hours}ч'}**\n\n"
+        f"Шаг 4/4 — Отправьте рекламный контент поста\n"
+        f"(текст, или текст с фото/видео/документом):",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+        ])
+    )
+    await state.set_state(AdminCreatePostStates.entering_content)
+
+
+@router.message(AdminCreatePostStates.entering_delete_hours)
+async def autopost_create_delete_hours_text(message: Message, state: FSMContext):
+    """Шаг 3 (текстом) — ввод времени удаления"""
+    raw = (message.text or "").strip()
+    try:
+        delete_hours = int(raw)
+        if delete_hours < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите целое число ≥ 0 (например: 24).")
+        return
+
+    await state.update_data(create_delete_hours=delete_hours)
+
+    await message.answer(
+        f"✅ Удалить через: **{'не удалять' if delete_hours == 0 else f'{delete_hours}ч'}**\n\n"
+        f"Шаг 4/4 — Отправьте рекламный контент поста\n"
+        f"(текст, или текст с фото/видео/документом):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminCreatePostStates.entering_content)
+
+
+@router.message(AdminCreatePostStates.entering_content)
+async def autopost_create_content(message: Message, state: FSMContext):
+    """Шаг 4 — получение контента, показ превью и подтверждение"""
+    content_text = message.text or message.caption or ""
+    file_id = None
+    file_type = None
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "video"
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+
+    if not content_text and not file_id:
+        await message.answer(
+            "❌ Отправьте текст или медиафайл (фото/видео/документ).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+            ])
+        )
+        return
+
+    await state.update_data(
+        create_content=content_text,
+        create_file_id=file_id,
+        create_file_type=file_type
+    )
+
+    data = await state.get_data()
+    channel_name = data.get("create_channel_name", "—")
+    scheduled_time_iso = data.get("create_scheduled_time", "")
+    delete_hours = data.get("create_delete_hours", 24)
+
+    try:
+        scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
+        sched_str = scheduled_dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        sched_str = scheduled_time_iso
+
+    delete_str = "не удалять" if delete_hours == 0 else f"через {delete_hours}ч"
+
+    preview = (
+        f"📋 **Подтверждение создания поста**\n\n"
+        f"📢 Канал: **{channel_name}**\n"
+        f"📅 Время публикации: **{sched_str}**\n"
+        f"🗑 Удалить: **{delete_str}**\n"
+    )
+    if content_text:
+        preview += f"\n📝 Текст:\n{content_text[:400]}{'...' if len(content_text) > 400 else ''}\n"
+    if file_id:
+        preview += f"\n📎 Медиафайл: {file_type}\n"
+
+    preview += "\nСоздать пост?"
+
+    await message.answer(
+        preview,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Создать", callback_data="autopost_create_confirm"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")
+            ]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminCreatePostStates.confirming)
+
+
+@router.callback_query(F.data == "autopost_create_confirm", AdminCreatePostStates.confirming)
+async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
+    """Финальное сохранение поста в БД"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    data = await state.get_data()
+
+    try:
+        scheduled_time = datetime.fromisoformat(data["create_scheduled_time"])
+
+        async with async_session_maker() as session:
+            post = ScheduledPost(
+                channel_id=data["create_channel_id"],
+                content=data.get("create_content") or None,
+                file_id=data.get("create_file_id"),
+                file_type=data.get("create_file_type"),
+                scheduled_time=scheduled_time,
+                delete_after_hours=data.get("create_delete_hours", 24),
+                status="pending",
+                created_by=callback.from_user.id
+            )
+            session.add(post)
+            await session.commit()
+            post_id = post.id
+
+        await state.clear()
+
+        channel_name = data.get("create_channel_name", "—")
+        delete_hours = data.get("create_delete_hours", 24)
+        delete_str = "не удалять" if delete_hours == 0 else f"через {delete_hours}ч"
+
+        await safe_edit_message(
+            callback.message,
+            f"✅ **Пост #{post_id} создан!**\n\n"
+            f"📢 Канал: **{channel_name}**\n"
+            f"📅 Публикация: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n"
+            f"🗑 Удаление: **{delete_str}**\n\n"
+            f"Пост поставлен в очередь автопостинга.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Запланированные", callback_data="autopost_pending")],
+                [InlineKeyboardButton(text="◀️ Автопостинг", callback_data="adm_autoposting")]
+            ])
+        )
+    except Exception as e:
+        await state.clear()
+        logger.error(f"Error in autopost_create_confirm: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка при создании поста:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== НАСТРОЙКИ ====================

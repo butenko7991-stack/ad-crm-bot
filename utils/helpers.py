@@ -33,6 +33,15 @@ async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]
         return None
 
 
+def _apply_err_adjustment(price: float, err_percent: float) -> float:
+    """Применить корректировку цены по показателю ERR."""
+    if err_percent > 20:
+        return price * 1.2
+    if err_percent > 15:
+        return price * 1.1
+    return price
+
+
 def calculate_recommended_price(
     avg_reach: int,
     category: str,
@@ -53,12 +62,7 @@ def calculate_recommended_price(
     
     # Базовая цена = (охват × CPM) / 1000
     base_price = (avg_reach * base_cpm) / 1000
-    
-    # Корректировка по ERR
-    if err_percent > 20:
-        base_price *= 1.2
-    elif err_percent > 15:
-        base_price *= 1.1
+    base_price = _apply_err_adjustment(base_price, err_percent)
     
     # Корректировка по формату:
     # 1/24 — базовая цена
@@ -68,10 +72,7 @@ def calculate_recommended_price(
     if format_type == "1/48":
         if avg_reach_48h > 0:
             base_price = (avg_reach_48h * base_cpm) / 1000
-            if err_percent > 20:
-                base_price *= 1.2
-            elif err_percent > 15:
-                base_price *= 1.1
+            base_price = _apply_err_adjustment(base_price, err_percent)
         else:
             base_price *= 1.5
     elif format_type == "2/48":

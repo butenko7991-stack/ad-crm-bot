@@ -302,6 +302,7 @@ def get_cpm_categories_keyboard(categories: list, page: int = 0, per_page: int =
 def get_autoposting_menu() -> InlineKeyboardMarkup:
     """Меню раздела Автопостинг"""
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать пост", callback_data="autopost_create")],
         [
             InlineKeyboardButton(text="📋 Запланированные", callback_data="autopost_pending"),
             InlineKeyboardButton(text="✅ Опубликованные", callback_data="autopost_posted"),

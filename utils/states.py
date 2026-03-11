@@ -38,6 +38,15 @@ class AdminAutopostingStates(StatesGroup):
     waiting_post_saves = State()
 
 
+class AdminCreatePostStates(StatesGroup):
+    """Состояния создания нового поста через автопостинг"""
+    selecting_channel = State()
+    entering_datetime = State()
+    entering_delete_hours = State()
+    entering_content = State()
+    confirming = State()
+
+
 class ManagerStates(StatesGroup):
     """Состояния менеджера"""
     viewing_lesson = State()

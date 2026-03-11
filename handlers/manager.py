@@ -1109,7 +1109,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                     parse_mode=ParseMode.MARKDOWN
                 )
             except Exception:
-                pass
+                logger.warning(f"Could not notify admin {admin_id} about new post #{post_id}", exc_info=True)
 
     except Exception as e:
         logger.error(f"Error in mgr_post_confirm: {traceback.format_exc()}")
