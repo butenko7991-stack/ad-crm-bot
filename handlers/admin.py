@@ -17,7 +17,7 @@ from sqlalchemy import select, func
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
-from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard
+from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates
 from services import gamification_service
@@ -2014,7 +2014,7 @@ async def autopost_create_start(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("autopost_create_ch:"), AdminCreatePostStates.selecting_channel)
 async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
-    """Шаг 2 — ввод даты и времени публикации"""
+    """Шаг 2 — выбор даты публикации через календарь"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
@@ -2033,51 +2033,190 @@ async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
 
         await state.update_data(create_channel_id=channel_id, create_channel_name=channel_name)
 
-        now_hint = datetime.utcnow().strftime("%d.%m.%Y %H:%M")
+        today = date_type.today()
         await safe_edit_message(
             callback.message,
             f"➕ **Создание поста**\n\n"
             f"📢 Канал: **{channel_name}**\n\n"
-            f"Шаг 2/4 — Введите дату и время публикации в формате:\n"
-            f"`ДД.ММ.ГГГГ ЧЧ:ММ`\n\n"
-            f"Например: `{now_hint}`",
-            InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
-            ])
+            f"Шаг 2/4 — Выберите дату публикации:",
+            get_free_calendar_keyboard(today.year, today.month)
         )
-        await state.set_state(AdminCreatePostStates.entering_datetime)
+        await state.set_state(AdminCreatePostStates.selecting_date)
     except Exception as e:
         logger.error(f"Error in autopost_create_channel: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
-@router.message(AdminCreatePostStates.entering_datetime)
-async def autopost_create_datetime(message: Message, state: FSMContext):
-    """Шаг 3 — ввод времени удаления (часы)"""
+@router.callback_query(F.data.startswith("autopost_cal_nav:"), AdminCreatePostStates.selecting_date)
+async def autopost_cal_nav(callback: CallbackQuery, state: FSMContext):
+    """Навигация по месяцам в календаре"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        _, year_str, month_str = callback.data.split(":")
+        year, month = int(year_str), int(month_str)
+        data = await state.get_data()
+        channel_name = data.get("create_channel_name", "—")
+
+        await safe_edit_message(
+            callback.message,
+            f"➕ **Создание поста**\n\n"
+            f"📢 Канал: **{channel_name}**\n\n"
+            f"Шаг 2/4 — Выберите дату публикации:",
+            get_free_calendar_keyboard(year, month)
+        )
+    except Exception:
+        logger.error(f"Error in autopost_cal_nav: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("autopost_cal_date:"), AdminCreatePostStates.selecting_date)
+async def autopost_cal_date(callback: CallbackQuery, state: FSMContext):
+    """Дата выбрана — показываем выбор времени"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        date_iso = callback.data.split(":", 1)[1]
+        selected_date = date_type.fromisoformat(date_iso)
+        data = await state.get_data()
+        channel_name = data.get("create_channel_name", "—")
+
+        await state.update_data(create_selected_date=date_iso)
+
+        await safe_edit_message(
+            callback.message,
+            f"➕ **Создание поста**\n\n"
+            f"📢 Канал: **{channel_name}**\n"
+            f"📅 Дата: **{selected_date.strftime('%d.%m.%Y')}**\n\n"
+            f"Шаг 2/4 — Выберите время публикации:",
+            get_time_picker_keyboard(date_iso)
+        )
+        await state.set_state(AdminCreatePostStates.entering_time)
+    except Exception:
+        logger.error(f"Error in autopost_cal_date: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "autopost_cal_back", AdminCreatePostStates.entering_time)
+async def autopost_cal_back(callback: CallbackQuery, state: FSMContext):
+    """Возврат из выбора времени обратно к календарю"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        data = await state.get_data()
+        channel_name = data.get("create_channel_name", "—")
+        date_iso = data.get("create_selected_date", "")
+        if date_iso:
+            d = date_type.fromisoformat(date_iso)
+            year, month = d.year, d.month
+        else:
+            today = date_type.today()
+            year, month = today.year, today.month
+
+        await safe_edit_message(
+            callback.message,
+            f"➕ **Создание поста**\n\n"
+            f"📢 Канал: **{channel_name}**\n\n"
+            f"Шаг 2/4 — Выберите дату публикации:",
+            get_free_calendar_keyboard(year, month)
+        )
+        await state.set_state(AdminCreatePostStates.selecting_date)
+    except Exception:
+        logger.error(f"Error in autopost_cal_back: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("autopost_time:"), AdminCreatePostStates.entering_time)
+async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
+    """Время выбрано кнопкой — переходим к выбору часов удаления"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        parts = callback.data.split(":")  # autopost_time:YYYY-MM-DD:HHMM
+        date_iso = parts[1]
+        cb_time = parts[2]  # e.g. "1400"
+        time_str = f"{cb_time[:2]}:{cb_time[2:]}"  # "14:00"
+        scheduled_time = datetime.fromisoformat(f"{date_iso}T{time_str}")
+
+        if scheduled_time < datetime.utcnow():
+            await callback.answer("❌ Выбранное время уже прошло. Выберите другое.", show_alert=True)
+            return
+
+        await state.update_data(create_scheduled_time=scheduled_time.isoformat())
+
+        data = await state.get_data()
+        channel_name = data.get("create_channel_name", "—")
+
+        await safe_edit_message(
+            callback.message,
+            f"✅ Дата и время: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n\n"
+            f"📢 Канал: **{channel_name}**\n\n"
+            f"Шаг 3/4 — Через сколько часов удалить пост?",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="24ч", callback_data="autopost_del:24"),
+                    InlineKeyboardButton(text="48ч", callback_data="autopost_del:48"),
+                    InlineKeyboardButton(text="Не удалять", callback_data="autopost_del:0"),
+                ],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")]
+            ])
+        )
+        await state.set_state(AdminCreatePostStates.entering_delete_hours)
+    except Exception:
+        logger.error(f"Error in autopost_select_time: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminCreatePostStates.entering_time)
+async def autopost_enter_time_text(message: Message, state: FSMContext):
+    """Ввод времени текстом (ЧЧ:ММ) как запасной вариант"""
     raw = (message.text or "").strip()
     try:
-        scheduled_time = datetime.strptime(raw, "%d.%m.%Y %H:%M")
+        time_obj = datetime.strptime(raw, "%H:%M").time()
     except ValueError:
         await message.answer(
-            "❌ Неверный формат даты. Используйте: `ДД.ММ.ГГГГ ЧЧ:ММ`\n"
-            "Например: `25.03.2026 14:00`",
+            "❌ Неверный формат. Введите время в формате `ЧЧ:ММ`, например `14:00`\n"
+            "или выберите из кнопок выше.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
+    data = await state.get_data()
+    date_iso = data.get("create_selected_date", "")
+    if not date_iso:
+        await message.answer("❌ Дата не выбрана. Начните заново.")
+        await state.clear()
+        return
+
+    scheduled_time = datetime.combine(date_type.fromisoformat(date_iso), time_obj)
+
     if scheduled_time < datetime.utcnow():
-        await message.answer(
-            "❌ Дата публикации должна быть в будущем. Введите корректное время.",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await message.answer("❌ Дата публикации должна быть в будущем. Введите другое время.")
         return
 
     await state.update_data(create_scheduled_time=scheduled_time.isoformat())
+    channel_name = data.get("create_channel_name", "—")
 
     await message.answer(
-        f"✅ Время: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n\n"
-        f"Шаг 3/4 — Через сколько часов удалить пост?\n"
-        f"Введите число (0 = не удалять, 24 = удалить через 24ч, 48 = через 48ч и т.д.):",
+        f"✅ Дата и время: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n\n"
+        f"📢 Канал: **{channel_name}**\n\n"
+        f"Шаг 3/4 — Через сколько часов удалить пост?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="24ч", callback_data="autopost_del:24"),
