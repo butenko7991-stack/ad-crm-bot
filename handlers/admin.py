@@ -1110,6 +1110,113 @@ async def adm_moderation(callback: CallbackQuery):
 
 # ==================== СТАТИСТИКА ====================
 
+async def _build_crm_stats_text() -> str:
+    """Собрать сводную статистику CRM и вернуть готовый текст."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=7)
+    month_start = today_start - timedelta(days=30)
+    prev_month_start = month_start - timedelta(days=30)
+
+    async with async_session_maker() as session:
+        total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
+        pending_orders = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "pending")
+        )).scalar() or 0
+        payment_uploaded = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "payment_uploaded")
+        )).scalar() or 0
+        confirmed_orders = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "payment_confirmed")
+        )).scalar() or 0
+        cancelled_orders = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "cancelled")
+        )).scalar() or 0
+
+        total_revenue = float((await session.execute(
+            select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
+        )).scalar() or 0)
+        revenue_today = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= today_start,
+            )
+        )).scalar() or 0)
+        revenue_week = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= week_start,
+            )
+        )).scalar() or 0)
+        revenue_month = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= month_start,
+            )
+        )).scalar() or 0)
+        revenue_prev_month = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= prev_month_start,
+                Order.paid_at < month_start,
+            )
+        )).scalar() or 0)
+
+        orders_today = (await session.execute(
+            select(func.count(Order.id)).where(Order.created_at >= today_start)
+        )).scalar() or 0
+        orders_week = (await session.execute(
+            select(func.count(Order.id)).where(Order.created_at >= week_start)
+        )).scalar() or 0
+        orders_month = (await session.execute(
+            select(func.count(Order.id)).where(Order.created_at >= month_start)
+        )).scalar() or 0
+
+        total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
+        active_managers = (await session.execute(
+            select(func.count(Manager.id)).where(Manager.is_active == True)
+        )).scalar() or 0
+        total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
+        active_channels = (await session.execute(
+            select(func.count(Channel.id)).where(Channel.is_active == True)
+        )).scalar() or 0
+        total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
+        new_clients_month = (await session.execute(
+            select(func.count(Client.id)).where(Client.created_at >= month_start)
+        )).scalar() or 0
+
+    if revenue_prev_month > 0:
+        rev_change = (revenue_month - revenue_prev_month) / revenue_prev_month * 100
+        rev_trend = f" ({'▲' if rev_change >= 0 else '▼'}{abs(rev_change):.1f}%)"
+    else:
+        rev_trend = ""
+
+    conversion = round(confirmed_orders / total_orders * 100, 1) if total_orders > 0 else 0
+    cancel_rate = round(cancelled_orders / total_orders * 100, 1) if total_orders > 0 else 0
+
+    return (
+        "📊 **Метрики CRM**\n\n"
+        "💰 **Выручка:**\n"
+        f"• Сегодня: **{revenue_today:,.0f}₽**\n"
+        f"• За 7 дней: **{revenue_week:,.0f}₽**\n"
+        f"• За 30 дней: **{revenue_month:,.0f}₽**{rev_trend}\n"
+        f"• Всего: **{total_revenue:,.0f}₽**\n\n"
+        "📦 **Заказы:**\n"
+        f"• Сегодня: **{orders_today}** | Неделя: **{orders_week}** | Месяц: **{orders_month}**\n"
+        f"• Всего: **{total_orders}** | Конверсия: **{conversion}%** | Отмены: **{cancel_rate}%**\n\n"
+        "📋 **Статусы:**\n"
+        f"• ⏳ Ожидают: **{pending_orders}** | 💳 На проверке: **{payment_uploaded}**\n"
+        f"• ✅ Подтверждены: **{confirmed_orders}** | ❌ Отменены: **{cancelled_orders}**\n\n"
+        "📢 **Каналы:** **{ac}** активных из **{tc}**\n"
+        "👥 **Менеджеры:** **{am}** активных из **{tm}**\n"
+        "🧑‍💼 **Клиенты:** **{tcl}** всего | +**{ncl}** за месяц"
+    ).format(
+        ac=active_channels, tc=total_channels,
+        am=active_managers, tm=total_managers,
+        tcl=total_clients, ncl=new_clients_month,
+    )
+
+
 @router.callback_query(F.data == "adm_stats")
 async def adm_stats(callback: CallbackQuery):
     """Сводная статистика + навигация по метрикам"""
@@ -1120,111 +1227,7 @@ async def adm_stats(callback: CallbackQuery):
     await callback.answer()
 
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today_start - timedelta(days=7)
-        month_start = today_start - timedelta(days=30)
-        prev_month_start = month_start - timedelta(days=30)
-
-        async with async_session_maker() as session:
-            total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
-            pending_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "pending")
-            )).scalar() or 0
-            payment_uploaded = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
-            )).scalar() or 0
-            confirmed_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0
-            cancelled_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "cancelled")
-            )).scalar() or 0
-
-            total_revenue = float((await session.execute(
-                select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0)
-            revenue_today = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= today_start,
-                )
-            )).scalar() or 0)
-            revenue_week = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= week_start,
-                )
-            )).scalar() or 0)
-            revenue_month = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= month_start,
-                )
-            )).scalar() or 0)
-            revenue_prev_month = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= prev_month_start,
-                    Order.paid_at < month_start,
-                )
-            )).scalar() or 0)
-
-            orders_today = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= today_start)
-            )).scalar() or 0
-            orders_week = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= week_start)
-            )).scalar() or 0
-            orders_month = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= month_start)
-            )).scalar() or 0
-
-            total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
-            active_managers = (await session.execute(
-                select(func.count(Manager.id)).where(Manager.is_active == True)
-            )).scalar() or 0
-            total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
-            active_channels = (await session.execute(
-                select(func.count(Channel.id)).where(Channel.is_active == True)
-            )).scalar() or 0
-            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
-            new_clients_month = (await session.execute(
-                select(func.count(Client.id)).where(Client.created_at >= month_start)
-            )).scalar() or 0
-
-        # Тренд выручки за месяц
-        if revenue_prev_month > 0:
-            rev_change = (revenue_month - revenue_prev_month) / revenue_prev_month * 100
-            rev_trend = f" ({'▲' if rev_change >= 0 else '▼'}{abs(rev_change):.1f}%)"
-        else:
-            rev_trend = ""
-
-        conversion = round(confirmed_orders / total_orders * 100, 1) if total_orders > 0 else 0
-        cancel_rate = round(cancelled_orders / total_orders * 100, 1) if total_orders > 0 else 0
-
-        text = (
-            "📊 **Метрики CRM**\n\n"
-            "💰 **Выручка:**\n"
-            f"• Сегодня: **{revenue_today:,.0f}₽**\n"
-            f"• За 7 дней: **{revenue_week:,.0f}₽**\n"
-            f"• За 30 дней: **{revenue_month:,.0f}₽**{rev_trend}\n"
-            f"• Всего: **{total_revenue:,.0f}₽**\n\n"
-            "📦 **Заказы:**\n"
-            f"• Сегодня: **{orders_today}** | Неделя: **{orders_week}** | Месяц: **{orders_month}**\n"
-            f"• Всего: **{total_orders}** | Конверсия: **{conversion}%** | Отмены: **{cancel_rate}%**\n\n"
-            "📋 **Статусы:**\n"
-            f"• ⏳ Ожидают: **{pending_orders}** | 💳 На проверке: **{payment_uploaded}**\n"
-            f"• ✅ Подтверждены: **{confirmed_orders}** | ❌ Отменены: **{cancelled_orders}**\n\n"
-            "📢 **Каналы:** **{ac}** активных из **{tc}**\n"
-            "👥 **Менеджеры:** **{am}** активных из **{tm}**\n"
-            "🧑‍💼 **Клиенты:** **{tcl}** всего | +**{ncl}** за месяц"
-        ).format(
-            ac=active_channels, tc=total_channels,
-            am=active_managers, tm=total_managers,
-            tcl=total_clients, ncl=new_clients_month,
-        )
-
+        text = await _build_crm_stats_text()
         from keyboards.menus import get_metrics_menu
         await safe_edit_message(callback.message, text, get_metrics_menu())
     except Exception as e:
@@ -3799,98 +3802,13 @@ async def btn_adm_managers(message: Message):
 
 @router.message(F.text == "📊 Статистика")
 async def btn_adm_stats(message: Message):
-    """Текстовая кнопка — статистика"""
+    """Текстовая кнопка — статистика + навигация по метрикам"""
     if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
         return
     try:
-        now = datetime.utcnow()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today_start - timedelta(days=7)
-        month_start = today_start - timedelta(days=30)
-
-        async with async_session_maker() as session:
-            total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
-            pending_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "pending")
-            )).scalar() or 0
-            payment_uploaded = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
-            )).scalar() or 0
-            confirmed_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0
-            cancelled_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "cancelled")
-            )).scalar() or 0
-
-            total_revenue = (await session.execute(
-                select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0
-            revenue_today = (await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= today_start
-                )
-            )).scalar() or 0
-            revenue_week = (await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= week_start
-                )
-            )).scalar() or 0
-            revenue_month = (await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= month_start
-                )
-            )).scalar() or 0
-
-            orders_today = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= today_start)
-            )).scalar() or 0
-            orders_week = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= week_start)
-            )).scalar() or 0
-            orders_month = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= month_start)
-            )).scalar() or 0
-
-            total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
-            active_managers = (await session.execute(
-                select(func.count(Manager.id)).where(Manager.is_active == True)
-            )).scalar() or 0
-            total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
-            active_channels = (await session.execute(
-                select(func.count(Channel.id)).where(Channel.is_active == True)
-            )).scalar() or 0
-            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
-
-        text = (
-            "📊 **Детальная статистика**\n\n"
-            "💰 **Выручка:**\n"
-            f"• Сегодня: **{float(revenue_today):,.0f}₽**\n"
-            f"• За 7 дней: **{float(revenue_week):,.0f}₽**\n"
-            f"• За 30 дней: **{float(revenue_month):,.0f}₽**\n"
-            f"• Всего: **{float(total_revenue):,.0f}₽**\n\n"
-            "📦 **Заказы:**\n"
-            f"• Сегодня: **{orders_today}**\n"
-            f"• За 7 дней: **{orders_week}**\n"
-            f"• За 30 дней: **{orders_month}**\n"
-            f"• Всего: **{total_orders}**\n\n"
-            "📋 **Статусы заказов:**\n"
-            f"• ⏳ Ожидают: **{pending_orders}**\n"
-            f"• 💳 Оплата на проверке: **{payment_uploaded}**\n"
-            f"• ✅ Подтверждены: **{confirmed_orders}**\n"
-            f"• ❌ Отменены: **{cancelled_orders}**\n\n"
-            "📢 **Каналы:**\n"
-            f"• Активных: **{active_channels}** из **{total_channels}**\n\n"
-            "👥 **Пользователи:**\n"
-            f"• Клиентов: **{total_clients}**\n"
-            f"• Менеджеров: **{active_managers}** активных из **{total_managers}**"
-        )
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
-        ]), parse_mode=ParseMode.MARKDOWN)
+        from keyboards.menus import get_metrics_menu
+        text = await _build_crm_stats_text()
+        await message.answer(text, reply_markup=get_metrics_menu(), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_stats: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
