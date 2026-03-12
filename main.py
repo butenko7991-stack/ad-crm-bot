@@ -81,23 +81,27 @@ async def publish_scheduled_posts(bot: Bot):
                             chat_id=channel_tg_id,
                             photo=post.file_id,
                             caption=caption,
+                            parse_mode=None,
                         )
                     elif post.file_id and post.file_type == "video":
                         sent = await bot.send_video(
                             chat_id=channel_tg_id,
                             video=post.file_id,
                             caption=caption,
+                            parse_mode=None,
                         )
                     elif post.file_id and post.file_type == "document":
                         sent = await bot.send_document(
                             chat_id=channel_tg_id,
                             document=post.file_id,
                             caption=caption,
+                            parse_mode=None,
                         )
                     else:
                         sent = await bot.send_message(
                             chat_id=channel_tg_id,
                             text=post.content or "",
+                            parse_mode=None,
                         )
 
                     post.status = "posted"

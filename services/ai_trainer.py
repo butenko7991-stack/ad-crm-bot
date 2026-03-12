@@ -246,13 +246,13 @@ class AITrainerService:
                     else:
                         error = await resp.text()
                         logger.error(f"Claude API error (post recommendations): {resp.status} - {error}")
-                        return None
+                        return "⚠️ Ошибка API при получении рекомендации. Попробуйте позже."
         except asyncio.TimeoutError:
             logger.error("Claude API timeout (post recommendations)")
             return "⏱ Ответ занял слишком много времени. Попробуй ещё раз."
         except Exception as e:
             logger.error(f"AI post recommendations error: {e}")
-            return None
+            return "⚠️ Ошибка при получении AI-рекомендации. Попробуйте позже."
 
 
 # Глобальный экземпляр сервиса

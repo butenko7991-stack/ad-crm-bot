@@ -37,6 +37,7 @@ class AdminAutopostingStates(StatesGroup):
     waiting_post_reactions = State()
     waiting_post_forwards = State()
     waiting_post_saves = State()
+    waiting_post_comments = State()
 
 
 class AdminCreatePostStates(StatesGroup):

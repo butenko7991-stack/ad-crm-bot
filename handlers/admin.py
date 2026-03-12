@@ -2128,10 +2128,32 @@ async def pa_receive_forwards(message: Message, state: FSMContext):
 
 @router.message(AdminAutopostingStates.waiting_post_saves)
 async def pa_receive_saves(message: Message, state: FSMContext):
-    """Получить сохранения и сохранить запись аналитики"""
+    """Получить сохранения, запросить комментарии"""
     try:
         saves = int(message.text.strip().replace(" ", "").replace(",", ""))
         if saves < 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите целое неотрицательное число!")
+        return
+
+    await state.update_data(pa_saves=saves)
+    await message.answer(
+        f"✅ Сохранения: {saves:,}\n\n💬 Введите количество **комментариев**:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="autopost_analytics")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminAutopostingStates.waiting_post_comments)
+
+
+@router.message(AdminAutopostingStates.waiting_post_comments)
+async def pa_receive_comments(message: Message, state: FSMContext):
+    """Получить комментарии и сохранить запись аналитики"""
+    try:
+        comments = int(message.text.strip().replace(" ", "").replace(",", ""))
+        if comments < 0:
             raise ValueError
     except (ValueError, AttributeError):
         await message.answer("❌ Введите целое неотрицательное число!")
@@ -2143,6 +2165,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
     views = data.get("pa_views", 0)
     reactions = data.get("pa_reactions", 0)
     forwards = data.get("pa_forwards", 0)
+    saves = data.get("pa_saves", 0)
 
     await state.clear()
 
@@ -2158,6 +2181,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
                 existing.reactions = reactions
                 existing.forwards = forwards
                 existing.saves = saves
+                existing.comments = comments
                 existing.recorded_at = datetime.utcnow()
                 existing.recorded_by = message.from_user.id
                 existing.ai_recommendation = None  # Сбрасываем старую рекомендацию
@@ -2170,6 +2194,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
                     reactions=reactions,
                     forwards=forwards,
                     saves=saves,
+                    comments=comments,
                     recorded_by=message.from_user.id,
                 )
                 session.add(analytics)
@@ -2178,7 +2203,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
             await session.refresh(analytics)
             analytics_id = analytics.id
 
-        total_engage = reactions + forwards + saves
+        total_engage = reactions + forwards + saves + comments
         er = round(total_engage / views * 100, 2) if views > 0 else 0
 
         await message.answer(
@@ -2187,6 +2212,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
             f"👍 Реакции: **{reactions:,}**\n"
             f"↩️ Пересылки: **{forwards:,}**\n"
             f"🔖 Сохранения: **{saves:,}**\n"
+            f"💬 Комментарии: **{comments:,}**\n"
             f"📈 Engagement Rate: **{er}%**\n\n"
             f"Получите AI-рекомендации по этому посту:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2196,7 +2222,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        logger.error(f"Error in pa_receive_saves: {traceback.format_exc()}")
+        logger.error(f"Error in pa_receive_comments: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
 
 
@@ -2217,36 +2243,41 @@ async def pa_ai_recommend(callback: CallbackQuery):
                 await callback.answer("❌ Запись не найдена", show_alert=True)
                 return
             channel = await session.get(Channel, analytics.channel_id)
-
-        ch_name = channel.name if channel else "Канал"
-        avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
-        cpm = float(channel.cpm or 0) if channel else 0
+            # Extract all values we need while still inside the session
+            a_views = analytics.views
+            a_reactions = analytics.reactions
+            a_forwards = analytics.forwards
+            a_saves = analytics.saves
+            a_comments = analytics.comments
+            ch_name = channel.name if channel else "Канал"
+            avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
+            cpm = float(channel.cpm or 0) if channel else 0
 
         recommendation = await ai_trainer_service.get_post_recommendations(
             channel_name=ch_name,
-            views=analytics.views,
-            reactions=analytics.reactions,
-            forwards=analytics.forwards,
-            saves=analytics.saves,
-            comments=analytics.comments,
+            views=a_views,
+            reactions=a_reactions,
+            forwards=a_forwards,
+            saves=a_saves,
+            comments=a_comments,
             avg_channel_views=avg_views,
             cpm=cpm,
         )
 
         if recommendation:
             async with async_session_maker() as session:
-                analytics = await session.get(PostAnalytics, analytics_id)
-                if analytics:
-                    analytics.ai_recommendation = recommendation
+                analytics_to_save = await session.get(PostAnalytics, analytics_id)
+                if analytics_to_save:
+                    analytics_to_save.ai_recommendation = recommendation
                     await session.commit()
 
-            total_engage = analytics.reactions + analytics.forwards + analytics.saves + analytics.comments
-            er = round(total_engage / analytics.views * 100, 2) if analytics.views > 0 else 0
+            total_engage = a_reactions + a_forwards + a_saves + a_comments
+            er = round(total_engage / a_views * 100, 2) if a_views > 0 else 0
 
             text = (
                 f"🤖 **AI-рекомендации для поста #{analytics_id}**\n\n"
                 f"📢 Канал: {ch_name}\n"
-                f"👁 Просмотры: {analytics.views:,} | 📈 ER: {er}%\n\n"
+                f"👁 Просмотры: {a_views:,} | 📈 ER: {er}%\n\n"
                 f"{recommendation}"
             )
         else:
