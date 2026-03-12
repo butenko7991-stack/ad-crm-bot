@@ -2244,11 +2244,11 @@ async def pa_ai_recommend(callback: CallbackQuery):
                 return
             channel = await session.get(Channel, analytics.channel_id)
             # Extract all values we need while still inside the session
-            a_views = analytics.views
-            a_reactions = analytics.reactions
-            a_forwards = analytics.forwards
-            a_saves = analytics.saves
-            a_comments = analytics.comments
+            a_views = analytics.views or 0
+            a_reactions = analytics.reactions or 0
+            a_forwards = analytics.forwards or 0
+            a_saves = analytics.saves or 0
+            a_comments = analytics.comments or 0
             ch_name = channel.name if channel else "Канал"
             avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
             cpm = float(channel.cpm or 0) if channel else 0
