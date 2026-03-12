@@ -119,6 +119,39 @@ def get_manager_cabinet_menu() -> InlineKeyboardMarkup:
     ])
 
 
+# ==================== МЕТРИКИ ====================
+
+def get_metrics_menu() -> InlineKeyboardMarkup:
+    """Навигационное меню раздела метрик"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💰 Продажи", callback_data="metrics_sales:month"),
+            InlineKeyboardButton(text="📢 Каналы", callback_data="metrics_channels"),
+        ],
+        [
+            InlineKeyboardButton(text="👥 Менеджеры", callback_data="metrics_managers"),
+            InlineKeyboardButton(text="🧑‍💼 Клиенты", callback_data="metrics_clients"),
+        ],
+        [
+            InlineKeyboardButton(text="🗂 Форматы", callback_data="metrics_formats"),
+            InlineKeyboardButton(text="📈 Посты", callback_data="metrics_posts"),
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+    ])
+
+
+def get_sales_period_keyboard(active: str = "month") -> InlineKeyboardMarkup:
+    """Переключатель периода для метрик продаж"""
+    def _btn(label: str, period: str) -> InlineKeyboardButton:
+        prefix = "✅ " if active == period else ""
+        return InlineKeyboardButton(text=f"{prefix}{label}", callback_data=f"metrics_sales:{period}")
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("День", "day"), _btn("Неделя", "week"), _btn("Месяц", "month")],
+        [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")],
+    ])
+
+
 # ==================== КАНАЛЫ ====================
 
 def get_channels_keyboard(channels: list) -> InlineKeyboardMarkup:
