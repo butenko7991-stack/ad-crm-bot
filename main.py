@@ -19,6 +19,7 @@ from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
 from database import init_db, async_session_maker
 from database.models import Slot, ScheduledPost, Channel
 from handlers import setup_routers
+from services.channel_collector import refresh_all_channels
 
 
 # Настройка логирования
@@ -199,6 +200,13 @@ async def main():
         trigger="interval",
         minutes=1,
         id="publish_scheduled_posts",
+        args=[bot],
+    )
+    scheduler.add_job(
+        refresh_all_channels,
+        trigger="interval",
+        hours=6,
+        id="refresh_all_channels",
         args=[bot],
     )
     scheduler.start()

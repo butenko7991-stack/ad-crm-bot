@@ -2,7 +2,7 @@
 Сервис комплексных метрик (TG Stat-подобная аналитика)
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select, func, case
@@ -12,9 +12,14 @@ from database import async_session_maker, Channel, Manager, Order, Client, PostA
 logger = logging.getLogger(__name__)
 
 
+def _utcnow() -> datetime:
+    """Текущее UTC-время как naive datetime (совместимо с полями DateTime в БД)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _period_bounds(period: str) -> tuple[datetime, datetime, datetime, datetime]:
     """Вернуть (start, end, prev_start, prev_end) для заданного периода."""
-    now = datetime.utcnow()
+    now = _utcnow()
     if period == "day":
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end = now
@@ -36,7 +41,7 @@ def _period_bounds(period: str) -> tuple[datetime, datetime, datetime, datetime]
 def _delta_str(current: float, previous: float) -> str:
     """Сформировать строку изменения с иконкой тренда."""
     if previous <= 0:
-        return ""
+        return " ▲ новое" if current > 0 else ""
     change = (current - previous) / previous * 100
     arrow = "▲" if change >= 0 else "▼"
     return f" {arrow}{abs(change):.1f}%"
@@ -136,6 +141,10 @@ async def get_channel_metrics() -> Optional[dict]:
     """
     Метрики по каналам: топ-5 по выручке,
     средний CPM и средний ERR% по активным каналам.
+
+    Данные берутся из БД, которая заполняется ботом напрямую через
+    Telegram Bot API (subscribers via get_chat_member_count,
+    avg_reach / ERR из накопленных PostAnalytics).
     """
     try:
         from database.models import Slot
@@ -155,13 +164,15 @@ async def get_channel_metrics() -> Optional[dict]:
                 .limit(5)
             )).all()
 
-            # Средний CPM и ERR по активным каналам
+            # Средний CPM по активным каналам
             avg_cpm = float((await session.execute(
                 select(func.avg(Channel.cpm)).where(
                     Channel.is_active == True,
                     Channel.cpm > 0,
                 )
             )).scalar() or 0)
+
+            # Средний ERR из поля канала (рассчитывается коллектором из PostAnalytics)
             avg_err = float((await session.execute(
                 select(func.avg(Channel.err_percent)).where(
                     Channel.is_active == True,
@@ -169,15 +180,35 @@ async def get_channel_metrics() -> Optional[dict]:
                 )
             )).scalar() or 0)
 
+            # Средний охват из поля канала (рассчитывается коллектором из PostAnalytics)
+            avg_reach = float((await session.execute(
+                select(func.avg(Channel.avg_reach_24h)).where(
+                    Channel.is_active == True,
+                    Channel.avg_reach_24h > 0,
+                )
+            )).scalar() or 0)
+
             total_active = (await session.execute(
                 select(func.count(Channel.id)).where(Channel.is_active == True)
+            )).scalar() or 0
+
+            # Суммарные просмотры по PostAnalytics (факт, собранные ботом)
+            total_views = (await session.execute(
+                select(func.sum(PostAnalytics.views)).where(PostAnalytics.views > 0)
+            )).scalar() or 0
+
+            analytics_posts = (await session.execute(
+                select(func.count(PostAnalytics.id)).where(PostAnalytics.views > 0)
             )).scalar() or 0
 
         return {
             "top_by_revenue": [(r.name, float(r.rev), r.cnt) for r in top_by_revenue],
             "avg_cpm": avg_cpm,
             "avg_err": avg_err,
+            "avg_reach": round(avg_reach),
             "total_active": total_active,
+            "total_views_tracked": int(total_views),
+            "analytics_posts": analytics_posts,
         }
     except Exception as e:
         logger.error(f"get_channel_metrics error: {e}")

@@ -491,42 +491,65 @@ async def receive_channel_cpm(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("adm_ch_update:"))
 async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
-    """Обновить статистику канала"""
+    """Обновить статистику канала напрямую через Bot API (без сторонних сервисов)"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
-    
+
     channel_id = int(callback.data.split(":")[1])
-    
+
     try:
         async with async_session_maker() as session:
             channel = await session.get(Channel, channel_id)
             if not channel:
                 await callback.answer("❌ Канал не найден", show_alert=True)
                 return
-            
-            try:
-                chat = await bot.get_chat(channel.telegram_id)
-                member_count = await bot.get_chat_member_count(channel.telegram_id)
-                
-                channel.subscribers = member_count
-                channel.name = chat.title or channel.name
-                await session.commit()
-                
-                await callback.answer(f"✅ {member_count:,} подписчиков", show_alert=True)
-                
-            except TelegramBadRequest as e:
-                await callback.answer(f"❌ Бот не админ канала", show_alert=True)
-                return
-        
-        # Обновляем карточку
+
+        from services.channel_collector import (
+            refresh_channel_subscribers,
+            update_channel_reach_from_analytics,
+        )
+
+        # 1. Обновляем имя и число подписчиков через Bot API
+        try:
+            chat = await bot.get_chat(channel.telegram_id)
+            async with async_session_maker() as session:
+                ch = await session.get(Channel, channel_id)
+                if ch:
+                    ch.name = chat.title or ch.name
+                    await session.commit()
+        except TelegramBadRequest:
+            await callback.answer("❌ Бот не является администратором канала", show_alert=True)
+            return
+
+        member_count = await refresh_channel_subscribers(bot, channel)
+
+        # 2. Пересчитываем avg_reach и ERR из накопленных PostAnalytics
+        reach_data = await update_channel_reach_from_analytics(channel_id)
+
+        # Формируем сообщение об обновлении
+        parts = []
+        if member_count is not None:
+            parts.append(f"👥 {member_count:,} подписчиков")
+        if reach_data.get("records_used", 0) > 0:
+            parts.append(
+                f"👁 Охват {reach_data['avg_reach']:,} "
+                f"| ERR {reach_data['err_percent']:.1f}% "
+                f"(по {reach_data['records_used']} постам)"
+            )
+        else:
+            parts.append("📊 Охват обновится после накопления аналитики постов")
+
+        await callback.answer(" | ".join(parts) if parts else "✅ Обновлено", show_alert=True)
+
+        # 3. Обновляем карточку канала
         text, is_active, _ = await get_channel_card(channel_id)
         if text:
             await safe_edit_message(callback.message, text, get_channel_settings_keyboard(channel_id, is_active))
-                
+
     except Exception as e:
         logger.error(f"Error in adm_update_channel_stats: {traceback.format_exc()}")
-        await callback.answer(f"❌ Ошибка", show_alert=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 
 # ==================== ВКЛ/ВЫКЛ КАНАЛ ====================
@@ -1097,11 +1120,11 @@ async def adm_stats(callback: CallbackQuery):
     await callback.answer()
 
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = today_start - timedelta(days=7)
         month_start = today_start - timedelta(days=30)
-        prev_month_start = today_start - timedelta(days=60)
+        prev_month_start = month_start - timedelta(days=30)
 
         async with async_session_maker() as session:
             total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
@@ -1265,10 +1288,14 @@ async def metrics_channels(callback: CallbackQuery):
         return
 
     text = (
-        "📢 **Метрики каналов**\n\n"
+        "📢 **Метрики каналов**\n"
+        "_Данные собираются ботом напрямую через Telegram Bot API_\n\n"
         f"🔢 Активных каналов: **{data['total_active']}**\n"
         f"💰 Средний CPM: **{data['avg_cpm']:,.0f}₽**\n"
-        f"📊 Средний ERR: **{data['avg_err']:.1f}%**\n\n"
+        f"📊 Средний ERR: **{data['avg_err']:.1f}%**\n"
+        f"👁 Средний охват (24ч): **{data['avg_reach']:,}**\n"
+        f"📝 Постов с аналитикой: **{data['analytics_posts']}** "
+        f"(~{data['total_views_tracked']:,} просмотров)\n\n"
     )
 
     if data["top_by_revenue"]:
