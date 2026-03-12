@@ -22,7 +22,7 @@ from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
-from services.diagnostics import run_diagnostics, gather_business_metrics, get_improvement_suggestions
+from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
 
 
 logger = logging.getLogger(__name__)
@@ -34,13 +34,34 @@ authenticated_admins = set()
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
+def _md_escape(text: str) -> str:
+    """Экранировать специальные символы Markdown v1 в пользовательских данных.
+
+    В Telegram Markdown v1 специальны только: _ * ` [
+    Каждый из них предваряется обратным слэшем.
+    """
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 async def safe_edit_message(message, text: str, reply_markup=None, parse_mode=ParseMode.MARKDOWN):
-    """Безопасное редактирование сообщения с обработкой ошибок"""
+    """Безопасное редактирование сообщения с обработкой ошибок.
+
+    Если редактирование невозможно (сообщение не найдено, нельзя редактировать),
+    отправляет новое сообщение вместо исключения.
+    """
     try:
         await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
+        err = str(e)
+        if "message is not modified" in err:
             pass  # Игнорируем — сообщение не изменилось
+        elif any(s in err for s in ("message to edit not found", "MESSAGE_ID_INVALID",
+                                    "message can't be edited", "bot was blocked",
+                                    "chat not found")):
+            # Нельзя отредактировать — отправляем новым сообщением
+            await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
         else:
             raise
 
@@ -1110,6 +1131,113 @@ async def adm_moderation(callback: CallbackQuery):
 
 # ==================== СТАТИСТИКА ====================
 
+async def _build_crm_stats_text() -> str:
+    """Собрать сводную статистику CRM и вернуть готовый текст."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=7)
+    month_start = today_start - timedelta(days=30)
+    prev_month_start = month_start - timedelta(days=30)
+
+    async with async_session_maker() as session:
+        total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
+        pending_orders = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "pending")
+        )).scalar() or 0
+        payment_uploaded = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "payment_uploaded")
+        )).scalar() or 0
+        confirmed_orders = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "payment_confirmed")
+        )).scalar() or 0
+        cancelled_orders = (await session.execute(
+            select(func.count(Order.id)).where(Order.status == "cancelled")
+        )).scalar() or 0
+
+        total_revenue = float((await session.execute(
+            select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
+        )).scalar() or 0)
+        revenue_today = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= today_start,
+            )
+        )).scalar() or 0)
+        revenue_week = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= week_start,
+            )
+        )).scalar() or 0)
+        revenue_month = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= month_start,
+            )
+        )).scalar() or 0)
+        revenue_prev_month = float((await session.execute(
+            select(func.sum(Order.final_price)).where(
+                Order.status == "payment_confirmed",
+                Order.paid_at >= prev_month_start,
+                Order.paid_at < month_start,
+            )
+        )).scalar() or 0)
+
+        orders_today = (await session.execute(
+            select(func.count(Order.id)).where(Order.created_at >= today_start)
+        )).scalar() or 0
+        orders_week = (await session.execute(
+            select(func.count(Order.id)).where(Order.created_at >= week_start)
+        )).scalar() or 0
+        orders_month = (await session.execute(
+            select(func.count(Order.id)).where(Order.created_at >= month_start)
+        )).scalar() or 0
+
+        total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
+        active_managers = (await session.execute(
+            select(func.count(Manager.id)).where(Manager.is_active == True)
+        )).scalar() or 0
+        total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
+        active_channels = (await session.execute(
+            select(func.count(Channel.id)).where(Channel.is_active == True)
+        )).scalar() or 0
+        total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
+        new_clients_month = (await session.execute(
+            select(func.count(Client.id)).where(Client.created_at >= month_start)
+        )).scalar() or 0
+
+    if revenue_prev_month > 0:
+        rev_change = (revenue_month - revenue_prev_month) / revenue_prev_month * 100
+        rev_trend = f" ({'▲' if rev_change >= 0 else '▼'}{abs(rev_change):.1f}%)"
+    else:
+        rev_trend = ""
+
+    conversion = round(confirmed_orders / total_orders * 100, 1) if total_orders > 0 else 0
+    cancel_rate = round(cancelled_orders / total_orders * 100, 1) if total_orders > 0 else 0
+
+    return (
+        "📊 **Метрики CRM**\n\n"
+        "💰 **Выручка:**\n"
+        f"• Сегодня: **{revenue_today:,.0f}₽**\n"
+        f"• За 7 дней: **{revenue_week:,.0f}₽**\n"
+        f"• За 30 дней: **{revenue_month:,.0f}₽**{rev_trend}\n"
+        f"• Всего: **{total_revenue:,.0f}₽**\n\n"
+        "📦 **Заказы:**\n"
+        f"• Сегодня: **{orders_today}** | Неделя: **{orders_week}** | Месяц: **{orders_month}**\n"
+        f"• Всего: **{total_orders}** | Конверсия: **{conversion}%** | Отмены: **{cancel_rate}%**\n\n"
+        "📋 **Статусы:**\n"
+        f"• ⏳ Ожидают: **{pending_orders}** | 💳 На проверке: **{payment_uploaded}**\n"
+        f"• ✅ Подтверждены: **{confirmed_orders}** | ❌ Отменены: **{cancelled_orders}**\n\n"
+        "📢 **Каналы:** **{ac}** активных из **{tc}**\n"
+        "👥 **Менеджеры:** **{am}** активных из **{tm}**\n"
+        "🧑‍💼 **Клиенты:** **{tcl}** всего | +**{ncl}** за месяц"
+    ).format(
+        ac=active_channels, tc=total_channels,
+        am=active_managers, tm=total_managers,
+        tcl=total_clients, ncl=new_clients_month,
+    )
+
+
 @router.callback_query(F.data == "adm_stats")
 async def adm_stats(callback: CallbackQuery):
     """Сводная статистика + навигация по метрикам"""
@@ -1120,111 +1248,7 @@ async def adm_stats(callback: CallbackQuery):
     await callback.answer()
 
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today_start - timedelta(days=7)
-        month_start = today_start - timedelta(days=30)
-        prev_month_start = month_start - timedelta(days=30)
-
-        async with async_session_maker() as session:
-            total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
-            pending_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "pending")
-            )).scalar() or 0
-            payment_uploaded = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
-            )).scalar() or 0
-            confirmed_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0
-            cancelled_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "cancelled")
-            )).scalar() or 0
-
-            total_revenue = float((await session.execute(
-                select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0)
-            revenue_today = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= today_start,
-                )
-            )).scalar() or 0)
-            revenue_week = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= week_start,
-                )
-            )).scalar() or 0)
-            revenue_month = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= month_start,
-                )
-            )).scalar() or 0)
-            revenue_prev_month = float((await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= prev_month_start,
-                    Order.paid_at < month_start,
-                )
-            )).scalar() or 0)
-
-            orders_today = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= today_start)
-            )).scalar() or 0
-            orders_week = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= week_start)
-            )).scalar() or 0
-            orders_month = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= month_start)
-            )).scalar() or 0
-
-            total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
-            active_managers = (await session.execute(
-                select(func.count(Manager.id)).where(Manager.is_active == True)
-            )).scalar() or 0
-            total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
-            active_channels = (await session.execute(
-                select(func.count(Channel.id)).where(Channel.is_active == True)
-            )).scalar() or 0
-            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
-            new_clients_month = (await session.execute(
-                select(func.count(Client.id)).where(Client.created_at >= month_start)
-            )).scalar() or 0
-
-        # Тренд выручки за месяц
-        if revenue_prev_month > 0:
-            rev_change = (revenue_month - revenue_prev_month) / revenue_prev_month * 100
-            rev_trend = f" ({'▲' if rev_change >= 0 else '▼'}{abs(rev_change):.1f}%)"
-        else:
-            rev_trend = ""
-
-        conversion = round(confirmed_orders / total_orders * 100, 1) if total_orders > 0 else 0
-        cancel_rate = round(cancelled_orders / total_orders * 100, 1) if total_orders > 0 else 0
-
-        text = (
-            "📊 **Метрики CRM**\n\n"
-            "💰 **Выручка:**\n"
-            f"• Сегодня: **{revenue_today:,.0f}₽**\n"
-            f"• За 7 дней: **{revenue_week:,.0f}₽**\n"
-            f"• За 30 дней: **{revenue_month:,.0f}₽**{rev_trend}\n"
-            f"• Всего: **{total_revenue:,.0f}₽**\n\n"
-            "📦 **Заказы:**\n"
-            f"• Сегодня: **{orders_today}** | Неделя: **{orders_week}** | Месяц: **{orders_month}**\n"
-            f"• Всего: **{total_orders}** | Конверсия: **{conversion}%** | Отмены: **{cancel_rate}%**\n\n"
-            "📋 **Статусы:**\n"
-            f"• ⏳ Ожидают: **{pending_orders}** | 💳 На проверке: **{payment_uploaded}**\n"
-            f"• ✅ Подтверждены: **{confirmed_orders}** | ❌ Отменены: **{cancelled_orders}**\n\n"
-            "📢 **Каналы:** **{ac}** активных из **{tc}**\n"
-            "👥 **Менеджеры:** **{am}** активных из **{tm}**\n"
-            "🧑‍💼 **Клиенты:** **{tcl}** всего | +**{ncl}** за месяц"
-        ).format(
-            ac=active_channels, tc=total_channels,
-            am=active_managers, tm=total_managers,
-            tcl=total_clients, ncl=new_clients_month,
-        )
-
+        text = await _build_crm_stats_text()
         from keyboards.menus import get_metrics_menu
         await safe_edit_message(callback.message, text, get_metrics_menu())
     except Exception as e:
@@ -1233,6 +1257,11 @@ async def adm_stats(callback: CallbackQuery):
 
 
 # ==================== ДЕТАЛЬНЫЕ МЕТРИКИ ====================
+
+_METRICS_BACK = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
+])
+
 
 @router.callback_query(F.data.startswith("metrics_sales:"))
 async def metrics_sales(callback: CallbackQuery):
@@ -1244,31 +1273,43 @@ async def metrics_sales(callback: CallbackQuery):
     period = callback.data.split(":")[1]
     await callback.answer()
 
-    from services.metrics import get_sales_metrics
-    from keyboards.menus import get_sales_period_keyboard
+    try:
+        from services.metrics import get_sales_metrics
+        from keyboards.menus import get_sales_period_keyboard
 
-    data = await get_sales_metrics(period)
-    if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
-        return
+        data = await get_sales_metrics(period)
+        if not data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Не удалось получить метрики продаж. Проверьте соединение с базой данных.",
+                _METRICS_BACK,
+            )
+            return
 
-    period_labels = {"day": "день", "week": "неделю", "month": "месяц"}
-    label = period_labels.get(period, period)
+        period_labels = {"day": "день", "week": "неделю", "month": "месяц"}
+        label = period_labels.get(period, period)
 
-    text = (
-        f"💰 **Метрики продаж — за {label}**\n\n"
-        f"📈 Выручка: **{data['revenue']:,.0f}₽**{data['revenue_delta']}\n"
-        f"  (предыдущий период: {data['revenue_prev']:,.0f}₽)\n\n"
-        f"📦 Заказов: **{data['orders']}**{data['orders_delta']}\n"
-        f"  (предыдущий период: {data['orders_prev']})\n"
-        f"  ✅ Подтверждено: **{data['confirmed']}**\n\n"
-        f"💵 Средний чек: **{data['avg_order_value']:,.0f}₽**\n"
-        f"🎯 Конверсия: **{data['conversion_rate']}%**\n"
-        f"❌ Доля отмен: **{data['cancel_rate']}%**\n\n"
-        f"🧑‍💼 Новых клиентов: **{data['new_clients']}**{data['new_clients_delta']}\n"
-        f"  (предыдущий период: {data['new_clients_prev']})"
-    )
-    await safe_edit_message(callback.message, text, get_sales_period_keyboard(active=period))
+        text = (
+            f"💰 **Метрики продаж — за {label}**\n\n"
+            f"📈 Выручка: **{data['revenue']:,.0f}₽**{data['revenue_delta']}\n"
+            f"  (предыдущий период: {data['revenue_prev']:,.0f}₽)\n\n"
+            f"📦 Заказов: **{data['orders']}**{data['orders_delta']}\n"
+            f"  (предыдущий период: {data['orders_prev']})\n"
+            f"  ✅ Подтверждено: **{data['confirmed']}**\n\n"
+            f"💵 Средний чек: **{data['avg_order_value']:,.0f}₽**\n"
+            f"🎯 Конверсия: **{data['conversion_rate']}%**\n"
+            f"❌ Доля отмен: **{data['cancel_rate']}%**\n\n"
+            f"🧑‍💼 Новых клиентов: **{data['new_clients']}**{data['new_clients_delta']}\n"
+            f"  (предыдущий период: {data['new_clients_prev']})"
+        )
+        await safe_edit_message(callback.message, text, get_sales_period_keyboard(active=period))
+    except Exception:
+        logger.error(f"Error in metrics_sales: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            "❌ Ошибка при загрузке метрик продаж. Попробуйте ещё раз.",
+            _METRICS_BACK,
+        )
 
 
 @router.callback_query(F.data == "metrics_channels")
@@ -1280,37 +1321,43 @@ async def metrics_channels(callback: CallbackQuery):
 
     await callback.answer()
 
-    from services.metrics import get_channel_metrics
+    try:
+        from services.metrics import get_channel_metrics
 
-    data = await get_channel_metrics()
-    if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
-        return
+        data = await get_channel_metrics()
+        if not data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Не удалось получить метрики каналов. Проверьте соединение с базой данных.",
+                _METRICS_BACK,
+            )
+            return
 
-    text = (
-        "📢 **Метрики каналов**\n"
-        "_Данные собираются ботом напрямую через Telegram Bot API_\n\n"
-        f"🔢 Активных каналов: **{data['total_active']}**\n"
-        f"💰 Средний CPM: **{data['avg_cpm']:,.0f}₽**\n"
-        f"📊 Средний ERR: **{data['avg_err']:.1f}%**\n"
-        f"👁 Средний охват (24ч): **{data['avg_reach']:,}**\n"
-        f"📝 Постов с аналитикой: **{data['analytics_posts']}** "
-        f"(~{data['total_views_tracked']:,} просмотров)\n\n"
-    )
+        text = (
+            "📢 **Метрики каналов**\n\n"
+            f"🔢 Активных каналов: **{data['total_active']}**\n"
+            f"💰 Средний CPM: **{data['avg_cpm']:,.0f}₽**\n"
+            f"📊 Средний ERR: **{data['avg_err']:.1f}%**\n"
+            f"👁 Средний охват (24ч): **{data['avg_reach']:,}**\n"
+            f"📝 Постов с аналитикой: **{data['analytics_posts']}** "
+            f"(~{data['total_views_tracked']:,} просмотров)\n\n"
+        )
 
-    if data["top_by_revenue"]:
-        text += "🏆 **Топ каналов по выручке:**\n"
-        for i, (name, rev, cnt) in enumerate(data["top_by_revenue"], 1):
-            text += f"{i}. {name}\n   💰 {rev:,.0f}₽ | 📦 {cnt} заказов\n"
-    else:
-        text += "_Нет данных по выручке каналов_\n"
+        if data["top_by_revenue"]:
+            text += "🏆 **Топ каналов по выручке:**\n"
+            for i, (name, rev, cnt) in enumerate(data["top_by_revenue"], 1):
+                text += f"{i}. {_md_escape(name)}\n   💰 {rev:,.0f}₽ | 📦 {cnt} заказов\n"
+        else:
+            text += "_Нет данных по выручке каналов_\n"
 
-    await safe_edit_message(
-        callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
-        ]),
-    )
+        await safe_edit_message(callback.message, text, _METRICS_BACK)
+    except Exception:
+        logger.error(f"Error in metrics_channels: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            "❌ Ошибка при загрузке метрик каналов. Попробуйте ещё раз.",
+            _METRICS_BACK,
+        )
 
 
 @router.callback_query(F.data == "metrics_managers")
@@ -1322,38 +1369,45 @@ async def metrics_managers(callback: CallbackQuery):
 
     await callback.answer()
 
-    from services.metrics import get_manager_metrics
+    try:
+        from services.metrics import get_manager_metrics
 
-    data = await get_manager_metrics()
-    if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
-        return
+        data = await get_manager_metrics()
+        if not data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Не удалось получить метрики менеджеров. Проверьте соединение с базой данных.",
+                _METRICS_BACK,
+            )
+            return
 
-    text = (
-        "👥 **Метрики менеджеров**\n\n"
-        f"💵 Средний чек менеджера: **{data['avg_check']:,.0f}₽**\n\n"
-    )
+        text = (
+            "👥 **Метрики менеджеров**\n\n"
+            f"💵 Средний чек менеджера: **{data['avg_check']:,.0f}₽**\n\n"
+        )
 
-    if data["top_revenue"]:
-        text += "🏆 **Топ по выручке:**\n"
-        for i, m in enumerate(data["top_revenue"], 1):
-            text += f"{i}. {m['name']} — {m['revenue']:,.0f}₽ ({m['orders']} заказов)\n"
-        text += "\n"
+        if data["top_revenue"]:
+            text += "🏆 **Топ по выручке:**\n"
+            for i, m in enumerate(data["top_revenue"], 1):
+                text += f"{i}. {_md_escape(m['name'])} — {m['revenue']:,.0f}₽ ({m['orders']} заказов)\n"
+            text += "\n"
 
-    if data["top_conversion"]:
-        text += "🎯 **Топ по конверсии (мин. 3 заказа):**\n"
-        for i, m in enumerate(data["top_conversion"], 1):
-            text += f"{i}. {m['name']} — {m['rate']}% ({m['confirmed']}/{m['total']})\n"
+        if data["top_conversion"]:
+            text += "🎯 **Топ по конверсии (мин. 3 заказа):**\n"
+            for i, m in enumerate(data["top_conversion"], 1):
+                text += f"{i}. {_md_escape(m['name'])} — {m['rate']}% ({m['confirmed']}/{m['total']})\n"
 
-    if not data["top_revenue"] and not data["top_conversion"]:
-        text += "_Недостаточно данных_"
+        if not data["top_revenue"] and not data["top_conversion"]:
+            text += "_Недостаточно данных_"
 
-    await safe_edit_message(
-        callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
-        ]),
-    )
+        await safe_edit_message(callback.message, text, _METRICS_BACK)
+    except Exception:
+        logger.error(f"Error in metrics_managers: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            "❌ Ошибка при загрузке метрик менеджеров. Попробуйте ещё раз.",
+            _METRICS_BACK,
+        )
 
 
 @router.callback_query(F.data == "metrics_clients")
@@ -1365,35 +1419,42 @@ async def metrics_clients(callback: CallbackQuery):
 
     await callback.answer()
 
-    from services.metrics import get_client_metrics
+    try:
+        from services.metrics import get_client_metrics
 
-    data = await get_client_metrics()
-    if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
-        return
+        data = await get_client_metrics()
+        if not data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Не удалось получить метрики клиентов. Проверьте соединение с базой данных.",
+                _METRICS_BACK,
+            )
+            return
 
-    text = (
-        "🧑‍💼 **Метрики клиентов**\n\n"
-        f"👥 Всего клиентов: **{data['total']}**\n"
-        f"🆕 Новых за 30 дней: **{data['new_month']}**\n"
-        f"🔄 Повторные покупатели: **{data['repeat']}** ({data['repeat_rate']}%)\n\n"
-        f"💰 Средний LTV: **{data['avg_ltv']:,.0f}₽**\n"
-        f"📦 Среднее заказов/клиент: **{data['avg_orders_per_client']}**\n\n"
-    )
+        text = (
+            "🧑‍💼 **Метрики клиентов**\n\n"
+            f"👥 Всего клиентов: **{data['total']}**\n"
+            f"🆕 Новых за 30 дней: **{data['new_month']}**\n"
+            f"🔄 Повторные покупатели: **{data['repeat']}** ({data['repeat_rate']}%)\n\n"
+            f"💰 Средний LTV: **{data['avg_ltv']:,.0f}₽**\n"
+            f"📦 Среднее заказов/клиент: **{data['avg_orders_per_client']}**\n\n"
+        )
 
-    if data["top"]:
-        text += "🏆 **Топ клиентов по тратам:**\n"
-        for i, c in enumerate(data["top"], 1):
-            text += f"{i}. {c['name']} — {c['spent']:,.0f}₽ ({c['orders']} заказов)\n"
-    else:
-        text += "_Нет данных_"
+        if data["top"]:
+            text += "🏆 **Топ клиентов по тратам:**\n"
+            for i, c in enumerate(data["top"], 1):
+                text += f"{i}. {_md_escape(c['name'])} — {c['spent']:,.0f}₽ ({c['orders']} заказов)\n"
+        else:
+            text += "_Нет данных_"
 
-    await safe_edit_message(
-        callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
-        ]),
-    )
+        await safe_edit_message(callback.message, text, _METRICS_BACK)
+    except Exception:
+        logger.error(f"Error in metrics_clients: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            "❌ Ошибка при загрузке метрик клиентов. Попробуйте ещё раз.",
+            _METRICS_BACK,
+        )
 
 
 @router.callback_query(F.data == "metrics_formats")
@@ -1405,36 +1466,43 @@ async def metrics_formats(callback: CallbackQuery):
 
     await callback.answer()
 
-    from services.metrics import get_format_metrics
+    try:
+        from services.metrics import get_format_metrics
 
-    data = await get_format_metrics()
-    if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
-        return
-
-    text = (
-        "🗂 **Метрики форматов размещения**\n\n"
-        f"Всего подтверждённых заказов: **{data['total_orders']}**\n"
-        f"Общая выручка: **{data['total_revenue']:,.0f}₽**\n\n"
-    )
-
-    if data["formats"]:
-        for f in data["formats"]:
-            bar = "█" * int(f["revenue_share"] / 10) + "░" * (10 - int(f["revenue_share"] / 10))
-            text += (
-                f"**{f['type']}**\n"
-                f"  {bar} {f['revenue_share']}% выручки\n"
-                f"  📦 {f['orders']} заказов ({f['order_share']}%) | 💰 {f['revenue']:,.0f}₽\n\n"
+        data = await get_format_metrics()
+        if not data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Не удалось получить метрики форматов. Проверьте соединение с базой данных.",
+                _METRICS_BACK,
             )
-    else:
-        text += "_Нет данных_"
+            return
 
-    await safe_edit_message(
-        callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
-        ]),
-    )
+        text = (
+            "🗂 **Метрики форматов размещения**\n\n"
+            f"Всего подтверждённых заказов: **{data['total_orders']}**\n"
+            f"Общая выручка: **{data['total_revenue']:,.0f}₽**\n\n"
+        )
+
+        if data["formats"]:
+            for fmt_item in data["formats"]:
+                bar = "█" * int(fmt_item["revenue_share"] / 10) + "░" * (10 - int(fmt_item["revenue_share"] / 10))
+                text += (
+                    f"**{_md_escape(fmt_item['type'])}**\n"
+                    f"  {bar} {fmt_item['revenue_share']}% выручки\n"
+                    f"  📦 {fmt_item['orders']} заказов ({fmt_item['order_share']}%) | 💰 {fmt_item['revenue']:,.0f}₽\n\n"
+                )
+        else:
+            text += "_Нет данных_"
+
+        await safe_edit_message(callback.message, text, _METRICS_BACK)
+    except Exception:
+        logger.error(f"Error in metrics_formats: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            "❌ Ошибка при загрузке метрик форматов. Попробуйте ещё раз.",
+            _METRICS_BACK,
+        )
 
 
 @router.callback_query(F.data == "metrics_posts")
@@ -1446,37 +1514,44 @@ async def metrics_posts(callback: CallbackQuery):
 
     await callback.answer()
 
-    from services.metrics import get_post_analytics_metrics
+    try:
+        from services.metrics import get_post_analytics_metrics
 
-    data = await get_post_analytics_metrics()
-    if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
-        return
+        data = await get_post_analytics_metrics()
+        if not data:
+            await safe_edit_message(
+                callback.message,
+                "❌ Не удалось получить метрики постов. Проверьте соединение с базой данных.",
+                _METRICS_BACK,
+            )
+            return
 
-    if data["count"] == 0:
-        text = (
-            "📈 **Аналитика постов**\n\n"
-            "Данных пока нет.\nВнесите метрики для опубликованных постов в разделе Автопостинг."
+        if data["count"] == 0:
+            text = (
+                "📈 **Аналитика постов**\n\n"
+                "Данных пока нет.\nВнесите метрики для опубликованных постов в разделе Автопостинг."
+            )
+        else:
+            text = (
+                "📈 **Аналитика постов**\n\n"
+                f"📝 Записей аналитики: **{data['count']}**\n"
+                f"👁 Среднее просмотров: **{data['avg_views']:,}**\n"
+                f"👍 Среднее реакций: **{data['avg_reactions']:.1f}**\n"
+                f"📊 Средний ER: **{data['avg_er']}%**\n\n"
+            )
+            if data["top"]:
+                text += "🏆 **Топ-5 постов по ER:**\n"
+                for i, p in enumerate(data["top"], 1):
+                    text += f"{i}. {_md_escape(p['channel'])} — ER {p['er']}% | 👁 {p['views']:,}\n"
+
+        await safe_edit_message(callback.message, text, _METRICS_BACK)
+    except Exception:
+        logger.error(f"Error in metrics_posts: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            "❌ Ошибка при загрузке метрик постов. Попробуйте ещё раз.",
+            _METRICS_BACK,
         )
-    else:
-        text = (
-            "📈 **Аналитика постов**\n\n"
-            f"📝 Записей аналитики: **{data['count']}**\n"
-            f"👁 Среднее просмотров: **{data['avg_views']:,}**\n"
-            f"👍 Среднее реакций: **{data['avg_reactions']:.1f}**\n"
-            f"📊 Средний ER: **{data['avg_er']}%**\n\n"
-        )
-        if data["top"]:
-            text += "🏆 **Топ-5 постов по ER:**\n"
-            for i, p in enumerate(data["top"], 1):
-                text += f"{i}. {p['channel']} — ER {p['er']}% | 👁 {p['views']:,}\n"
-
-    await safe_edit_message(
-        callback.message, text,
-        InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
-        ]),
-    )
 
 
 # ==================== СОРЕВНОВАНИЯ ====================
@@ -2804,6 +2879,7 @@ async def adm_diagnostics(callback: CallbackQuery):
 
         buttons = [
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="🔬 Глубокая диагностика", callback_data="adm_deep_diagnostics")],
             [InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
         ]
@@ -2878,6 +2954,99 @@ async def adm_ai_improve(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in adm_ai_improve: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_deep_diagnostics")
+async def adm_deep_diagnostics(callback: CallbackQuery):
+    """Углублённая диагностика всех разделов и кнопок бота"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    await safe_edit_message(
+        callback.message,
+        "🔬 **Глубокая диагностика**\n\n⏳ Проверяю все разделы и компоненты...\n_(это может занять до 30 секунд)_",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")]
+        ])
+    )
+
+    try:
+        report = await run_deep_diagnostics()
+        total, ok, warn, error = report["summary"]
+
+        if error == 0 and warn == 0:
+            status_line = "✅ Всё в порядке"
+        elif error == 0:
+            status_line = f"🟡 Предупреждений: {warn}"
+        else:
+            status_line = f"🔴 Ошибок: {error} | Предупреждений: {warn}"
+
+        lines = [
+            "🔬 **Глубокая диагностика бота**\n",
+            f"📊 Итог: {status_line} (проверок: {total}, ОК: {ok})\n",
+        ]
+
+        # Конфиг
+        lines.append("\n**⚙️ Конфигурация:**")
+        for icon, msg in report["config"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Таблицы
+        lines.append("\n**🗄 Таблицы БД:**")
+        for icon, msg in report["db_tables"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Активные данные
+        lines.append("\n**📋 Активные данные:**")
+        for icon, msg in report["active_data"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Сервисы
+        lines.append("\n**🔧 Сервисы метрик:**")
+        for icon, msg in report["services"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Внешние API
+        lines.append("\n**🌐 Внешние API:**")
+        for icon, msg in report["apis"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Разделы
+        lines.append("\n**📂 Разделы и кнопки:**")
+        for sect, (icon, msg) in report["sections"].items():
+            lines.append(f"{icon} {sect}: {msg}")
+
+        lines.append(f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC")
+
+        text = "\n".join(lines)
+
+        # Telegram ограничивает длину сообщений ~4096 символами
+        _MAX_REPORT_LEN = 3800
+        if len(text) > _MAX_REPORT_LEN:
+            text = text[:_MAX_REPORT_LEN] + "\n\n_(отчёт обрезан — слишком длинный)_"
+
+        buttons = [
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_deep_diagnostics")],
+            [InlineKeyboardButton(text="🔧 Быстрая диагностика", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_deep_diagnostics: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            f"❌ **Ошибка глубокой диагностики**\n\n`{str(e)[:200]}`",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")]
+            ])
+        )
 
 
 # ==================== ПРОСМОТР ЗАКАЗА ====================
@@ -3669,98 +3838,13 @@ async def btn_adm_managers(message: Message):
 
 @router.message(F.text == "📊 Статистика")
 async def btn_adm_stats(message: Message):
-    """Текстовая кнопка — статистика"""
+    """Текстовая кнопка — статистика + навигация по метрикам"""
     if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
         return
     try:
-        now = datetime.utcnow()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today_start - timedelta(days=7)
-        month_start = today_start - timedelta(days=30)
-
-        async with async_session_maker() as session:
-            total_orders = (await session.execute(select(func.count(Order.id)))).scalar() or 0
-            pending_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "pending")
-            )).scalar() or 0
-            payment_uploaded = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_uploaded")
-            )).scalar() or 0
-            confirmed_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0
-            cancelled_orders = (await session.execute(
-                select(func.count(Order.id)).where(Order.status == "cancelled")
-            )).scalar() or 0
-
-            total_revenue = (await session.execute(
-                select(func.sum(Order.final_price)).where(Order.status == "payment_confirmed")
-            )).scalar() or 0
-            revenue_today = (await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= today_start
-                )
-            )).scalar() or 0
-            revenue_week = (await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= week_start
-                )
-            )).scalar() or 0
-            revenue_month = (await session.execute(
-                select(func.sum(Order.final_price)).where(
-                    Order.status == "payment_confirmed",
-                    Order.paid_at >= month_start
-                )
-            )).scalar() or 0
-
-            orders_today = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= today_start)
-            )).scalar() or 0
-            orders_week = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= week_start)
-            )).scalar() or 0
-            orders_month = (await session.execute(
-                select(func.count(Order.id)).where(Order.created_at >= month_start)
-            )).scalar() or 0
-
-            total_managers = (await session.execute(select(func.count(Manager.id)))).scalar() or 0
-            active_managers = (await session.execute(
-                select(func.count(Manager.id)).where(Manager.is_active == True)
-            )).scalar() or 0
-            total_channels = (await session.execute(select(func.count(Channel.id)))).scalar() or 0
-            active_channels = (await session.execute(
-                select(func.count(Channel.id)).where(Channel.is_active == True)
-            )).scalar() or 0
-            total_clients = (await session.execute(select(func.count(Client.id)))).scalar() or 0
-
-        text = (
-            "📊 **Детальная статистика**\n\n"
-            "💰 **Выручка:**\n"
-            f"• Сегодня: **{float(revenue_today):,.0f}₽**\n"
-            f"• За 7 дней: **{float(revenue_week):,.0f}₽**\n"
-            f"• За 30 дней: **{float(revenue_month):,.0f}₽**\n"
-            f"• Всего: **{float(total_revenue):,.0f}₽**\n\n"
-            "📦 **Заказы:**\n"
-            f"• Сегодня: **{orders_today}**\n"
-            f"• За 7 дней: **{orders_week}**\n"
-            f"• За 30 дней: **{orders_month}**\n"
-            f"• Всего: **{total_orders}**\n\n"
-            "📋 **Статусы заказов:**\n"
-            f"• ⏳ Ожидают: **{pending_orders}**\n"
-            f"• 💳 Оплата на проверке: **{payment_uploaded}**\n"
-            f"• ✅ Подтверждены: **{confirmed_orders}**\n"
-            f"• ❌ Отменены: **{cancelled_orders}**\n\n"
-            "📢 **Каналы:**\n"
-            f"• Активных: **{active_channels}** из **{total_channels}**\n\n"
-            "👥 **Пользователи:**\n"
-            f"• Клиентов: **{total_clients}**\n"
-            f"• Менеджеров: **{active_managers}** активных из **{total_managers}**"
-        )
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
-        ]), parse_mode=ParseMode.MARKDOWN)
+        from keyboards.menus import get_metrics_menu
+        text = await _build_crm_stats_text()
+        await message.answer(text, reply_markup=get_metrics_menu(), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_stats: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
