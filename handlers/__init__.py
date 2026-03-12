@@ -8,6 +8,7 @@ from handlers.admin import router as admin_router
 from handlers.manager import router as manager_router
 from handlers.training import router as training_router
 from handlers.client import router as client_router
+from handlers.channel_updates import router as channel_updates_router
 
 
 def setup_routers() -> Router:
@@ -20,6 +21,8 @@ def setup_routers() -> Router:
     main_router.include_router(manager_router)
     main_router.include_router(training_router)
     main_router.include_router(client_router)
+    # Обновления канальных постов (сбор просмотров без сторонних сервисов)
+    main_router.include_router(channel_updates_router)
     
     return main_router
 
