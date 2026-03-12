@@ -2992,32 +2992,32 @@ async def adm_deep_diagnostics(callback: CallbackQuery):
         # Конфиг
         lines.append("\n**⚙️ Конфигурация:**")
         for icon, msg in report["config"].values():
-            lines.append(f"{icon} {msg}")
+            lines.append(f"{icon} {_md_escape(msg)}")
 
         # Таблицы
         lines.append("\n**🗄 Таблицы БД:**")
         for icon, msg in report["db_tables"].values():
-            lines.append(f"{icon} {msg}")
+            lines.append(f"{icon} {_md_escape(msg)}")
 
         # Активные данные
         lines.append("\n**📋 Активные данные:**")
         for icon, msg in report["active_data"].values():
-            lines.append(f"{icon} {msg}")
+            lines.append(f"{icon} {_md_escape(msg)}")
 
         # Сервисы
         lines.append("\n**🔧 Сервисы метрик:**")
         for icon, msg in report["services"].values():
-            lines.append(f"{icon} {msg}")
+            lines.append(f"{icon} {_md_escape(msg)}")
 
         # Внешние API
         lines.append("\n**🌐 Внешние API:**")
         for icon, msg in report["apis"].values():
-            lines.append(f"{icon} {msg}")
+            lines.append(f"{icon} {_md_escape(msg)}")
 
         # Разделы
         lines.append("\n**📂 Разделы и кнопки:**")
         for sect, (icon, msg) in report["sections"].items():
-            lines.append(f"{icon} {sect}: {msg}")
+            lines.append(f"{icon} {_md_escape(sect)}: {_md_escape(msg)}")
 
         lines.append(f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC")
 
