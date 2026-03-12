@@ -252,6 +252,108 @@ def get_dates_keyboard(slots: list) -> InlineKeyboardMarkup:
     return get_calendar_keyboard(slots, today.year, today.month)
 
 
+def get_free_calendar_keyboard(
+    year: int,
+    month: int,
+    back_cb: str = "adm_autoposting",
+    date_cb_prefix: str = "autopost_cal_date",
+    nav_cb_prefix: str = "autopost_cal_nav",
+) -> InlineKeyboardMarkup:
+    """Свободный календарь для выбора даты публикации (без привязки к слотам).
+
+    Все даты начиная с сегодняшнего дня доступны для выбора.
+    Сегодняшняя дата выделяется маркером 🔹.
+    Прошедшие даты отображаются как «·».
+    """
+    today = date.today()
+
+    buttons: list = []
+
+    # ── Строка навигации: ◀️  Месяц ГГГГ  ▶️ ──────────────────────────
+    prev_month = month - 1 if month > 1 else 12
+    prev_year  = year if month > 1 else year - 1
+    next_month = month + 1 if month < 12 else 1
+    next_year  = year if month < 12 else year + 1
+
+    header_text = f"{_MONTH_NAMES[month]} {year}"
+    # Не позволяем уходить в прошлое дальше текущего месяца
+    prev_cb = (
+        f"{nav_cb_prefix}:{prev_year}:{prev_month}"
+        if (prev_year, prev_month) >= (today.year, today.month)
+        else "cal_ignore"
+    )
+    buttons.append([
+        InlineKeyboardButton(text="◀️", callback_data=prev_cb),
+        InlineKeyboardButton(text=header_text, callback_data="cal_ignore"),
+        InlineKeyboardButton(text="▶️", callback_data=f"{nav_cb_prefix}:{next_year}:{next_month}"),
+    ])
+
+    # ── Заголовок дней недели ──────────────────────────────────────────
+    buttons.append([
+        InlineKeyboardButton(text=d, callback_data="cal_ignore") for d in _WEEKDAYS
+    ])
+
+    # ── Дни месяца ────────────────────────────────────────────────────
+    cal = calendar.monthcalendar(year, month)
+    for week in cal:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(text=" ", callback_data="cal_ignore"))
+            else:
+                current = date(year, month, day)
+                if current < today:
+                    # Прошедший день
+                    row.append(InlineKeyboardButton(text="·", callback_data="cal_ignore"))
+                elif current == today:
+                    # Сегодня — выделяем маркером
+                    row.append(InlineKeyboardButton(
+                        text=f"🔹{day}",
+                        callback_data=f"{date_cb_prefix}:{current.isoformat()}"
+                    ))
+                else:
+                    # Будущий день — доступен
+                    row.append(InlineKeyboardButton(
+                        text=str(day),
+                        callback_data=f"{date_cb_prefix}:{current.isoformat()}"
+                    ))
+        buttons.append(row)
+
+    # ── Кнопка «Назад» ────────────────────────────────────────────────
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb)])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_time_picker_keyboard(
+    selected_date_iso: str,
+    back_cb: str = "autopost_cal_back",
+    time_cb_prefix: str = "autopost_time",
+) -> InlineKeyboardMarkup:
+    """Клавиатура выбора времени публикации (часовые слоты с 07:00 до 22:00).
+
+    Callback data формат: ``{prefix}:{YYYY-MM-DD}:{HHMM}`` (время без двоеточия).
+    """
+    hours = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    buttons: list = []
+    row: list = []
+    for h in hours:
+        display = f"{h:02d}:00"
+        cb_time = f"{h:02d}00"  # без двоеточия, чтобы не ломать split по ":"
+        row.append(InlineKeyboardButton(
+            text=display,
+            callback_data=f"{time_cb_prefix}:{selected_date_iso}:{cb_time}"
+        ))
+        if len(row) == 4:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def get_times_keyboard(slots: list, channel_prices: dict) -> InlineKeyboardMarkup:
     """Клавиатура выбора времени"""
     buttons = []

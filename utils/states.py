@@ -42,7 +42,8 @@ class AdminAutopostingStates(StatesGroup):
 class AdminCreatePostStates(StatesGroup):
     """Состояния создания нового поста через автопостинг"""
     selecting_channel = State()
-    entering_datetime = State()
+    selecting_date = State()
+    entering_time = State()
     entering_delete_hours = State()
     entering_content = State()
     confirming = State()
