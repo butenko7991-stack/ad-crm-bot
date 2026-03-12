@@ -22,7 +22,7 @@ from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
-from services.diagnostics import run_diagnostics, gather_business_metrics, get_improvement_suggestions
+from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
 
 
 logger = logging.getLogger(__name__)
@@ -1249,7 +1249,13 @@ async def metrics_sales(callback: CallbackQuery):
 
     data = await get_sales_metrics(period)
     if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
+        await safe_edit_message(
+            callback.message,
+            "❌ Не удалось получить метрики продаж. Проверьте соединение с базой данных.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
+            ]),
+        )
         return
 
     period_labels = {"day": "день", "week": "неделю", "month": "месяц"}
@@ -1284,7 +1290,13 @@ async def metrics_channels(callback: CallbackQuery):
 
     data = await get_channel_metrics()
     if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
+        await safe_edit_message(
+            callback.message,
+            "❌ Не удалось получить метрики каналов. Проверьте соединение с базой данных.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
+            ]),
+        )
         return
 
     text = (
@@ -1326,7 +1338,13 @@ async def metrics_managers(callback: CallbackQuery):
 
     data = await get_manager_metrics()
     if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
+        await safe_edit_message(
+            callback.message,
+            "❌ Не удалось получить метрики менеджеров. Проверьте соединение с базой данных.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
+            ]),
+        )
         return
 
     text = (
@@ -1369,7 +1387,13 @@ async def metrics_clients(callback: CallbackQuery):
 
     data = await get_client_metrics()
     if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
+        await safe_edit_message(
+            callback.message,
+            "❌ Не удалось получить метрики клиентов. Проверьте соединение с базой данных.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
+            ]),
+        )
         return
 
     text = (
@@ -1409,7 +1433,13 @@ async def metrics_formats(callback: CallbackQuery):
 
     data = await get_format_metrics()
     if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
+        await safe_edit_message(
+            callback.message,
+            "❌ Не удалось получить метрики форматов. Проверьте соединение с базой данных.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
+            ]),
+        )
         return
 
     text = (
@@ -1450,7 +1480,13 @@ async def metrics_posts(callback: CallbackQuery):
 
     data = await get_post_analytics_metrics()
     if not data:
-        await callback.answer("❌ Ошибка получения данных", show_alert=True)
+        await safe_edit_message(
+            callback.message,
+            "❌ Не удалось получить метрики постов. Проверьте соединение с базой данных.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К метрикам", callback_data="adm_stats")]
+            ]),
+        )
         return
 
     if data["count"] == 0:
@@ -2804,6 +2840,7 @@ async def adm_diagnostics(callback: CallbackQuery):
 
         buttons = [
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="🔬 Глубокая диагностика", callback_data="adm_deep_diagnostics")],
             [InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
         ]
@@ -2878,6 +2915,99 @@ async def adm_ai_improve(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in adm_ai_improve: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_deep_diagnostics")
+async def adm_deep_diagnostics(callback: CallbackQuery):
+    """Углублённая диагностика всех разделов и кнопок бота"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    await safe_edit_message(
+        callback.message,
+        "🔬 **Глубокая диагностика**\n\n⏳ Проверяю все разделы и компоненты...\n_(это может занять до 30 секунд)_",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")]
+        ])
+    )
+
+    try:
+        report = await run_deep_diagnostics()
+        total, ok, warn, error = report["summary"]
+
+        if error == 0 and warn == 0:
+            status_line = "✅ Всё в порядке"
+        elif error == 0:
+            status_line = f"🟡 Предупреждений: {warn}"
+        else:
+            status_line = f"🔴 Ошибок: {error} | Предупреждений: {warn}"
+
+        lines = [
+            "🔬 **Глубокая диагностика бота**\n",
+            f"📊 Итог: {status_line} (проверок: {total}, ОК: {ok})\n",
+        ]
+
+        # Конфиг
+        lines.append("\n**⚙️ Конфигурация:**")
+        for icon, msg in report["config"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Таблицы
+        lines.append("\n**🗄 Таблицы БД:**")
+        for icon, msg in report["db_tables"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Активные данные
+        lines.append("\n**📋 Активные данные:**")
+        for icon, msg in report["active_data"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Сервисы
+        lines.append("\n**🔧 Сервисы метрик:**")
+        for icon, msg in report["services"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Внешние API
+        lines.append("\n**🌐 Внешние API:**")
+        for icon, msg in report["apis"].values():
+            lines.append(f"{icon} {msg}")
+
+        # Разделы
+        lines.append("\n**📂 Разделы и кнопки:**")
+        for sect, (icon, msg) in report["sections"].items():
+            lines.append(f"{icon} {sect}: {msg}")
+
+        lines.append(f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC")
+
+        text = "\n".join(lines)
+
+        # Telegram ограничивает длину сообщений ~4096 символами
+        _MAX_REPORT_LEN = 3800
+        if len(text) > _MAX_REPORT_LEN:
+            text = text[:_MAX_REPORT_LEN] + "\n\n_(отчёт обрезан — слишком длинный)_"
+
+        buttons = [
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_deep_diagnostics")],
+            [InlineKeyboardButton(text="🔧 Быстрая диагностика", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_deep_diagnostics: {traceback.format_exc()}")
+        await safe_edit_message(
+            callback.message,
+            f"❌ **Ошибка глубокой диагностики**\n\n`{str(e)[:200]}`",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")]
+            ])
+        )
 
 
 # ==================== ПРОСМОТР ЗАКАЗА ====================
