@@ -14,7 +14,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
-from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID
+from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID, MSK_OFFSET
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
@@ -1831,7 +1831,7 @@ async def autopost_pending(callback: CallbackQuery):
             for post in posts:
                 channel = await session.get(Channel, post.channel_id)
                 ch_name = channel.name if channel else f"#{post.channel_id}"
-                sched = post.scheduled_time.strftime("%d.%m %H:%M") if post.scheduled_time else "—"
+                sched = (post.scheduled_time + MSK_OFFSET).strftime("%d.%m %H:%M") if post.scheduled_time else "—"
                 status_icon = "⏳" if post.status == "pending" else "🔍"
                 text_preview = (post.content[:30] + "…") if post.content else "📎 медиа"
                 buttons.append([InlineKeyboardButton(
@@ -2552,7 +2552,9 @@ async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
         date_iso = parts[1]
         cb_time = parts[2]  # e.g. "1400"
         time_str = f"{cb_time[:2]}:{cb_time[2:]}"  # "14:00"
-        scheduled_time = datetime.fromisoformat(f"{date_iso}T{time_str}")
+        # User enters Moscow time (UTC+3); convert to UTC for storage
+        scheduled_time_msk = datetime.fromisoformat(f"{date_iso}T{time_str}")
+        scheduled_time = scheduled_time_msk - MSK_OFFSET
 
         if scheduled_time < datetime.utcnow():
             await callback.answer("❌ Выбранное время уже прошло. Выберите другое.", show_alert=True)
@@ -2565,7 +2567,7 @@ async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
 
         await safe_edit_message(
             callback.message,
-            f"✅ Дата и время: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n\n"
+            f"✅ Дата и время: **{scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} МСК**\n\n"
             f"📢 Канал: **{channel_name}**\n\n"
             f"Шаг 3/4 — Через сколько часов удалить пост?",
             InlineKeyboardMarkup(inline_keyboard=[
@@ -2604,7 +2606,8 @@ async def autopost_enter_time_text(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    scheduled_time = datetime.combine(date_type.fromisoformat(date_iso), time_obj)
+    scheduled_time_msk = datetime.combine(date_type.fromisoformat(date_iso), time_obj)
+    scheduled_time = scheduled_time_msk - MSK_OFFSET  # convert Moscow → UTC
 
     if scheduled_time < datetime.utcnow():
         await message.answer("❌ Дата публикации должна быть в будущем. Введите другое время.")
@@ -2614,7 +2617,7 @@ async def autopost_enter_time_text(message: Message, state: FSMContext):
     channel_name = data.get("create_channel_name", "—")
 
     await message.answer(
-        f"✅ Дата и время: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n\n"
+        f"✅ Дата и время: **{scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} МСК**\n\n"
         f"📢 Канал: **{channel_name}**\n\n"
         f"Шаг 3/4 — Через сколько часов удалить пост?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2718,7 +2721,7 @@ async def autopost_create_content(message: Message, state: FSMContext):
 
     try:
         scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
-        sched_str = scheduled_dt.strftime("%d.%m.%Y %H:%M")
+        sched_str = (scheduled_dt + MSK_OFFSET).strftime("%d.%m.%Y %H:%M") + " МСК"
     except Exception:
         sched_str = scheduled_time_iso
 
@@ -2789,7 +2792,7 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
             callback.message,
             f"✅ **Пост #{post_id} создан!**\n\n"
             f"📢 Канал: **{channel_name}**\n"
-            f"📅 Публикация: **{scheduled_time.strftime('%d.%m.%Y %H:%M')}**\n"
+            f"📅 Публикация: **{(scheduled_time + MSK_OFFSET).strftime('%d.%m.%Y %H:%M')} МСК**\n"
             f"🗑 Удаление: **{delete_str}**\n\n"
             f"Пост поставлен в очередь автопостинга.",
             InlineKeyboardMarkup(inline_keyboard=[
@@ -3770,7 +3773,7 @@ async def adm_view_post(callback: CallbackQuery):
             channel = await session.get(Channel, post.channel_id)
 
         channel_name = channel.name if channel else "—"
-        scheduled_time = post.scheduled_time.strftime("%d.%m.%Y %H:%M") if post.scheduled_time else "—"
+        scheduled_time = (post.scheduled_time + MSK_OFFSET).strftime("%d.%m.%Y %H:%M МСК") if post.scheduled_time else "—"
 
         text = (
             f"📄 **Пост #{post_id} на модерации**\n\n"
