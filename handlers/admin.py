@@ -14,11 +14,11 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
-from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS
+from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
@@ -105,6 +105,20 @@ async def get_channel_card(channel_id: int) -> tuple:
     )
     
     return text, ch_data["is_active"], channel_id
+
+
+async def _notify_manager_group(bot: Bot, channel, order_id: int = None):
+    """Отправить карточку статистики канала в чат менеджеров (если настроен)."""
+    if not MANAGER_GROUP_CHAT_ID:
+        return
+    try:
+        text = format_channel_stats_for_group(channel, order_id)
+        await bot.send_message(MANAGER_GROUP_CHAT_ID, text, parse_mode=None)
+    except Exception:
+        logger.warning(
+            f"Не удалось отправить статистику канала в чат менеджеров "
+            f"(order_id={order_id}): {traceback.format_exc()}"
+        )
 
 
 # ==================== АВТОРИЗАЦИЯ ====================
@@ -3196,6 +3210,13 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
             client = await session.get(Client, order.client_id)
             client_telegram_id = client.telegram_id if client else None
 
+            # Получаем канал для уведомления в чат менеджеров
+            channel_for_notify = None
+            if order.slot_id:
+                slot = await session.get(Slot, order.slot_id)
+                if slot:
+                    channel_for_notify = await session.get(Channel, slot.channel_id)
+
         # Начисляем XP менеджеру через gamification
         if order.manager_id:
             try:
@@ -3227,6 +3248,10 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                 )
             except Exception:
                 pass
+
+        # Отправляем статистику канала в чат менеджеров
+        if channel_for_notify:
+            await _notify_manager_group(bot, channel_for_notify, order_id)
 
         await safe_edit_message(
             callback.message,
