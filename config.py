@@ -21,9 +21,18 @@ MANAGER_GROUP_CHAT_ID: Optional[int] = int(os.getenv("MANAGER_GROUP_CHAT_ID", "0
 
 # ==================== ЧАСОВОЙ ПОЯС ====================
 
-# Московское время (UTC+3) — используется для отображения и ввода пользователем.
-# Все значения в БД хранятся в UTC; конвертация выполняется в helpers.to_utc / helpers.to_msk.
-MSK_OFFSET: timedelta = timedelta(hours=3)
+# Смещение локального времени относительно UTC (в часах).
+# Установите переменную окружения TIMEZONE_OFFSET_HOURS, например:
+#   TIMEZONE_OFFSET_HOURS=3  — Москва (UTC+3)
+#   TIMEZONE_OFFSET_HOURS=5  — Екатеринбург (UTC+5, MSK+2)
+#   TIMEZONE_OFFSET_HOURS=6  — Омск (UTC+6, MSK+3)
+# Все значения в БД хранятся в UTC; конвертация выполняется через LOCAL_TZ_OFFSET.
+_tz_hours: int = int(os.getenv("TIMEZONE_OFFSET_HOURS", "3"))
+LOCAL_TZ_OFFSET: timedelta = timedelta(hours=_tz_hours)
+LOCAL_TZ_LABEL: str = f"UTC{_tz_hours:+d}"
+
+# Backward-compatible alias (deprecated — use LOCAL_TZ_OFFSET)
+MSK_OFFSET: timedelta = LOCAL_TZ_OFFSET
 
 # ==================== API КЛЮЧИ ====================
 

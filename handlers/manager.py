@@ -13,7 +13,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
 
-from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS, MSK_OFFSET
+from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL
 from database import async_session_maker, Manager, Order, Client, Channel, ManagerPayout, Slot, ScheduledPost
 from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu, get_calendar_keyboard
 from utils import ManagerStates, ManagerPostStates
@@ -1093,12 +1093,12 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
 
             channel_id = data.get("mgr_channel_id")
             selected_date_str = data.get("mgr_selected_date", "")
-            # slot_time is in Moscow time (UTC+3); convert to UTC for storage
+            # slot_time is in local time (LOCAL_TZ_OFFSET from UTC); convert to UTC for storage
             scheduled_time_msk = datetime.combine(
                 date.fromisoformat(selected_date_str),
                 slot.slot_time
             )
-            scheduled_time = scheduled_time_msk - MSK_OFFSET
+            scheduled_time = scheduled_time_msk - LOCAL_TZ_OFFSET
 
             post = ScheduledPost(
                 channel_id=channel_id,
@@ -1136,7 +1136,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                     f"📝 **Новый пост на модерацию #{post_id}**\n\n"
                     f"От менеджера: {callback.from_user.first_name or callback.from_user.username}\n"
                     f"📢 Канал ID: {channel_id}\n"
-                    f"📅 Запланирован: {scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} МСК\n\n"
+                    f"📅 Запланирован: {scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}\n\n"
                     f"Проверьте в разделе 📝 Модерация.",
                     parse_mode=ParseMode.MARKDOWN
                 )
