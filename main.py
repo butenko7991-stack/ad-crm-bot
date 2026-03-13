@@ -128,7 +128,7 @@ async def publish_scheduled_posts(bot: Bot):
                         except Exception:
                             logger.warning(f"Не удалось уведомить админа {admin_id} о посте #{post.id}", exc_info=True)
 
-                    # Отправляем статистику канала в чат менеджеров
+                    # Отправляем статистику канала и пересылаем пост в чат менеджеров
                     mgr_chat_id = await get_manager_group_chat_id()
                     if mgr_chat_id:
                         try:
@@ -141,6 +141,17 @@ async def publish_scheduled_posts(bot: Bot):
                             logger.warning(
                                 f"Не удалось отправить статистику канала в чат менеджеров "
                                 f"(пост #{post.id})",
+                                exc_info=True,
+                            )
+                        try:
+                            await bot.forward_message(
+                                chat_id=mgr_chat_id,
+                                from_chat_id=channel_tg_id,
+                                message_id=sent.message_id,
+                            )
+                        except Exception:
+                            logger.warning(
+                                f"Не удалось переслать пост #{post.id} в чат менеджеров",
                                 exc_info=True,
                             )
 
