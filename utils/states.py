@@ -37,6 +37,7 @@ class AdminAutopostingStates(StatesGroup):
     waiting_post_reactions = State()
     waiting_post_forwards = State()
     waiting_post_saves = State()
+    waiting_post_comments = State()
 
 
 class AdminCreatePostStates(StatesGroup):
@@ -92,3 +93,13 @@ class AdminPromoStates(StatesGroup):
 class AdminSlotStates(StatesGroup):
     """Состояния управления слотами канала"""
     waiting_slot_config = State()  # Ожидание ввода параметров генерации слотов
+
+
+class AdminManagerStates(StatesGroup):
+    """Состояния управления менеджером"""
+    waiting_commission_rate = State()  # Ожидание ввода процента комиссии
+
+
+class AdminSettingsStates(StatesGroup):
+    """Состояния редактирования настроек бота"""
+    waiting_manager_chat_id = State()  # Ожидание ввода ID чата менеджеров

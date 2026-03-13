@@ -7,20 +7,20 @@ from datetime import datetime, date as date_type, time as time_type, timedelta, 
 from decimal import Decimal
 
 from aiogram import Router, Bot, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ChatMemberUpdated
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
-from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS
+from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates
-from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates
-from services import gamification_service
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates
+from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
 
@@ -105,6 +105,21 @@ async def get_channel_card(channel_id: int) -> tuple:
     )
     
     return text, ch_data["is_active"], channel_id
+
+
+async def _notify_manager_group(bot: Bot, channel, order_id: int = None):
+    """Отправить карточку статистики канала в чат менеджеров (если настроен)."""
+    chat_id = await get_manager_group_chat_id()
+    if not chat_id:
+        return
+    try:
+        text = format_channel_stats_for_group(channel, order_id)
+        await bot.send_message(chat_id, text, parse_mode=None)
+    except Exception:
+        logger.warning(
+            f"Не удалось отправить статистику канала в чат менеджеров "
+            f"(order_id={order_id}): {traceback.format_exc()}"
+        )
 
 
 # ==================== АВТОРИЗАЦИЯ ====================
@@ -2128,10 +2143,32 @@ async def pa_receive_forwards(message: Message, state: FSMContext):
 
 @router.message(AdminAutopostingStates.waiting_post_saves)
 async def pa_receive_saves(message: Message, state: FSMContext):
-    """Получить сохранения и сохранить запись аналитики"""
+    """Получить сохранения, запросить комментарии"""
     try:
         saves = int(message.text.strip().replace(" ", "").replace(",", ""))
         if saves < 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("❌ Введите целое неотрицательное число!")
+        return
+
+    await state.update_data(pa_saves=saves)
+    await message.answer(
+        f"✅ Сохранения: {saves:,}\n\n💬 Введите количество **комментариев**:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="autopost_analytics")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(AdminAutopostingStates.waiting_post_comments)
+
+
+@router.message(AdminAutopostingStates.waiting_post_comments)
+async def pa_receive_comments(message: Message, state: FSMContext):
+    """Получить комментарии и сохранить запись аналитики"""
+    try:
+        comments = int(message.text.strip().replace(" ", "").replace(",", ""))
+        if comments < 0:
             raise ValueError
     except (ValueError, AttributeError):
         await message.answer("❌ Введите целое неотрицательное число!")
@@ -2143,6 +2180,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
     views = data.get("pa_views", 0)
     reactions = data.get("pa_reactions", 0)
     forwards = data.get("pa_forwards", 0)
+    saves = data.get("pa_saves", 0)
 
     await state.clear()
 
@@ -2158,6 +2196,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
                 existing.reactions = reactions
                 existing.forwards = forwards
                 existing.saves = saves
+                existing.comments = comments
                 existing.recorded_at = datetime.utcnow()
                 existing.recorded_by = message.from_user.id
                 existing.ai_recommendation = None  # Сбрасываем старую рекомендацию
@@ -2170,6 +2209,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
                     reactions=reactions,
                     forwards=forwards,
                     saves=saves,
+                    comments=comments,
                     recorded_by=message.from_user.id,
                 )
                 session.add(analytics)
@@ -2178,7 +2218,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
             await session.refresh(analytics)
             analytics_id = analytics.id
 
-        total_engage = reactions + forwards + saves
+        total_engage = reactions + forwards + saves + comments
         er = round(total_engage / views * 100, 2) if views > 0 else 0
 
         await message.answer(
@@ -2187,6 +2227,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
             f"👍 Реакции: **{reactions:,}**\n"
             f"↩️ Пересылки: **{forwards:,}**\n"
             f"🔖 Сохранения: **{saves:,}**\n"
+            f"💬 Комментарии: **{comments:,}**\n"
             f"📈 Engagement Rate: **{er}%**\n\n"
             f"Получите AI-рекомендации по этому посту:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2196,7 +2237,7 @@ async def pa_receive_saves(message: Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        logger.error(f"Error in pa_receive_saves: {traceback.format_exc()}")
+        logger.error(f"Error in pa_receive_comments: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
 
 
@@ -2217,36 +2258,41 @@ async def pa_ai_recommend(callback: CallbackQuery):
                 await callback.answer("❌ Запись не найдена", show_alert=True)
                 return
             channel = await session.get(Channel, analytics.channel_id)
-
-        ch_name = channel.name if channel else "Канал"
-        avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
-        cpm = float(channel.cpm or 0) if channel else 0
+            # Extract all values we need while still inside the session
+            a_views = analytics.views or 0
+            a_reactions = analytics.reactions or 0
+            a_forwards = analytics.forwards or 0
+            a_saves = analytics.saves or 0
+            a_comments = analytics.comments or 0
+            ch_name = channel.name if channel else "Канал"
+            avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
+            cpm = float(channel.cpm or 0) if channel else 0
 
         recommendation = await ai_trainer_service.get_post_recommendations(
             channel_name=ch_name,
-            views=analytics.views,
-            reactions=analytics.reactions,
-            forwards=analytics.forwards,
-            saves=analytics.saves,
-            comments=analytics.comments,
+            views=a_views,
+            reactions=a_reactions,
+            forwards=a_forwards,
+            saves=a_saves,
+            comments=a_comments,
             avg_channel_views=avg_views,
             cpm=cpm,
         )
 
         if recommendation:
             async with async_session_maker() as session:
-                analytics = await session.get(PostAnalytics, analytics_id)
-                if analytics:
-                    analytics.ai_recommendation = recommendation
+                analytics_to_save = await session.get(PostAnalytics, analytics_id)
+                if analytics_to_save:
+                    analytics_to_save.ai_recommendation = recommendation
                     await session.commit()
 
-            total_engage = analytics.reactions + analytics.forwards + analytics.saves + analytics.comments
-            er = round(total_engage / analytics.views * 100, 2) if analytics.views > 0 else 0
+            total_engage = a_reactions + a_forwards + a_saves + a_comments
+            er = round(total_engage / a_views * 100, 2) if a_views > 0 else 0
 
             text = (
                 f"🤖 **AI-рекомендации для поста #{analytics_id}**\n\n"
                 f"📢 Канал: {ch_name}\n"
-                f"👁 Просмотры: {analytics.views:,} | 📈 ER: {er}%\n\n"
+                f"👁 Просмотры: {a_views:,} | 📈 ER: {er}%\n\n"
                 f"{recommendation}"
             )
         else:
@@ -2764,27 +2810,168 @@ async def adm_settings(callback: CallbackQuery):
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
-    
+
     await callback.answer()
-    
+
+    chat_id = await get_manager_group_chat_id()
+    chat_status = f"🟢 {chat_id}" if chat_id else "🔴 Не задан"
+
     text = (
         "⚙️ **Настройки**\n\n"
         f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
         f"🤖 Claude API: {'🟢' if CLAUDE_API_KEY else '🔴'}\n"
         f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
         f"🔵 Max Bot: {'🟢 Подключён' if MAX_BOT_TOKEN else '🔴 Не подключён'}\n"
+        f"💬 Чат менеджеров: {chat_status}\n"
         f"👤 Админы: {len(ADMIN_IDS)}"
     )
-    
+
     buttons = [
+        [InlineKeyboardButton(text="💬 Чат менеджеров", callback_data="adm_manager_chat_settings")],
         [InlineKeyboardButton(text="🔵 Настройки Max Bot", callback_data="adm_max_settings")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
     ]
-    
+
     await safe_edit_message(
         callback.message, text,
         InlineKeyboardMarkup(inline_keyboard=buttons)
     )
+
+
+@router.callback_query(F.data == "adm_manager_chat_settings")
+async def adm_manager_chat_settings(callback: CallbackQuery):
+    """Информация о чате менеджеров и кнопка для изменения."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    chat_id = await get_manager_group_chat_id()
+
+    if chat_id:
+        status = (
+            f"🟢 **Чат менеджеров подключён**\n\n"
+            f"ID чата: `{chat_id}`\n\n"
+            f"Бот будет отправлять статистику канала в этот чат при каждом "
+            f"подтверждении оплаты и автопубликации поста."
+        )
+    else:
+        status = (
+            "🔴 **Чат менеджеров не настроен**\n\n"
+            "Статистика каналов при публикации не отправляется.\n\n"
+            "**Как подключить:**\n"
+            "1️⃣ Создайте группу в Telegram\n"
+            "2️⃣ Добавьте этого бота в группу как администратора\n"
+            "3️⃣ Бот автоматически пришлёт вам ID группы\n"
+            "4️⃣ Нажмите «✏️ Изменить» и введите полученный ID"
+        )
+
+    await safe_edit_message(
+        callback.message,
+        status,
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Изменить ID чата", callback_data="adm_manager_chat_input")],
+            [InlineKeyboardButton(text="🗑 Сбросить", callback_data="adm_manager_chat_clear")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")],
+        ])
+    )
+
+
+@router.callback_query(F.data == "adm_manager_chat_input")
+async def adm_manager_chat_input(callback: CallbackQuery, state: FSMContext):
+    """Запросить новый ID чата менеджеров."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    await safe_edit_message(
+        callback.message,
+        "💬 **Введите ID чата менеджеров**\n\n"
+        "Пример: `-1001234567890`\n\n"
+        "ID должен быть отрицательным числом (для групп/супергрупп).\n"
+        "Если вы добавили бота в группу — он уже прислал вам ID.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_manager_chat_settings")]
+        ])
+    )
+    await state.set_state(AdminSettingsStates.waiting_manager_chat_id)
+
+
+@router.message(AdminSettingsStates.waiting_manager_chat_id)
+async def adm_manager_chat_receive(message: Message, state: FSMContext):
+    """Сохранить новый ID чата менеджеров."""
+    raw = (message.text or "").strip()
+    try:
+        chat_id = int(raw)
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат. Введите числовой ID чата, например `-1001234567890`.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await set_setting(MANAGER_GROUP_CHAT_ID_KEY, str(chat_id), updated_by=message.from_user.id)
+    await state.clear()
+
+    await message.answer(
+        f"✅ **Чат менеджеров обновлён!**\n\nID: `{chat_id}`\n\n"
+        f"Теперь бот будет отправлять статистику канала в этот чат при каждой публикации.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ К настройкам", callback_data="adm_settings")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.callback_query(F.data == "adm_manager_chat_clear")
+async def adm_manager_chat_clear(callback: CallbackQuery):
+    """Сбросить ID чата менеджеров."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    await set_setting(MANAGER_GROUP_CHAT_ID_KEY, None, updated_by=callback.from_user.id)
+
+    await safe_edit_message(
+        callback.message,
+        "🗑 **Чат менеджеров сброшен.**\n\nСтатистика больше не будет отправляться в группу.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ К настройкам", callback_data="adm_settings")]
+        ])
+    )
+
+
+@router.my_chat_member()
+async def on_bot_added_to_group(event: ChatMemberUpdated, bot: Bot):
+    """Когда бот добавляется в группу/супергруппу — сообщить администраторам ID чата."""
+    new_status = event.new_chat_member.status
+    chat = event.chat
+
+    # Только вхождение в группы/супергруппы
+    if chat.type not in ("group", "supergroup"):
+        return
+    if new_status not in ("member", "administrator"):
+        return
+
+    chat_id = chat.id
+    chat_title = chat.title or "Без названия"
+
+    notify_text = (
+        f"🤖 Бот добавлен в группу!\n\n"
+        f"📛 Название: {chat_title}\n"
+        f"🆔 ID чата: `{chat_id}`\n\n"
+        f"Скопируйте ID и вставьте его в:\n"
+        f"⚙️ Настройки → 💬 Чат менеджеров → ✏️ Изменить ID чата"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, notify_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "adm_max_settings")
@@ -3165,6 +3352,13 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
             client = await session.get(Client, order.client_id)
             client_telegram_id = client.telegram_id if client else None
 
+            # Получаем канал для уведомления в чат менеджеров
+            channel_for_notify = None
+            if order.slot_id:
+                slot = await session.get(Slot, order.slot_id)
+                if slot:
+                    channel_for_notify = await session.get(Channel, slot.channel_id)
+
         # Начисляем XP менеджеру через gamification
         if order.manager_id:
             try:
@@ -3196,6 +3390,10 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                 )
             except Exception:
                 pass
+
+        # Отправляем статистику канала в чат менеджеров
+        if channel_for_notify:
+            await _notify_manager_group(bot, channel_for_notify, order_id)
 
         await safe_edit_message(
             callback.message,
@@ -3369,6 +3567,10 @@ async def adm_view_manager(callback: CallbackQuery):
             text=toggle_text,
             callback_data=f"adm_mgr_toggle:{manager_id}"
         )])
+        buttons.append([InlineKeyboardButton(
+            text="🎯 Установить комиссию",
+            callback_data=f"adm_mgr_set_commission:{manager_id}"
+        )])
         buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_managers")])
 
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -3458,6 +3660,90 @@ async def adm_toggle_manager(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in adm_toggle_manager: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_mgr_set_commission:"))
+async def adm_mgr_set_commission_start(callback: CallbackQuery, state: FSMContext):
+    """Начать ввод комиссии для менеджера"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        manager_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager:
+                await callback.answer("❌ Менеджер не найден", show_alert=True)
+                return
+            current_rate = float(manager.commission_rate)
+
+        await state.set_state(AdminManagerStates.waiting_commission_rate)
+        await state.update_data(target_manager_id=manager_id)
+
+        await safe_edit_message(
+            callback.message,
+            f"🎯 **Ручная установка комиссии**\n\n"
+            f"Текущая комиссия менеджера: **{current_rate:.1f}%**\n\n"
+            f"Введите новое значение комиссии в процентах (от 0 до 100).\n"
+            f"Например: `15` или `12.5`",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_mgr:{manager_id}")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_mgr_set_commission_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminManagerStates.waiting_commission_rate)
+async def adm_mgr_set_commission_receive(message: Message, state: FSMContext):
+    """Получить и сохранить новое значение комиссии"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    raw = (message.text or "").strip().replace(",", ".")
+    try:
+        new_rate = float(raw)
+        if not (0 <= new_rate <= 100):
+            raise ValueError("out of range")
+    except ValueError:
+        await message.answer(
+            "❌ Некорректное значение. Введите число от 0 до 100.\nНапример: `15` или `12.5`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    data = await state.get_data()
+    manager_id = data.get("target_manager_id")
+    await state.clear()
+
+    try:
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager:
+                await message.answer("❌ Менеджер не найден")
+                return
+
+            old_rate = float(manager.commission_rate)
+            manager.commission_rate = Decimal(str(new_rate))
+            await session.commit()
+
+        await message.answer(
+            f"✅ **Комиссия обновлена**\n\n"
+            f"Было: {old_rate:.1f}%\n"
+            f"Стало: {new_rate:.1f}%",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👤 К менеджеру", callback_data=f"adm_mgr:{manager_id}")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_mgr_set_commission_receive: {traceback.format_exc()}")
+        await message.answer("❌ Ошибка при сохранении комиссии")
 
 
 # ==================== ПРОСМОТР ПОСТА НА МОДЕРАЦИИ ====================
@@ -3918,15 +4204,19 @@ async def btn_adm_settings(message: Message):
     """Текстовая кнопка — настройки"""
     if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
         return
+    chat_id = await get_manager_group_chat_id()
+    chat_status = f"🟢 {chat_id}" if chat_id else "🔴 Не задан"
     text = (
         "⚙️ **Настройки**\n\n"
         f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
         f"🤖 Claude API: {'🟢' if CLAUDE_API_KEY else '🔴'}\n"
         f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
         f"🔵 Max Bot: {'🟢 Подключён' if MAX_BOT_TOKEN else '🔴 Не подключён'}\n"
+        f"💬 Чат менеджеров: {chat_status}\n"
         f"👤 Админы: {len(ADMIN_IDS)}"
     )
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Чат менеджеров", callback_data="adm_manager_chat_settings")],
         [InlineKeyboardButton(text="🔵 Настройки Max Bot", callback_data="adm_max_settings")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
     ]), parse_mode=ParseMode.MARKDOWN)

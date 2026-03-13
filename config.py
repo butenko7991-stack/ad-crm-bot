@@ -2,7 +2,8 @@
 Конфигурация бота
 """
 import os
-from typing import List
+from datetime import timedelta
+from typing import List, Optional
 
 # ==================== ОСНОВНЫЕ НАСТРОЙКИ ====================
 
@@ -13,6 +14,16 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localho
 # Админы
 ADMIN_IDS: List[int] = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+
+# Чат менеджеров — ID группы/канала, куда бот отправляет статистику при продаже
+# Установите переменную окружения MANAGER_GROUP_CHAT_ID (отрицательный ID для групп, например -1001234567890)
+MANAGER_GROUP_CHAT_ID: Optional[int] = int(os.getenv("MANAGER_GROUP_CHAT_ID", "0")) or None
+
+# ==================== ЧАСОВОЙ ПОЯС ====================
+
+# Московское время (UTC+3) — используется для отображения и ввода пользователем.
+# Все значения в БД хранятся в UTC; конвертация выполняется в helpers.to_utc / helpers.to_msk.
+MSK_OFFSET: timedelta = timedelta(hours=3)
 
 # ==================== API КЛЮЧИ ====================
 

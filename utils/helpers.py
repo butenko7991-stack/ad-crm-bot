@@ -3,14 +3,31 @@
 """
 import logging
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot
 
-from config import CHANNEL_CATEGORIES
+from config import CHANNEL_CATEGORIES, MSK_OFFSET
 
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Московское время (UTC+3) ─────────────────────────────────────────────────
+
+def msk_now() -> datetime:
+    """Текущий момент по московскому времени (UTC+3) как naive datetime."""
+    return datetime.utcnow() + MSK_OFFSET
+
+
+def to_utc(msk_dt: datetime) -> datetime:
+    """Перевести naive московское время → naive UTC."""
+    return msk_dt - MSK_OFFSET
+
+
+def to_msk(utc_dt: datetime) -> datetime:
+    """Перевести naive UTC → naive московское время."""
+    return utc_dt + MSK_OFFSET
 
 
 async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]:
@@ -114,3 +131,28 @@ def truncate_text(text: str, max_length: int = 100) -> str:
     if len(text) <= max_length:
         return text
     return text[:max_length - 3] + "..."
+
+
+def format_channel_stats_for_group(channel, order_id: Optional[int] = None) -> str:
+    """Форматировать карточку статистики канала для чата менеджеров.
+
+    Формат:
+        📣 Название канала 👥 6,991
+        👁 24ч: 403 | 48ч: 545 | 72ч: 564
+        📈 ER24: 6.22%
+    """
+    name = channel.name or "Канал"
+    subscribers = channel.subscribers or 0
+    reach_24h = channel.avg_reach_24h or 0
+    reach_48h = channel.avg_reach_48h or 0
+    reach_72h = channel.avg_reach_72h or 0
+    err24 = float(channel.err24_percent or channel.err_percent or 0)
+
+    text = f"📣 {name} 👥 {subscribers:,}\n"
+    text += f"👁 24ч: {reach_24h:,} | 48ч: {reach_48h:,} | 72ч: {reach_72h:,}\n"
+    text += f"📈 ER24: {err24:.2f}%"
+
+    if order_id:
+        text += f"\n\n💼 Заказ #{order_id}"
+
+    return text
