@@ -273,3 +273,13 @@ class PromoCode(Base):
     expires_at = Column(DateTime, nullable=True)  # None = без срока
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by = Column(BigInteger)
+
+
+class BotSetting(Base):
+    """Настройки бота, изменяемые через интерфейс администратора (key-value)"""
+    __tablename__ = "bot_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_by = Column(BigInteger, nullable=True)

@@ -3,14 +3,31 @@
 """
 import logging
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot
 
-from config import CHANNEL_CATEGORIES
+from config import CHANNEL_CATEGORIES, MSK_OFFSET
 
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Московское время (UTC+3) ─────────────────────────────────────────────────
+
+def msk_now() -> datetime:
+    """Текущий момент по московскому времени (UTC+3) как naive datetime."""
+    return datetime.utcnow() + MSK_OFFSET
+
+
+def to_utc(msk_dt: datetime) -> datetime:
+    """Перевести naive московское время → naive UTC."""
+    return msk_dt - MSK_OFFSET
+
+
+def to_msk(utc_dt: datetime) -> datetime:
+    """Перевести naive UTC → naive московское время."""
+    return utc_dt + MSK_OFFSET
 
 
 async def get_channel_stats_via_bot(bot: Bot, channel_id: int) -> Optional[dict]:

@@ -15,11 +15,12 @@ from aiogram.types import Update
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
-from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, MANAGER_GROUP_CHAT_ID
+from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
 from database import init_db, async_session_maker
 from database.models import Slot, ScheduledPost, Channel
 from handlers import setup_routers
 from services.channel_collector import refresh_all_channels
+from services.settings import get_manager_group_chat_id
 from utils.helpers import format_channel_stats_for_group
 
 
@@ -128,10 +129,11 @@ async def publish_scheduled_posts(bot: Bot):
                             logger.warning(f"Не удалось уведомить админа {admin_id} о посте #{post.id}", exc_info=True)
 
                     # Отправляем статистику канала в чат менеджеров
-                    if MANAGER_GROUP_CHAT_ID:
+                    mgr_chat_id = await get_manager_group_chat_id()
+                    if mgr_chat_id:
                         try:
                             await bot.send_message(
-                                MANAGER_GROUP_CHAT_ID,
+                                mgr_chat_id,
                                 format_channel_stats_for_group(channel),
                                 parse_mode=None,
                             )

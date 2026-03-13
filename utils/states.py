@@ -98,3 +98,8 @@ class AdminSlotStates(StatesGroup):
 class AdminManagerStates(StatesGroup):
     """Состояния управления менеджером"""
     waiting_commission_rate = State()  # Ожидание ввода процента комиссии
+
+
+class AdminSettingsStates(StatesGroup):
+    """Состояния редактирования настроек бота"""
+    waiting_manager_chat_id = State()  # Ожидание ввода ID чата менеджеров
