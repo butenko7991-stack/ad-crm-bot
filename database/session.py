@@ -72,6 +72,7 @@ async def init_db():
             "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS ai_recommendation TEXT",
             "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS recorded_by BIGINT",
             "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL",
+            "ALTER TABLE managers ADD COLUMN IF NOT EXISTS timezone_offset INTEGER DEFAULT 3",
         ]
 
         for migration in migrations:

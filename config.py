@@ -34,6 +34,21 @@ LOCAL_TZ_LABEL: str = f"UTC{_tz_hours:+d}"
 # Backward-compatible alias (deprecated — use LOCAL_TZ_OFFSET)
 MSK_OFFSET: timedelta = LOCAL_TZ_OFFSET
 
+# Список доступных часовых поясов для выбора менеджером (offset, human-readable label)
+AVAILABLE_TIMEZONES: list = [
+    (2,  "UTC+2 (Калининград)"),
+    (3,  "UTC+3 (Москва, МСК)"),
+    (4,  "UTC+4 (Самара, МСК+1)"),
+    (5,  "UTC+5 (Екатеринбург, МСК+2)"),
+    (6,  "UTC+6 (Омск, МСК+3)"),
+    (7,  "UTC+7 (Красноярск, МСК+4)"),
+    (8,  "UTC+8 (Иркутск, МСК+5)"),
+    (9,  "UTC+9 (Якутск, МСК+6)"),
+    (10, "UTC+10 (Владивосток, МСК+7)"),
+    (11, "UTC+11 (Магадан, МСК+8)"),
+    (12, "UTC+12 (Камчатка, МСК+9)"),
+]
+
 # ==================== API КЛЮЧИ ====================
 
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")

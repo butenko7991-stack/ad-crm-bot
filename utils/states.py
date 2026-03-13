@@ -103,3 +103,13 @@ class AdminManagerStates(StatesGroup):
 class AdminSettingsStates(StatesGroup):
     """Состояния редактирования настроек бота"""
     waiting_manager_chat_id = State()  # Ожидание ввода ID чата менеджеров
+
+
+class ManagerRegisterStates(StatesGroup):
+    """Состояния регистрации нового менеджера (Telegram)"""
+    selecting_timezone = State()  # Выбор часового пояса перед созданием аккаунта
+
+
+class ManagerSettingsStates(StatesGroup):
+    """Состояния изменения настроек менеджера"""
+    selecting_timezone = State()  # Изменение часового пояса в кабинете
