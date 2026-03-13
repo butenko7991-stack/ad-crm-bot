@@ -21,9 +21,33 @@ MANAGER_GROUP_CHAT_ID: Optional[int] = int(os.getenv("MANAGER_GROUP_CHAT_ID", "0
 
 # ==================== ЧАСОВОЙ ПОЯС ====================
 
-# Московское время (UTC+3) — используется для отображения и ввода пользователем.
-# Все значения в БД хранятся в UTC; конвертация выполняется в helpers.to_utc / helpers.to_msk.
-MSK_OFFSET: timedelta = timedelta(hours=3)
+# Смещение локального времени относительно UTC (в часах).
+# Установите переменную окружения TIMEZONE_OFFSET_HOURS, например:
+#   TIMEZONE_OFFSET_HOURS=3  — Москва (UTC+3)
+#   TIMEZONE_OFFSET_HOURS=5  — Екатеринбург (UTC+5, MSK+2)
+#   TIMEZONE_OFFSET_HOURS=6  — Омск (UTC+6, MSK+3)
+# Все значения в БД хранятся в UTC; конвертация выполняется через LOCAL_TZ_OFFSET.
+_tz_hours: int = int(os.getenv("TIMEZONE_OFFSET_HOURS", "3"))
+LOCAL_TZ_OFFSET: timedelta = timedelta(hours=_tz_hours)
+LOCAL_TZ_LABEL: str = f"UTC{_tz_hours:+d}"
+
+# Backward-compatible alias (deprecated — use LOCAL_TZ_OFFSET)
+MSK_OFFSET: timedelta = LOCAL_TZ_OFFSET
+
+# Список доступных часовых поясов для выбора менеджером (offset, human-readable label)
+AVAILABLE_TIMEZONES: list = [
+    (2,  "UTC+2 (Калининград)"),
+    (3,  "UTC+3 (Москва, МСК)"),
+    (4,  "UTC+4 (Самара, МСК+1)"),
+    (5,  "UTC+5 (Екатеринбург, МСК+2)"),
+    (6,  "UTC+6 (Омск, МСК+3)"),
+    (7,  "UTC+7 (Красноярск, МСК+4)"),
+    (8,  "UTC+8 (Иркутск, МСК+5)"),
+    (9,  "UTC+9 (Якутск, МСК+6)"),
+    (10, "UTC+10 (Владивосток, МСК+7)"),
+    (11, "UTC+11 (Магадан, МСК+8)"),
+    (12, "UTC+12 (Камчатка, МСК+9)"),
+]
 
 # ==================== API КЛЮЧИ ====================
 

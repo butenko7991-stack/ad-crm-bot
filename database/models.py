@@ -131,6 +131,9 @@ class Manager(Base):
     hired_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
     
+    # Личный часовой пояс менеджера (смещение от UTC в часах, например 3 = UTC+3)
+    timezone_offset = Column(Integer, default=3)
+    
     orders = relationship("Order", back_populates="manager")
     payouts = relationship("ManagerPayout", back_populates="manager")
 

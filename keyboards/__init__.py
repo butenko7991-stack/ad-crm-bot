@@ -10,6 +10,7 @@ from keyboards.menus import (
     get_cpm_categories_keyboard, get_autoposting_menu,
     get_post_analytics_keyboard, get_post_analytics_actions_keyboard,
     get_free_calendar_keyboard, get_time_picker_keyboard,
+    get_timezone_keyboard,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "get_cpm_categories_keyboard", "get_autoposting_menu",
     "get_post_analytics_keyboard", "get_post_analytics_actions_keyboard",
     "get_free_calendar_keyboard", "get_time_picker_keyboard",
+    "get_timezone_keyboard",
 ]

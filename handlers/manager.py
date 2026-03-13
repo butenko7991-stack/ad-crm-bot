@@ -13,10 +13,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
 
-from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS
+from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL
 from database import async_session_maker, Manager, Order, Client, Channel, ManagerPayout, Slot, ScheduledPost
-from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu, get_calendar_keyboard
-from utils import ManagerStates, ManagerPostStates
+from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu, get_calendar_keyboard, get_timezone_keyboard
+from utils import ManagerStates, ManagerPostStates, ManagerRegisterStates, ManagerSettingsStates
 from services import gamification_service
 
 
@@ -32,23 +32,31 @@ FORMAT_DELETE_HOURS = {
 }
 
 
+def _manager_tz(manager) -> tuple[timedelta, str]:
+    """Вернуть (timedelta, label) для timezone менеджера.
+
+    Если менеджер не найден или timezone_offset не задан — используется UTC+3 (Москва).
+    """
+    offset_hours: int = (manager.timezone_offset if manager and manager.timezone_offset is not None else 3)
+    return timedelta(hours=offset_hours), f"UTC{offset_hours:+d}"
+
+
 # ==================== РЕГИСТРАЦИЯ МЕНЕДЖЕРА ====================
 
 @router.callback_query(F.data == "manager_register")
-async def manager_register(callback: CallbackQuery):
-    """Регистрация нового менеджера"""
+async def manager_register(callback: CallbackQuery, state: FSMContext):
+    """Шаг 1 регистрации — выбор часового пояса"""
     await callback.answer()
-    
+
     user = callback.from_user
-    
+
     try:
         async with async_session_maker() as session:
-            # Проверяем, не зарегистрирован ли уже
             result = await session.execute(
                 select(Manager).where(Manager.telegram_id == user.id)
             )
             existing = result.scalar_one_or_none()
-            
+
             if existing:
                 await callback.message.edit_text(
                     "✅ Вы уже зарегистрированы как менеджер!\n\n"
@@ -56,35 +64,175 @@ async def manager_register(callback: CallbackQuery):
                     parse_mode=ParseMode.MARKDOWN
                 )
                 return
-            
-            # Создаём менеджера
+
+        await state.set_state(ManagerRegisterStates.selecting_timezone)
+        await callback.message.edit_text(
+            "🌍 **Выберите ваш часовой пояс**\n\n"
+            "Это нужно для правильного отображения времени публикаций.\n"
+            "Вы сможете изменить его позже в **⚙️ Настройках** кабинета.",
+            reply_markup=get_timezone_keyboard(current_offset=3, context="register"),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in manager_register: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data.startswith("mgr_tz_register:"), ManagerRegisterStates.selecting_timezone)
+async def manager_register_tz_selected(callback: CallbackQuery, state: FSMContext):
+    """Шаг 2 регистрации — timezone выбран, создаём менеджера"""
+    await callback.answer()
+
+    tz_offset = int(callback.data.split(":")[1])
+    user = callback.from_user
+
+    try:
+        async with async_session_maker() as session:
+            # Повторная проверка на случай гонки
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == user.id)
+            )
+            if result.scalar_one_or_none():
+                await state.clear()
+                await callback.message.edit_text(
+                    "✅ Вы уже зарегистрированы как менеджер!\n\n"
+                    "Используйте /manager для входа в кабинет.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+
             manager = Manager(
                 telegram_id=user.id,
                 username=user.username,
                 first_name=user.first_name or user.username or "Менеджер",
                 status="trainee",
                 level=1,
-                commission_rate=Decimal("10")
+                commission_rate=Decimal("10"),
+                timezone_offset=tz_offset,
             )
             session.add(manager)
             await session.commit()
-        
+
+        await state.clear()
+        tz_label = f"UTC{tz_offset:+d}"
         await callback.message.edit_text(
-            "🎉 **Добро пожаловать в команду!**\n\n"
-            "Вы успешно зарегистрированы как менеджер.\n\n"
-            "**Что дальше:**\n"
-            "📚 Пройдите обучение — /training\n"
-            "💼 Начните продавать — /sales\n"
-            "💰 Получайте комиссию 10-25%\n\n"
-            "Нажмите /manager для входа в кабинет.",
+            f"🎉 **Добро пожаловать в команду!**\n\n"
+            f"Вы успешно зарегистрированы как менеджер.\n"
+            f"🌍 Ваш часовой пояс: **{tz_label}**\n\n"
+            f"**Что дальше:**\n"
+            f"📚 Пройдите обучение — /training\n"
+            f"💼 Начните продавать — /sales\n"
+            f"💰 Получайте комиссию 10-25%\n\n"
+            f"Нажмите /manager для входа в кабинет.",
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        logger.error(f"Error in manager_register: {traceback.format_exc()}")
+        logger.error(f"Error in manager_register_tz_selected: {traceback.format_exc()}")
+        await state.clear()
         await callback.message.answer(f"❌ Ошибка регистрации: {str(e)[:100]}")
 
 
-# ==================== КАБИНЕТ МЕНЕДЖЕРА ====================
+# ==================== КАБИНЕТ МЕНЕДЖЕРА / НАСТРОЙКИ ====================
+
+@router.callback_query(F.data == "mgr_settings")
+async def mgr_settings(callback: CallbackQuery):
+    """Настройки менеджера — показать текущие параметры"""
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+
+        if not manager:
+            await callback.message.edit_text("❌ Вы не менеджер")
+            return
+
+        tz_offset = manager.timezone_offset if manager.timezone_offset is not None else 3
+        tz_label = f"UTC{tz_offset:+d}"
+        await callback.message.edit_text(
+            f"⚙️ **Настройки кабинета**\n\n"
+            f"🌍 Часовой пояс: **{tz_label}**\n\n"
+            f"Все времена публикаций отображаются в вашем часовом поясе.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌍 Изменить часовой пояс", callback_data="mgr_change_timezone")],
+                [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")],
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in mgr_settings: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data == "mgr_change_timezone")
+async def mgr_change_timezone(callback: CallbackQuery, state: FSMContext):
+    """Показать выбор нового часового пояса"""
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+
+        if not manager:
+            await callback.message.edit_text("❌ Вы не менеджер")
+            return
+
+        current_offset = manager.timezone_offset if manager.timezone_offset is not None else 3
+        await state.set_state(ManagerSettingsStates.selecting_timezone)
+        await callback.message.edit_text(
+            "🌍 **Выберите новый часовой пояс:**\n\n"
+            "Текущий выбор отмечен ✅",
+            reply_markup=get_timezone_keyboard(current_offset=current_offset, context="settings"),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in mgr_change_timezone: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+@router.callback_query(F.data.startswith("mgr_tz_settings:"), ManagerSettingsStates.selecting_timezone)
+async def mgr_settings_tz_selected(callback: CallbackQuery, state: FSMContext):
+    """Сохранить новый часовой пояс из настроек"""
+    await callback.answer()
+
+    tz_offset = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = result.scalar_one_or_none()
+
+            if not manager:
+                await state.clear()
+                await callback.message.edit_text("❌ Вы не менеджер")
+                return
+
+            manager.timezone_offset = tz_offset
+            await session.commit()
+
+        await state.clear()
+        tz_label = f"UTC{tz_offset:+d}"
+        await callback.message.edit_text(
+            f"✅ Часовой пояс обновлён: **{tz_label}**\n\n"
+            f"Время публикаций теперь отображается в вашем часовом поясе.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚙️ Настройки", callback_data="mgr_settings")],
+                [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")],
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in mgr_settings_tz_selected: {traceback.format_exc()}")
+        await state.clear()
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 @router.callback_query(F.data == "mgr_back")
 async def mgr_back(callback: CallbackQuery):
@@ -882,15 +1030,27 @@ async def mgr_post_select_date(callback: CallbackQuery, state: FSMContext):
             )
             slots = slots_result.scalars().all()
 
+            # Получаем timezone менеджера
+            mgr_result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = mgr_result.scalar_one_or_none()
+
         if not slots:
             await callback.message.edit_text("😔 На эту дату нет доступных слотов.")
             return
 
         await state.update_data(mgr_selected_date=date_str)
 
+        mgr_tz_offset, mgr_tz_label = _manager_tz(manager)
+
         buttons = []
         for slot in slots:
-            time_str = slot.slot_time.strftime("%H:%M")
+            # Конвертируем время слота (в timezone бота) → UTC → timezone менеджера
+            slot_dt = datetime.combine(selected_date, slot.slot_time)
+            slot_utc = slot_dt - LOCAL_TZ_OFFSET
+            slot_local = slot_utc + mgr_tz_offset
+            time_str = slot_local.strftime("%H:%M")
             buttons.append([InlineKeyboardButton(
                 text=f"🕐 {time_str}",
                 callback_data=f"mgr_post_time:{slot.id}"
@@ -903,7 +1063,7 @@ async def mgr_post_select_date(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
             f"📢 **{channel_name}**\n"
             f"📅 {selected_date.strftime('%d.%m.%Y')}\n\n"
-            f"🕐 Выберите время:",
+            f"🕐 Выберите время ({mgr_tz_label}):",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -1093,10 +1253,9 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
 
             channel_id = data.get("mgr_channel_id")
             selected_date_str = data.get("mgr_selected_date", "")
-            scheduled_time = datetime.combine(
-                date.fromisoformat(selected_date_str),
-                slot.slot_time
-            )
+            # slot_time is in the bot's global timezone (LOCAL_TZ_OFFSET); convert to UTC for storage
+            slot_dt = datetime.combine(date.fromisoformat(selected_date_str), slot.slot_time)
+            scheduled_time = slot_dt - LOCAL_TZ_OFFSET  # UTC
 
             post = ScheduledPost(
                 channel_id=channel_id,
@@ -1116,8 +1275,13 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
 
         await state.clear()
 
+        # Показываем время в timezone менеджера
+        mgr_tz_offset, mgr_tz_label = _manager_tz(manager)
+        scheduled_local = scheduled_time + mgr_tz_offset
+
         await callback.message.edit_text(
             f"✅ **Пост #{post_id} отправлен на модерацию!**\n\n"
+            f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
             f"Администратор рассмотрит его в ближайшее время.\n"
             f"После одобрения пост будет автоматически опубликован в указанное время.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1126,7 +1290,8 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
             parse_mode=ParseMode.MARKDOWN
         )
 
-        # Уведомляем администраторов
+        # Уведомляем администраторов (время в timezone бота)
+        scheduled_admin = scheduled_time + LOCAL_TZ_OFFSET
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(
@@ -1134,7 +1299,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                     f"📝 **Новый пост на модерацию #{post_id}**\n\n"
                     f"От менеджера: {callback.from_user.first_name or callback.from_user.username}\n"
                     f"📢 Канал ID: {channel_id}\n"
-                    f"📅 Запланирован: {scheduled_time.strftime('%d.%m.%Y %H:%M')}\n\n"
+                    f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}\n\n"
                     f"Проверьте в разделе 📝 Модерация.",
                     parse_mode=ParseMode.MARKDOWN
                 )

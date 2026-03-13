@@ -17,9 +17,11 @@ from maxapi.types import (
     MessageCreated,
     MessageCallback,
 )
+from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+from maxapi.types import CallbackButton
 from sqlalchemy import select
 
-from config import ADMIN_IDS, ADMIN_PASSWORD, MANAGER_LEVELS
+from config import ADMIN_IDS, ADMIN_PASSWORD, MANAGER_LEVELS, AVAILABLE_TIMEZONES
 from database import async_session_maker, Manager, Client, Channel, Order
 from max_bot.keyboards import (
     get_main_menu_markup,
@@ -50,6 +52,7 @@ class AdminStates(StatesGroup):
 
 class ManagerRegisterStates(StatesGroup):
     waiting_name = State()
+    selecting_timezone = State()
 
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -395,13 +398,31 @@ def setup_max_dispatcher() -> Dispatcher:
 
     @dp.message_created(F.message.body.text, ManagerRegisterStates.waiting_name)
     async def process_manager_name(event: MessageCreated, context: MemoryContext):
-        max_user_id = event.message.sender.user_id
         first_name = event.message.body.text.strip()
         if not first_name:
             await event.message.answer("❌ Имя не может быть пустым. Введите ещё раз:")
             return
+        # Сохраняем имя и переходим к выбору timezone
+        await context.set_data({"reg_first_name": first_name})
+        await context.set_state(ManagerRegisterStates.selecting_timezone)
+        builder = InlineKeyboardBuilder()
+        for offset, label in AVAILABLE_TIMEZONES:
+            builder.row(CallbackButton(text=label, payload=f"reg_tz:{offset}"))
+        await event.message.answer(
+            f"👋 {first_name}!\n\n"
+            "🌍 Выберите ваш часовой пояс:\n"
+            "(вы сможете изменить его позже в настройках)",
+            attachments=builder.build(),
+        )
+
+    @dp.message_callback(F.callback.payload.startswith("reg_tz:"), ManagerRegisterStates.selecting_timezone)
+    async def process_manager_timezone(event: MessageCallback, context: MemoryContext):
+        tz_offset = int(event.callback.payload.split(":")[1])
+        max_user_id = event.callback.from_user.user_id
+        data = await context.get_data()
+        first_name = data.get("reg_first_name", "Менеджер")
         try:
-            sender = event.message.sender
+            sender = event.callback.from_user
             username = getattr(sender, "username", None) if sender else None
             async with async_session_maker() as session:
                 new_manager = Manager(
@@ -410,19 +431,22 @@ def setup_max_dispatcher() -> Dispatcher:
                     first_name=first_name,
                     status="trainee",
                     level=1,
+                    timezone_offset=tz_offset,
                 )
                 session.add(new_manager)
                 await session.commit()
             await context.clear()
-            await event.message.answer(
-                f"✅ Добро пожаловать, {first_name}!\n\n"
+            tz_label = f"UTC{tz_offset:+d}"
+            await event.answer(
+                new_text=f"✅ Добро пожаловать, {first_name}!\n\n"
+                f"🌍 Часовой пояс: {tz_label}\n"
                 "Вы зарегистрированы как менеджер (Стажёр 🌱).\n"
                 "Используйте /training для начала обучения.",
                 attachments=get_main_menu_markup(is_manager=True),
             )
         except Exception:
-            logger.error(f"Ошибка process_manager_name: {traceback.format_exc()}")
-            await event.message.answer("❌ Ошибка регистрации. Попробуйте ещё раз.")
+            logger.error(f"Ошибка process_manager_timezone: {traceback.format_exc()}")
+            await event.answer(new_text="❌ Ошибка регистрации. Попробуйте ещё раз.")
 
     @dp.message_callback(F.callback.payload == "profile")
     async def cb_profile(event: MessageCallback):

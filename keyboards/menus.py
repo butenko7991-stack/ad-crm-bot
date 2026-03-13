@@ -10,7 +10,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton
 )
 
-from config import CHANNEL_CATEGORIES, MANAGER_LEVELS
+from config import CHANNEL_CATEGORIES, MANAGER_LEVELS, AVAILABLE_TIMEZONES
 
 # Локализованные названия месяцев (именительный падеж)
 _MONTH_NAMES = [
@@ -115,8 +115,29 @@ def get_manager_cabinet_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🏆 Рейтинг", callback_data="mgr_leaderboard")
         ],
         [InlineKeyboardButton(text="📝 Подать пост на модерацию", callback_data="mgr_submit_post")],
-        [InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link")]
+        [
+            InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link"),
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="mgr_settings"),
+        ],
     ])
+
+
+def get_timezone_keyboard(current_offset: int = 3, context: str = "settings") -> InlineKeyboardMarkup:
+    """Клавиатура выбора часового пояса.
+
+    context: 'register' — для регистрации, 'settings' — для смены в кабинете.
+    Callback data: mgr_tz_{context}:{offset}
+    """
+    buttons = []
+    for offset, label in AVAILABLE_TIMEZONES:
+        mark = "✅ " if offset == current_offset else ""
+        buttons.append([InlineKeyboardButton(
+            text=f"{mark}{label}",
+            callback_data=f"mgr_tz_{context}:{offset}"
+        )])
+    if context == "settings":
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 # ==================== МЕТРИКИ ====================

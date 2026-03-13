@@ -136,7 +136,7 @@ async def record_post_views(
                 select(ScheduledPost).where(
                     ScheduledPost.channel_id == channel_row.id,
                     ScheduledPost.message_id == message_id,
-                    ScheduledPost.status == "posted",
+                    ScheduledPost.status.in_(["posted", "deleted"]),
                 )
             )).scalar_one_or_none()
 

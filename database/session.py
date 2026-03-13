@@ -66,6 +66,13 @@ async def init_db():
             "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS scheduled_time TIMESTAMP",
             "UPDATE scheduled_posts SET scheduled_time = scheduled_at WHERE scheduled_time IS NULL AND scheduled_at IS NOT NULL",
             "ALTER TABLE scheduled_posts ALTER COLUMN scheduled_at DROP NOT NULL",
+            # Миграции для post_analytics (добавлены позже)
+            "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS saves INTEGER DEFAULT 0",
+            "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS comments INTEGER DEFAULT 0",
+            "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS ai_recommendation TEXT",
+            "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS recorded_by BIGINT",
+            "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL",
+            "ALTER TABLE managers ADD COLUMN IF NOT EXISTS timezone_offset INTEGER DEFAULT 3",
         ]
 
         for migration in migrations:
