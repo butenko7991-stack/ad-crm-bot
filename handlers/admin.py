@@ -1778,7 +1778,7 @@ async def adm_autoposting(callback: CallbackQuery):
                 select(func.count(ScheduledPost.id)).where(ScheduledPost.status == "pending")
             )).scalar() or 0
             posted_count = (await session.execute(
-                select(func.count(ScheduledPost.id)).where(ScheduledPost.status == "posted")
+                select(func.count(ScheduledPost.id)).where(ScheduledPost.status.in_(["posted", "deleted"]))
             )).scalar() or 0
             analytics_count = (await session.execute(
                 select(func.count(PostAnalytics.id))
@@ -1862,7 +1862,7 @@ async def autopost_posted(callback: CallbackQuery):
         async with async_session_maker() as session:
             result = await session.execute(
                 select(ScheduledPost)
-                .where(ScheduledPost.status == "posted")
+                .where(ScheduledPost.status.in_(["posted", "deleted"]))
                 .order_by(ScheduledPost.posted_at.desc())
                 .limit(20)
             )
@@ -1885,8 +1885,9 @@ async def autopost_posted(callback: CallbackQuery):
                 ch_name = channel.name if channel else f"#{post.channel_id}"
                 posted = post.posted_at.strftime("%d.%m %H:%M") if post.posted_at else "—"
                 text_preview = (post.content[:30] + "…") if post.content else "📎 медиа"
+                status_icon = "✅" if post.status == "posted" else "🗑"
                 buttons.append([InlineKeyboardButton(
-                    text=f"✅ {ch_name} | {posted} | {text_preview}",
+                    text=f"{status_icon} {ch_name} | {posted} | {text_preview}",
                     callback_data=f"autopost_view_posted:{post.id}"
                 )])
 
