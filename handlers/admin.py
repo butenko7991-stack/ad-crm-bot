@@ -19,7 +19,7 @@ from database import async_session_maker, Channel, Manager, Order, ScheduledPost
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates
-from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates
 from services import gamification_service
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
@@ -3400,6 +3400,10 @@ async def adm_view_manager(callback: CallbackQuery):
             text=toggle_text,
             callback_data=f"adm_mgr_toggle:{manager_id}"
         )])
+        buttons.append([InlineKeyboardButton(
+            text="🎯 Установить комиссию",
+            callback_data=f"adm_mgr_set_commission:{manager_id}"
+        )])
         buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_managers")])
 
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -3489,6 +3493,90 @@ async def adm_toggle_manager(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in adm_toggle_manager: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_mgr_set_commission:"))
+async def adm_mgr_set_commission_start(callback: CallbackQuery, state: FSMContext):
+    """Начать ввод комиссии для менеджера"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        manager_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager:
+                await callback.answer("❌ Менеджер не найден", show_alert=True)
+                return
+            current_rate = float(manager.commission_rate)
+
+        await state.set_state(AdminManagerStates.waiting_commission_rate)
+        await state.update_data(target_manager_id=manager_id)
+
+        await safe_edit_message(
+            callback.message,
+            f"🎯 **Ручная установка комиссии**\n\n"
+            f"Текущая комиссия менеджера: **{current_rate:.1f}%**\n\n"
+            f"Введите новое значение комиссии в процентах (от 0 до 100).\n"
+            f"Например: `15` или `12.5`",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_mgr:{manager_id}")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_mgr_set_commission_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminManagerStates.waiting_commission_rate)
+async def adm_mgr_set_commission_receive(message: Message, state: FSMContext):
+    """Получить и сохранить новое значение комиссии"""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    raw = (message.text or "").strip().replace(",", ".")
+    try:
+        new_rate = float(raw)
+        if not (0 <= new_rate <= 100):
+            raise ValueError("out of range")
+    except ValueError:
+        await message.answer(
+            "❌ Некорректное значение. Введите число от 0 до 100.\nНапример: `15` или `12.5`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    data = await state.get_data()
+    manager_id = data.get("target_manager_id")
+    await state.clear()
+
+    try:
+        async with async_session_maker() as session:
+            manager = await session.get(Manager, manager_id)
+            if not manager:
+                await message.answer("❌ Менеджер не найден")
+                return
+
+            old_rate = float(manager.commission_rate)
+            manager.commission_rate = Decimal(str(new_rate))
+            await session.commit()
+
+        await message.answer(
+            f"✅ **Комиссия обновлена**\n\n"
+            f"Было: {old_rate:.1f}%\n"
+            f"Стало: {new_rate:.1f}%",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👤 К менеджеру", callback_data=f"adm_mgr:{manager_id}")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error in adm_mgr_set_commission_receive: {traceback.format_exc()}")
+        await message.answer("❌ Ошибка при сохранении комиссии")
 
 
 # ==================== ПРОСМОТР ПОСТА НА МОДЕРАЦИИ ====================

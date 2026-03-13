@@ -93,3 +93,8 @@ class AdminPromoStates(StatesGroup):
 class AdminSlotStates(StatesGroup):
     """Состояния управления слотами канала"""
     waiting_slot_config = State()  # Ожидание ввода параметров генерации слотов
+
+
+class AdminManagerStates(StatesGroup):
+    """Состояния управления менеджером"""
+    waiting_commission_rate = State()  # Ожидание ввода процента комиссии

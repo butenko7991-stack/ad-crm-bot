@@ -9,7 +9,8 @@ from utils.states import (
     BookingStates, AdminChannelStates, ManagerStates,
     AdminPasswordState, AdminCompetitionStates,
     AdminCPMStates, AdminAutopostingStates, ManagerPostStates,
-    AdminCreatePostStates, AdminPromoStates, AdminSlotStates
+    AdminCreatePostStates, AdminPromoStates, AdminSlotStates,
+    AdminManagerStates
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "AdminPasswordState", "AdminCompetitionStates",
     "AdminCPMStates", "AdminAutopostingStates", "ManagerPostStates",
     "AdminCreatePostStates", "AdminPromoStates", "AdminSlotStates",
+    "AdminManagerStates",
 ]
