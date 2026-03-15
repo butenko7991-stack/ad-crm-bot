@@ -47,6 +47,7 @@ class AdminCreatePostStates(StatesGroup):
     entering_time = State()
     entering_delete_hours = State()
     entering_content = State()
+    entering_buttons = State()
     confirming = State()
 
 

@@ -1,6 +1,7 @@
 """
 Обработчики для администратора
 """
+import json
 import logging
 import traceback
 from datetime import datetime, date as date_type, time as time_type, timedelta, timezone
@@ -2711,13 +2712,99 @@ async def autopost_create_content(message: Message, state: FSMContext):
     await state.update_data(
         create_content=content_text,
         create_file_id=file_id,
-        create_file_type=file_type
+        create_file_type=file_type,
+        create_buttons=[],
     )
 
+    await message.answer(
+        "🔗 **Кнопки к посту** (необязательно)\n\n"
+        "Вы можете добавить одну или несколько кнопок с ссылками.\n"
+        "Кнопки не добавлены.\n\n"
+        "Чтобы добавить кнопку, отправьте её в формате:\n"
+        "`Название | https://ссылка`",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➡️ Пропустить", callback_data="autopost_buttons_skip")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    await state.set_state(AdminCreatePostStates.entering_buttons)
+
+
+@router.message(AdminCreatePostStates.entering_buttons)
+async def autopost_buttons_add(message: Message, state: FSMContext):
+    """Добавление кнопки к посту в формате 'Название | URL'"""
+    raw = (message.text or "").strip()
+    if "|" not in raw:
+        await message.answer(
+            "❌ Неверный формат. Отправьте кнопку в формате:\n`Название | https://ссылка`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    parts = raw.split("|", 1)
+    btn_text = parts[0].strip()
+    btn_url = parts[1].strip()
+
+    if not btn_text or not btn_url:
+        await message.answer(
+            "❌ Название и ссылка не могут быть пустыми.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if not btn_url.startswith(("http://", "https://", "tg://")):
+        await message.answer(
+            "❌ Ссылка должна начинаться с `http://`, `https://` или `tg://`.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    data = await state.get_data()
+    buttons: list = data.get("create_buttons", [])
+    buttons.append({"text": btn_text, "url": btn_url})
+    await state.update_data(create_buttons=buttons)
+
+    buttons_preview = "\n".join(f"  {i+1}. [{b['text']}]({b['url']})" for i, b in enumerate(buttons))
+    await message.answer(
+        f"✅ Кнопка добавлена!\n\n"
+        f"🔗 **Текущие кнопки ({len(buttons)}):**\n{buttons_preview}\n\n"
+        "Отправьте следующую кнопку или нажмите **Готово**:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Готово", callback_data="autopost_buttons_done")],
+            [InlineKeyboardButton(text="🗑 Очистить все кнопки", callback_data="autopost_buttons_clear")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+@router.callback_query(F.data == "autopost_buttons_clear", AdminCreatePostStates.entering_buttons)
+async def autopost_buttons_clear(callback: CallbackQuery, state: FSMContext):
+    """Очистить все добавленные кнопки"""
+    await callback.answer()
+    await state.update_data(create_buttons=[])
+    await safe_edit_message(
+        callback.message,
+        "🗑 Кнопки очищены.\n\n"
+        "Отправьте кнопку в формате:\n`Название | https://ссылка`",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➡️ Пропустить", callback_data="autopost_buttons_skip")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
+        ]),
+    )
+
+
+async def _show_confirm_preview(message: Message, state: FSMContext):
+    """Показать превью поста и кнопку подтверждения"""
     data = await state.get_data()
     channel_name = data.get("create_channel_name", "—")
     scheduled_time_iso = data.get("create_scheduled_time", "")
     delete_hours = data.get("create_delete_hours", 24)
+    content_text = data.get("create_content", "")
+    file_id = data.get("create_file_id")
+    file_type = data.get("create_file_type")
+    buttons: list = data.get("create_buttons", [])
 
     try:
         scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
@@ -2737,19 +2824,27 @@ async def autopost_create_content(message: Message, state: FSMContext):
         preview += f"\n📝 Текст:\n{content_text[:400]}{'...' if len(content_text) > 400 else ''}\n"
     if file_id:
         preview += f"\n📎 Медиафайл: {file_type}\n"
+    if buttons:
+        buttons_preview = "\n".join(f"  {i+1}. [{b['text']}]({b['url']})" for i, b in enumerate(buttons))
+        preview += f"\n🔗 **Кнопки ({len(buttons)}):**\n{buttons_preview}\n"
 
     preview += "\nСоздать пост?"
 
-    await message.answer(
-        preview,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Создать", callback_data="autopost_create_confirm"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")
-            ]
-        ]),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Создать", callback_data="autopost_create_confirm"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting"),
+        ]
+    ])
+
+    await safe_edit_message(message, preview, markup)
+
+
+@router.callback_query(F.data.in_({"autopost_buttons_skip", "autopost_buttons_done"}), AdminCreatePostStates.entering_buttons)
+async def autopost_buttons_finish(callback: CallbackQuery, state: FSMContext):
+    """Переход к подтверждению создания поста"""
+    await callback.answer()
+    await _show_confirm_preview(callback.message, state)
     await state.set_state(AdminCreatePostStates.confirming)
 
 
@@ -2768,11 +2863,13 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
         scheduled_time = datetime.fromisoformat(data["create_scheduled_time"])
 
         async with async_session_maker() as session:
+            buttons_list = data.get("create_buttons", [])
             post = ScheduledPost(
                 channel_id=data["create_channel_id"],
                 content=data.get("create_content") or None,
                 file_id=data.get("create_file_id"),
                 file_type=data.get("create_file_type"),
+                inline_buttons=json.dumps(buttons_list, ensure_ascii=False) if buttons_list else None,
                 scheduled_time=scheduled_time,
                 delete_after_hours=data.get("create_delete_hours", 24),
                 status="pending",
