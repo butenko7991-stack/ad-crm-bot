@@ -1257,7 +1257,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
             slot_dt = datetime.combine(date.fromisoformat(selected_date_str), slot.slot_time)
             scheduled_time = slot_dt - LOCAL_TZ_OFFSET  # UTC
 
-            is_owner = bool(OWNER_ID and callback.from_user.id == OWNER_ID)
+            is_owner = OWNER_ID and callback.from_user.id == OWNER_ID
             post = ScheduledPost(
                 channel_id=channel_id,
                 content=data.get("mgr_ad_content", ""),
