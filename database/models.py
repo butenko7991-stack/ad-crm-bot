@@ -198,7 +198,8 @@ class ScheduledPost(Base):
     content = Column(Text)
     file_id = Column(String(500))
     file_type = Column(String(20))
-    
+    inline_buttons = Column(Text)  # JSON: [{"text": "...", "url": "..."}, ...]
+
     scheduled_time = Column(DateTime, nullable=False)
     delete_after_hours = Column(Integer, default=24)
     

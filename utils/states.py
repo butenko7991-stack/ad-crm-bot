@@ -47,6 +47,7 @@ class AdminCreatePostStates(StatesGroup):
     entering_time = State()
     entering_delete_hours = State()
     entering_content = State()
+    entering_buttons = State()
     confirming = State()
 
 
@@ -98,6 +99,13 @@ class AdminSlotStates(StatesGroup):
 class AdminManagerStates(StatesGroup):
     """Состояния управления менеджером"""
     waiting_commission_rate = State()  # Ожидание ввода процента комиссии
+
+
+class AdminEditPostStates(StatesGroup):
+    """Состояния редактирования запланированного поста"""
+    editing_content = State()
+    selecting_date = State()
+    entering_time = State()
 
 
 class AdminSettingsStates(StatesGroup):

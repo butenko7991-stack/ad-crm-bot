@@ -3,6 +3,7 @@ CRM Bot для продажи рекламы в Telegram-каналах и се�
 Точка входа
 """
 import asyncio
+import json
 import logging
 import traceback
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ from typing import Any
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import Update
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
@@ -77,6 +78,23 @@ async def publish_scheduled_posts(bot: Bot):
                 channel_tg_id = channel.telegram_id
                 caption = post.content or None
 
+                # Build inline keyboard from saved buttons (if any)
+                post_markup = None
+                if post.inline_buttons:
+                    try:
+                        btns = json.loads(post.inline_buttons)
+                        if btns:
+                            post_markup = InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text=b["text"], url=b["url"])]
+                                for b in btns
+                            ])
+                    except Exception:
+                        logger.warning(
+                            f"Не удалось разобрать inline_buttons поста #{post.id} — "
+                            f"пост будет опубликован без кнопок",
+                            exc_info=True,
+                        )
+
                 try:
                     if post.file_id and post.file_type == "photo":
                         sent = await bot.send_photo(
@@ -84,6 +102,7 @@ async def publish_scheduled_posts(bot: Bot):
                             photo=post.file_id,
                             caption=caption,
                             parse_mode=None,
+                            reply_markup=post_markup,
                         )
                     elif post.file_id and post.file_type == "video":
                         sent = await bot.send_video(
@@ -91,6 +110,7 @@ async def publish_scheduled_posts(bot: Bot):
                             video=post.file_id,
                             caption=caption,
                             parse_mode=None,
+                            reply_markup=post_markup,
                         )
                     elif post.file_id and post.file_type == "document":
                         sent = await bot.send_document(
@@ -98,12 +118,14 @@ async def publish_scheduled_posts(bot: Bot):
                             document=post.file_id,
                             caption=caption,
                             parse_mode=None,
+                            reply_markup=post_markup,
                         )
                     else:
                         sent = await bot.send_message(
                             chat_id=channel_tg_id,
                             text=post.content or "",
                             parse_mode=None,
+                            reply_markup=post_markup,
                         )
 
                     post.status = "posted"
