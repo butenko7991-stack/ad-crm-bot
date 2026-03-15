@@ -19,7 +19,7 @@ from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABL
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY
 from services.ai_trainer import ai_trainer_service
@@ -77,7 +77,7 @@ async def get_channel_card(channel_id: int) -> tuple:
         
         ch_data = {
             "name": channel.name,
-            "username": channel.username or "—",
+            "username": channel.username,
             "subscribers": channel.subscribers or 0,
             "avg_reach": channel.avg_reach_24h or channel.avg_reach or 0,
             "category": channel.category,
@@ -88,11 +88,11 @@ async def get_channel_card(channel_id: int) -> tuple:
     
     category_info = CHANNEL_CATEGORIES.get(ch_data["category"], {"name": "📁 Другое"})
     status = "✅ Активен" if ch_data["is_active"] else "❌ Неактивен"
+    ch_title = channel_link(ch_data["name"], ch_data["username"])
     
     text = (
         f"⚙️ **Настройки канала**\n\n"
-        f"📢 **{ch_data['name']}**\n"
-        f"👤 @{ch_data['username']}\n"
+        f"📢 **{ch_title}**\n"
         f"{category_info['name']}\n"
         f"{status}\n\n"
         f"👥 Подписчиков: **{ch_data['subscribers']:,}**\n"
@@ -115,7 +115,7 @@ async def _notify_manager_group(bot: Bot, channel, order_id: int = None):
         return
     try:
         text = format_channel_stats_for_group(channel, order_id)
-        await bot.send_message(chat_id, text, parse_mode=None)
+        await bot.send_message(chat_id, text, parse_mode="Markdown")
     except Exception:
         logger.warning(
             f"Не удалось отправить статистику канала в чат менеджеров "
@@ -1995,7 +1995,7 @@ async def autopost_analytics(callback: CallbackQuery):
             )
             return
 
-        text = f"📊 **Аналитика постов** ({len(analytics_list)})\n\n"
+        text = f"📊 **Аналитика постов** ({len(analytics_list)})\n\n➕ — нет метрик | 📊 — есть метрики\n\n"
         await safe_edit_message(
             callback.message, text,
             get_post_analytics_keyboard(analytics_list)
@@ -2022,21 +2022,27 @@ async def pa_view(callback: CallbackQuery):
                 await callback.answer("❌ Запись не найдена", show_alert=True)
                 return
             channel = await session.get(Channel, analytics.channel_id)
+            scheduled_post_id = analytics.scheduled_post_id
 
         ch_name = channel.name if channel else "—"
-        recorded = analytics.recorded_at.strftime("%d.%m.%Y %H:%M")
-        total_engage = analytics.reactions + analytics.forwards + analytics.saves + analytics.comments
-        er = round(total_engage / analytics.views * 100, 2) if analytics.views > 0 else 0
+        recorded = analytics.recorded_at.strftime("%d.%m.%Y %H:%M") if analytics.recorded_at else "—"
+        views = analytics.views or 0
+        reactions = analytics.reactions or 0
+        forwards = analytics.forwards or 0
+        saves = analytics.saves or 0
+        comments = analytics.comments or 0
+        total_engage = reactions + forwards + saves + comments
+        er = round(total_engage / views * 100, 2) if views > 0 else 0
 
         text = (
             f"📊 **Аналитика поста #{analytics_id}**\n\n"
             f"📢 Канал: {ch_name}\n"
             f"📅 Записано: {recorded}\n\n"
-            f"👁 Просмотры: **{analytics.views:,}**\n"
-            f"👍 Реакции: **{analytics.reactions:,}**\n"
-            f"↩️ Пересылки: **{analytics.forwards:,}**\n"
-            f"🔖 Сохранения: **{analytics.saves:,}**\n"
-            f"💬 Комментарии: **{analytics.comments:,}**\n"
+            f"👁 Просмотры: **{views:,}**\n"
+            f"👍 Реакции: **{reactions:,}**\n"
+            f"↩️ Пересылки: **{forwards:,}**\n"
+            f"🔖 Сохранения: **{saves:,}**\n"
+            f"💬 Комментарии: **{comments:,}**\n"
             f"📈 Engagement Rate: **{er}%**\n"
         )
         if analytics.ai_recommendation:
@@ -2044,7 +2050,11 @@ async def pa_view(callback: CallbackQuery):
 
         await safe_edit_message(
             callback.message, text,
-            get_post_analytics_actions_keyboard(analytics_id, has_ai=bool(analytics.ai_recommendation))
+            get_post_analytics_actions_keyboard(
+                analytics_id,
+                has_ai=bool(analytics.ai_recommendation),
+                scheduled_post_id=scheduled_post_id,
+            )
         )
     except Exception as e:
         logger.error(f"Error in pa_view: {traceback.format_exc()}")
@@ -2268,6 +2278,7 @@ async def pa_ai_recommend(callback: CallbackQuery):
             a_forwards = analytics.forwards or 0
             a_saves = analytics.saves or 0
             a_comments = analytics.comments or 0
+            scheduled_post_id = analytics.scheduled_post_id
             ch_name = channel.name if channel else "Канал"
             avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
             cpm = float(channel.cpm or 0) if channel else 0
@@ -2304,7 +2315,11 @@ async def pa_ai_recommend(callback: CallbackQuery):
 
         await safe_edit_message(
             callback.message, text,
-            get_post_analytics_actions_keyboard(analytics_id, has_ai=bool(recommendation))
+            get_post_analytics_actions_keyboard(
+                analytics_id,
+                has_ai=bool(recommendation),
+                scheduled_post_id=scheduled_post_id,
+            )
         )
     except Exception as e:
         logger.error(f"Error in pa_ai_recommend: {traceback.format_exc()}")
@@ -2322,10 +2337,16 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
 
     try:
         async with async_session_maker() as session:
-            # Топ-5 постов по Engagement Rate
+            # Посты с любыми ненулевыми метриками (не только просмотры)
             result = await session.execute(
                 select(PostAnalytics)
-                .where(PostAnalytics.views > 0)
+                .where(
+                    (PostAnalytics.views > 0)
+                    | (PostAnalytics.reactions > 0)
+                    | (PostAnalytics.forwards > 0)
+                    | (PostAnalytics.saves > 0)
+                    | (PostAnalytics.comments > 0)
+                )
                 .order_by(PostAnalytics.recorded_at.desc())
                 .limit(10)
             )
@@ -2336,6 +2357,7 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
                 callback.message,
                 "🤖 **AI-рекомендации**\n\nЕщё нет данных для анализа.\nВнесите метрики для опубликованных постов.",
                 InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📊 Аналитика постов", callback_data="autopost_analytics")],
                     [InlineKeyboardButton(text="✅ Опубликованные посты", callback_data="autopost_posted")],
                     [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
                 ])
@@ -2345,8 +2367,9 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         # Рассчитываем ER для каждого поста
         ranked = []
         for a in analytics_list:
-            total_engage = a.reactions + a.forwards + a.saves + a.comments
-            er = round(total_engage / a.views * 100, 2) if a.views > 0 else 0
+            views = a.views or 0
+            total_engage = (a.reactions or 0) + (a.forwards or 0) + (a.saves or 0) + (a.comments or 0)
+            er = round(total_engage / views * 100, 2) if views > 0 else 0
             ranked.append((a, er))
         ranked.sort(key=lambda x: x[1], reverse=True)
 
@@ -2354,7 +2377,8 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         buttons = []
         for i, (a, er) in enumerate(ranked[:5], 1):
             has_rec = "✅" if a.ai_recommendation else "💡"
-            text += f"{i}. #{a.id} — 👁{a.views:,} | ER: {er}% {has_rec}\n"
+            views = a.views or 0
+            text += f"{i}. #{a.id} — 👁{views:,} | ER: {er}% {has_rec}\n"
             buttons.append([InlineKeyboardButton(
                 text=f"#{a.id} — ER {er}% {'(есть рек.)' if a.ai_recommendation else '→ получить'}",
                 callback_data=f"pa_ai:{a.id}" if not a.ai_recommendation else f"pa_view:{a.id}"
@@ -2364,6 +2388,142 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in autopost_ai_recommend_overview: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== АНАЛИТИКА КАНАЛОВ ====================
+
+async def _render_channel_analytics_page(message, channel_id: int) -> bool:
+    """Построить и отобразить страницу аналитики канала. Возвращает False при ошибке."""
+    from services.metrics import get_channel_analytics_detail
+
+    data = await get_channel_analytics_detail(channel_id)
+    if not data:
+        return False
+
+    ch = data["channel"]
+    updated = ch["analytics_updated"].strftime("%d.%m.%Y %H:%M") if ch["analytics_updated"] else "—"
+
+    text = (
+        f"📈 **Аналитика канала: {channel_link(ch['name'], ch.get('username'))}**\n\n"
+        f"👥 Подписчиков: **{ch['subscribers']:,}**\n"
+        f"👁 Средний охват: **{ch['avg_reach']:,}**\n"
+        f"📊 ERR: **{ch['err_percent']:.1f}%**\n"
+        f"🔄 Обновлено: {updated}\n\n"
+        f"📝 Постов отслежено: **{data['posts_count']}** "
+        f"(с просмотрами: {data['posts_with_views']})\n"
+        f"👁 Суммарно просмотров: **{data['total_views']:,}**\n"
+        f"📈 Среднее просмотров/пост: **{data['avg_views']:,}**\n"
+        f"⚡ Средний ER: **{data['avg_er']}%**\n"
+    )
+    if data["recent_posts"]:
+        text += "\n🕐 **Последние посты с просмотрами:**\n"
+        for p in data["recent_posts"]:
+            dt = p["recorded_at"].strftime("%d.%m %H:%M") if p["recorded_at"] else "—"
+            text += f"  #{p['id']}: 👁{p['views']:,} 👍{p['reactions']} ↩️{p['forwards']} ER:{p['er']}% ({dt})\n"
+    else:
+        text += "\n_Просмотры постов ещё не собраны._\n"
+
+    buttons = [
+        [InlineKeyboardButton(
+            text="🔄 Обновить данные",
+            callback_data=f"ch_analytics_refresh:{channel_id}"
+        )],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_channel_analytics")],
+    ]
+    await safe_edit_message(message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    return True
+
+
+@router.callback_query(F.data == "autopost_channel_analytics")
+async def autopost_channel_analytics(callback: CallbackQuery):
+    """Список каналов с краткой аналитикой"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        from services.metrics import get_channels_analytics_summary
+
+        channels = await get_channels_analytics_summary()
+
+        if not channels:
+            await safe_edit_message(
+                callback.message,
+                "📈 **Аналитика каналов**\n\nАктивных каналов нет. Добавьте каналы в разделе «Каналы».",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
+        text = "📈 **Аналитика каналов**\n\n"
+        buttons = []
+        for ch in channels:
+            text += (
+                f"📢 **{channel_link(ch['name'], ch.get('username'))}**\n"
+                f"  👥 {ch['subscribers']:,} | 👁 охват {ch['avg_reach']:,}"
+                f" | ERR {ch['err_percent']:.1f}% | 📊 {ch['posts_count']} постов"
+                f" | 👁 {ch['total_views']:,} просм.\n"
+            )
+            buttons.append([InlineKeyboardButton(
+                text=f"📈 {ch['name']} ({ch['posts_count']}📊)",
+                callback_data=f"ch_analytics:{ch['id']}"
+            )])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")])
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in autopost_channel_analytics: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("ch_analytics:"))
+async def ch_analytics_detail(callback: CallbackQuery):
+    """Детальная аналитика одного канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        channel_id = int(callback.data.split(":")[1])
+        ok = await _render_channel_analytics_page(callback.message, channel_id)
+        if not ok:
+            await callback.answer("❌ Канал не найден", show_alert=True)
+    except Exception as e:
+        logger.error(f"Error in ch_analytics_detail: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("ch_analytics_refresh:"))
+async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
+    """Обновить статистику канала и вернуть страницу аналитики"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer("🔄 Обновляю данные…")
+
+    try:
+        channel_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.answer("❌ Канал не найден", show_alert=True)
+                return
+
+        from services.channel_collector import refresh_channel_subscribers, update_channel_reach_from_analytics
+        await refresh_channel_subscribers(bot, channel)
+        await update_channel_reach_from_analytics(channel_id)
+
+        await _render_channel_analytics_page(callback.message, channel_id)
+    except Exception as e:
+        logger.error(f"Error in ch_analytics_refresh: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
 

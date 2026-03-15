@@ -196,6 +196,7 @@ def get_channel_settings_keyboard(channel_id: int, is_active: bool) -> InlineKey
     """Клавиатура настроек канала"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"adm_ch_update:{channel_id}")],
+        [InlineKeyboardButton(text="📈 Аналитика канала", callback_data=f"ch_analytics:{channel_id}")],
         [InlineKeyboardButton(text="💰 Изменить цены", callback_data=f"adm_ch_prices:{channel_id}")],
         [InlineKeyboardButton(text="📅 Слоты", callback_data=f"adm_ch_slots:{channel_id}")],
         [InlineKeyboardButton(
@@ -542,6 +543,7 @@ def get_autoposting_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📊 Аналитика постов", callback_data="autopost_analytics"),
             InlineKeyboardButton(text="🤖 AI-рекомендации", callback_data="autopost_ai_recommend"),
         ],
+        [InlineKeyboardButton(text="📈 Аналитика каналов", callback_data="autopost_channel_analytics")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
     ])
 
@@ -550,7 +552,12 @@ def get_post_analytics_keyboard(analytics_list: list) -> InlineKeyboardMarkup:
     """Клавиатура списка аналитики постов"""
     buttons = []
     for item in analytics_list[:10]:
-        label = f"#{item.id} — 👁{item.views} 👍{item.reactions} ↩️{item.forwards}"
+        views = item.views or 0
+        reactions = item.reactions or 0
+        forwards = item.forwards or 0
+        has_metrics = views > 0 or reactions > 0 or forwards > 0
+        status = "📊" if has_metrics else "➕"
+        label = f"{status} #{item.id} — 👁{views} 👍{reactions} ↩️{forwards}"
         buttons.append([InlineKeyboardButton(
             text=label,
             callback_data=f"pa_view:{item.id}"
@@ -559,9 +566,14 @@ def get_post_analytics_keyboard(analytics_list: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_post_analytics_actions_keyboard(analytics_id: int, has_ai: bool = False) -> InlineKeyboardMarkup:
+def get_post_analytics_actions_keyboard(analytics_id: int, has_ai: bool = False, scheduled_post_id: int = None) -> InlineKeyboardMarkup:
     """Кнопки действий для записи аналитики поста"""
     buttons = []
+    if scheduled_post_id:
+        buttons.append([InlineKeyboardButton(
+            text="📝 Внести/обновить метрики",
+            callback_data=f"pa_enter:{scheduled_post_id}"
+        )])
     if not has_ai:
         buttons.append([InlineKeyboardButton(
             text="🤖 Получить AI-рекомендации",

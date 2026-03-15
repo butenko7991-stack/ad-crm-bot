@@ -12,13 +12,13 @@ from typing import Any
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
 from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
 from database import init_db, async_session_maker
-from database.models import Slot, ScheduledPost, Channel
+from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
 from services.channel_collector import refresh_all_channels
 from services.settings import get_manager_group_chat_id
@@ -131,6 +131,19 @@ async def publish_scheduled_posts(bot: Bot):
                     post.status = "posted"
                     post.posted_at = datetime.utcnow()
                     post.message_id = sent.message_id
+
+                    # Создаём начальную запись аналитики, если её ещё нет
+                    existing_analytics = (await session.execute(
+                        select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
+                    )).scalar_one_or_none()
+                    if not existing_analytics:
+                        initial_analytics = PostAnalytics(
+                            scheduled_post_id=post.id,
+                            order_id=post.order_id,
+                            channel_id=post.channel_id,
+                        )
+                        session.add(initial_analytics)
+
                     await session.commit()
                     logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
 
@@ -159,7 +172,7 @@ async def publish_scheduled_posts(bot: Bot):
                             await bot.send_message(
                                 mgr_chat_id,
                                 format_channel_stats_for_group(channel),
-                                parse_mode=None,
+                                parse_mode="Markdown",
                             )
                         except Exception:
                             logger.warning(
@@ -231,12 +244,49 @@ async def delete_posted_posts(bot: Bot):
         logger.error(f"Ошибка в delete_posted_posts: {traceback.format_exc()}")
 
 
-async def global_error_handler(update: Update, exception: Exception) -> bool:
+async def global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
     """
-    Глобальный обработчик ошибок.
+    Глобальный обработчик ошибок aiogram 3.x.
+    Логирует ошибку и отправляет уведомление всем администраторам.
     """
-    # Логируем полную ошибку
-    logger.error(f"Ошибка: {exception}\n{traceback.format_exc()}")
+    exception = event.exception
+    update = event.update
+
+    # Полный трейсбэк в лог
+    logger.error(
+        f"Необработанное исключение при обработке обновления {update.update_id}: "
+        f"{type(exception).__name__}: {exception}\n{traceback.format_exc()}"
+    )
+
+    # Определяем контекст обновления для диагностики
+    ctx_parts = []
+    if update.message:
+        ctx_parts.append(f"📩 Сообщение от user_id={update.message.from_user.id if update.message.from_user else '?'}")
+        if update.message.text:
+            ctx_parts.append(f"Текст: {update.message.text[:80]}")
+    elif update.callback_query:
+        ctx_parts.append(f"🔘 Callback от user_id={update.callback_query.from_user.id}")
+        ctx_parts.append(f"Data: {update.callback_query.data}")
+    ctx = "\n".join(ctx_parts) if ctx_parts else "нет деталей"
+
+    # Трейсбэк (первые 600 символов, чтобы не флудить)
+    tb = traceback.format_exc()
+    tb_short = tb[-600:] if len(tb) > 600 else tb
+
+    notify_text = (
+        f"🚨 *Ошибка в боте*\n\n"
+        f"*Тип:* `{type(exception).__name__}`\n"
+        f"*Сообщение:* `{str(exception)[:200]}`\n\n"
+        f"*Контекст:*\n{ctx}\n\n"
+        f"*Трейсбэк (конец):*\n```\n{tb_short}\n```"
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, notify_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            logger.warning(f"Не удалось отправить уведомление об ошибке админу {admin_id}", exc_info=True)
+
     return True
 
 
@@ -282,6 +332,9 @@ async def main():
     # Подключаем роутеры
     main_router = setup_routers()
     dp.include_router(main_router)
+
+    # Регистрируем глобальный обработчик ошибок
+    dp.errors.register(global_error_handler)
     
     # Инициализация БД
     logger.info("Инициализация базы данных...")

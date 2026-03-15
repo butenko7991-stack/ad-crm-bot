@@ -17,6 +17,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _channel_avg_reach(channel) -> int:
+    """Вернуть лучшее доступное значение среднего охвата для канала."""
+    return int(channel.avg_reach_24h or channel.avg_reach or 0)
+
+
 def _period_bounds(period: str) -> tuple[datetime, datetime, datetime, datetime]:
     """Вернуть (start, end, prev_start, prev_end) для заданного периода."""
     now = _utcnow()
@@ -466,3 +471,135 @@ async def get_post_analytics_metrics() -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_post_analytics_metrics error: {e}")
         return None
+
+
+async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
+    """
+    Детальная аналитика для одного канала:
+    базовые поля из Channel + данные из PostAnalytics, собранных ботом.
+
+    Возвращает словарь с ключами:
+      channel, posts_count, posts_with_views, total_views,
+      avg_views, avg_er, recent_posts
+    """
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                return None
+
+            posts_count = (await session.execute(
+                select(func.count(PostAnalytics.id))
+                .where(PostAnalytics.channel_id == channel_id)
+            )).scalar() or 0
+
+            posts_with_views = (await session.execute(
+                select(func.count(PostAnalytics.id))
+                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+            )).scalar() or 0
+
+            total_views = int((await session.execute(
+                select(func.sum(PostAnalytics.views))
+                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+            )).scalar() or 0)
+
+            avg_views_raw = float((await session.execute(
+                select(func.avg(PostAnalytics.views))
+                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+            )).scalar() or 0)
+
+            recent_rows = (await session.execute(
+                select(PostAnalytics)
+                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+                .order_by(PostAnalytics.recorded_at.desc())
+                .limit(5)
+            )).scalars().all()
+
+            # Snapshot channel fields inside session
+            ch_snapshot = {
+                "id": channel.id,
+                "name": channel.name,
+                "username": channel.username,
+                "subscribers": channel.subscribers or 0,
+                "avg_reach": _channel_avg_reach(channel),
+                "err_percent": float(channel.err_percent or 0),
+                "analytics_updated": channel.analytics_updated,
+            }
+
+        recent_posts = []
+        total_er = 0.0
+        er_count = 0
+        for r in recent_rows:
+            views = r.views or 0
+            engage = (r.reactions or 0) + (r.forwards or 0) + (r.saves or 0) + (r.comments or 0)
+            er = round(engage / views * 100, 2) if views > 0 else 0
+            total_er += er
+            er_count += 1
+            recent_posts.append({
+                "id": r.id,
+                "views": views,
+                "reactions": r.reactions or 0,
+                "forwards": r.forwards or 0,
+                "er": er,
+                "recorded_at": r.recorded_at,
+            })
+
+        avg_er = round(total_er / er_count, 2) if er_count > 0 else 0
+
+        return {
+            "channel": ch_snapshot,
+            "posts_count": posts_count,
+            "posts_with_views": posts_with_views,
+            "total_views": total_views,
+            "avg_views": round(avg_views_raw),
+            "avg_er": avg_er,
+            "recent_posts": recent_posts,
+        }
+    except Exception as e:
+        logger.error(f"get_channel_analytics_detail error: {e}")
+        return None
+
+
+async def get_channels_analytics_summary() -> list:
+    """
+    Краткая сводка по всем активным каналам для списка аналитики.
+
+    Возвращает список словарей:
+      id, name, subscribers, avg_reach, err_percent,
+      posts_count, total_views
+    """
+    try:
+        async with async_session_maker() as session:
+            channels = (await session.execute(
+                select(Channel).where(Channel.is_active == True).order_by(Channel.name)
+            )).scalars().all()
+
+            # Количество PostAnalytics и суммарные просмотры по каналам
+            analytics_rows = (await session.execute(
+                select(
+                    PostAnalytics.channel_id,
+                    func.count(PostAnalytics.id).label("cnt"),
+                    func.sum(PostAnalytics.views).label("total_views"),
+                )
+                .group_by(PostAnalytics.channel_id)
+            )).all()
+
+            posts_by_channel = {r.channel_id: (r.cnt, int(r.total_views or 0)) for r in analytics_rows}
+
+        result = []
+        for ch in channels:
+            cnt, total_v = posts_by_channel.get(ch.id, (0, 0))
+            result.append({
+                "id": ch.id,
+                "name": ch.name,
+                "username": ch.username,
+                "subscribers": ch.subscribers or 0,
+                "avg_reach": _channel_avg_reach(ch),
+                "err_percent": float(ch.err_percent or 0),
+                "posts_count": cnt,
+                "total_views": total_v,
+            })
+        return result
+    except Exception as e:
+        logger.error(f"get_channels_analytics_summary error: {e}")
+        return []

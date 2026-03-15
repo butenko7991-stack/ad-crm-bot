@@ -16,7 +16,7 @@ from sqlalchemy import select
 from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL, OWNER_ID
 from database import async_session_maker, Manager, Order, Client, Channel, ManagerPayout, Slot, ScheduledPost
 from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu, get_calendar_keyboard, get_timezone_keyboard
-from utils import ManagerStates, ManagerPostStates, ManagerRegisterStates, ManagerSettingsStates
+from utils import ManagerStates, ManagerPostStates, ManagerRegisterStates, ManagerSettingsStates, channel_link
 from services import gamification_service
 
 
@@ -302,7 +302,7 @@ async def analyze_channel_for_manager(callback: CallbackQuery):
             category_info = CHANNEL_CATEGORIES.get(channel.category, {})
             category_name = category_info.get("name", channel.category or "—")
             
-            text = f"📢 **{channel.name}**\n\n"
+            text = f"📢 **{channel_link(channel.name, channel.username)}**\n\n"
             text += f"📂 Категория: {category_name}\n"
             text += f"👥 Подписчиков: {channel.subscribers or 0:,}\n"
             
