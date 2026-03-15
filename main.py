@@ -151,8 +151,10 @@ async def publish_scheduled_posts(bot: Bot):
                             logger.warning(f"Не удалось уведомить админа {admin_id} о посте #{post.id}", exc_info=True)
 
                     # Отправляем статистику канала и пересылаем пост в чат менеджеров
+                    # Посты с delete_after_hours=0 ("не удалять") не являются рекламными
+                    # и не отправляются в чат менеджеров
                     mgr_chat_id = await get_manager_group_chat_id()
-                    if mgr_chat_id:
+                    if mgr_chat_id and post.delete_after_hours != 0:
                         try:
                             await bot.send_message(
                                 mgr_chat_id,
