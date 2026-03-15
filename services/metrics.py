@@ -519,6 +519,7 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
             ch_snapshot = {
                 "id": channel.id,
                 "name": channel.name,
+                "username": channel.username,
                 "subscribers": channel.subscribers or 0,
                 "avg_reach": _channel_avg_reach(channel),
                 "err_percent": float(channel.err_percent or 0),
@@ -591,6 +592,7 @@ async def get_channels_analytics_summary() -> list:
             result.append({
                 "id": ch.id,
                 "name": ch.name,
+                "username": ch.username,
                 "subscribers": ch.subscribers or 0,
                 "avg_reach": _channel_avg_reach(ch),
                 "err_percent": float(ch.err_percent or 0),

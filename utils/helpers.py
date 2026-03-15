@@ -133,22 +133,34 @@ def truncate_text(text: str, max_length: int = 100) -> str:
     return text[:max_length - 3] + "..."
 
 
+def channel_link(name: str, username: Optional[str]) -> str:
+    """Вернуть Markdown-ссылку на канал вида [Название](https://t.me/username).
+
+    Если username не задан (или равен '—'), возвращает просто название.
+    """
+    if not username or username in ("—", ""):
+        return name
+    safe_name = name.replace("]", "\\]")
+    return f"[{safe_name}](https://t.me/{username})"
+
+
 def format_channel_stats_for_group(channel, order_id: Optional[int] = None) -> str:
     """Форматировать карточку статистики канала для чата менеджеров.
 
     Формат:
-        📣 Название канала 👥 6,991
+        📣 [Название канала](https://t.me/username) 👥 6,991
         👁 24ч: 403 | 48ч: 545 | 72ч: 564
         📈 ER24: 6.22%
     """
     name = channel.name or "Канал"
+    username = getattr(channel, "username", None)
     subscribers = channel.subscribers or 0
     reach_24h = channel.avg_reach_24h or 0
     reach_48h = channel.avg_reach_48h or 0
     reach_72h = channel.avg_reach_72h or 0
     err24 = float(channel.err24_percent or channel.err_percent or 0)
 
-    text = f"📣 {name} 👥 {subscribers:,}\n"
+    text = f"📣 {channel_link(name, username)} 👥 {subscribers:,}\n"
     text += f"👁 24ч: {reach_24h:,} | 48ч: {reach_48h:,} | 72ч: {reach_72h:,}\n"
     text += f"📈 ER24: {err24:.2f}%"
 

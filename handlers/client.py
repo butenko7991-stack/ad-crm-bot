@@ -16,7 +16,7 @@ from sqlalchemy import select
 from config import CHANNEL_CATEGORIES, ADMIN_IDS, LOYALTY_DISCOUNTS
 from database import async_session_maker, Channel, Slot, Client, Order, Manager, PromoCode
 from keyboards import get_channels_keyboard, get_dates_keyboard, get_calendar_keyboard, get_times_keyboard, get_format_keyboard
-from utils import BookingStates
+from utils import BookingStates, channel_link
 
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ async def select_channel(callback: CallbackQuery, state: FSMContext):
             # Сохраняем данные канала
             ch_data = {
                 "name": channel.name,
+                "username": channel.username,
                 "category": channel.category,
                 "subscribers": channel.subscribers or 0,
                 "avg_reach": channel.avg_reach_24h or channel.avg_reach or 0,
@@ -96,9 +97,10 @@ async def select_channel(callback: CallbackQuery, state: FSMContext):
         
         category_info = CHANNEL_CATEGORIES.get(ch_data["category"], {"name": "📁 Другое"})
         prices = ch_data["prices"]
+        ch_title = channel_link(ch_data["name"], ch_data["username"])
         
         text = (
-            f"📢 **{ch_data['name']}**\n"
+            f"📢 **{ch_title}**\n"
             f"{category_info['name']}\n\n"
             f"👥 Подписчиков: **{ch_data['subscribers']:,}**\n"
             f"👁 Охват: **{ch_data['avg_reach']:,}**\n\n"

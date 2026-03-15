@@ -19,7 +19,7 @@ from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABL
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY
 from services.ai_trainer import ai_trainer_service
@@ -77,7 +77,7 @@ async def get_channel_card(channel_id: int) -> tuple:
         
         ch_data = {
             "name": channel.name,
-            "username": channel.username or "—",
+            "username": channel.username,
             "subscribers": channel.subscribers or 0,
             "avg_reach": channel.avg_reach_24h or channel.avg_reach or 0,
             "category": channel.category,
@@ -88,11 +88,11 @@ async def get_channel_card(channel_id: int) -> tuple:
     
     category_info = CHANNEL_CATEGORIES.get(ch_data["category"], {"name": "📁 Другое"})
     status = "✅ Активен" if ch_data["is_active"] else "❌ Неактивен"
+    ch_title = channel_link(ch_data["name"], ch_data["username"])
     
     text = (
         f"⚙️ **Настройки канала**\n\n"
-        f"📢 **{ch_data['name']}**\n"
-        f"👤 @{ch_data['username']}\n"
+        f"📢 **{ch_title}**\n"
         f"{category_info['name']}\n"
         f"{status}\n\n"
         f"👥 Подписчиков: **{ch_data['subscribers']:,}**\n"
@@ -115,7 +115,7 @@ async def _notify_manager_group(bot: Bot, channel, order_id: int = None):
         return
     try:
         text = format_channel_stats_for_group(channel, order_id)
-        await bot.send_message(chat_id, text, parse_mode=None)
+        await bot.send_message(chat_id, text, parse_mode="Markdown")
     except Exception:
         logger.warning(
             f"Не удалось отправить статистику канала в чат менеджеров "
@@ -2405,7 +2405,7 @@ async def _render_channel_analytics_page(message, channel_id: int) -> bool:
     updated = ch["analytics_updated"].strftime("%d.%m.%Y %H:%M") if ch["analytics_updated"] else "—"
 
     text = (
-        f"📈 **Аналитика канала: {_md_escape(ch['name'])}**\n\n"
+        f"📈 **Аналитика канала: {channel_link(ch['name'], ch.get('username'))}**\n\n"
         f"👥 Подписчиков: **{ch['subscribers']:,}**\n"
         f"👁 Средний охват: **{ch['avg_reach']:,}**\n"
         f"📊 ERR: **{ch['err_percent']:.1f}%**\n"
@@ -2463,7 +2463,7 @@ async def autopost_channel_analytics(callback: CallbackQuery):
         buttons = []
         for ch in channels:
             text += (
-                f"📢 **{_md_escape(ch['name'])}**\n"
+                f"📢 **{channel_link(ch['name'], ch.get('username'))}**\n"
                 f"  👥 {ch['subscribers']:,} | 👁 охват {ch['avg_reach']:,}"
                 f" | ERR {ch['err_percent']:.1f}% | 📊 {ch['posts_count']} постов"
                 f" | 👁 {ch['total_views']:,} просм.\n"
