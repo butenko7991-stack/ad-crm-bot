@@ -1995,7 +1995,7 @@ async def autopost_analytics(callback: CallbackQuery):
             )
             return
 
-        text = f"📊 **Аналитика постов** ({len(analytics_list)})\n\n"
+        text = f"📊 **Аналитика постов** ({len(analytics_list)})\n\n➕ — нет метрик | 📊 — есть метрики\n\n"
         await safe_edit_message(
             callback.message, text,
             get_post_analytics_keyboard(analytics_list)
@@ -2022,21 +2022,27 @@ async def pa_view(callback: CallbackQuery):
                 await callback.answer("❌ Запись не найдена", show_alert=True)
                 return
             channel = await session.get(Channel, analytics.channel_id)
+            scheduled_post_id = analytics.scheduled_post_id
 
         ch_name = channel.name if channel else "—"
-        recorded = analytics.recorded_at.strftime("%d.%m.%Y %H:%M")
-        total_engage = analytics.reactions + analytics.forwards + analytics.saves + analytics.comments
-        er = round(total_engage / analytics.views * 100, 2) if analytics.views > 0 else 0
+        recorded = analytics.recorded_at.strftime("%d.%m.%Y %H:%M") if analytics.recorded_at else "—"
+        views = analytics.views or 0
+        reactions = analytics.reactions or 0
+        forwards = analytics.forwards or 0
+        saves = analytics.saves or 0
+        comments = analytics.comments or 0
+        total_engage = reactions + forwards + saves + comments
+        er = round(total_engage / views * 100, 2) if views > 0 else 0
 
         text = (
             f"📊 **Аналитика поста #{analytics_id}**\n\n"
             f"📢 Канал: {ch_name}\n"
             f"📅 Записано: {recorded}\n\n"
-            f"👁 Просмотры: **{analytics.views:,}**\n"
-            f"👍 Реакции: **{analytics.reactions:,}**\n"
-            f"↩️ Пересылки: **{analytics.forwards:,}**\n"
-            f"🔖 Сохранения: **{analytics.saves:,}**\n"
-            f"💬 Комментарии: **{analytics.comments:,}**\n"
+            f"👁 Просмотры: **{views:,}**\n"
+            f"👍 Реакции: **{reactions:,}**\n"
+            f"↩️ Пересылки: **{forwards:,}**\n"
+            f"🔖 Сохранения: **{saves:,}**\n"
+            f"💬 Комментарии: **{comments:,}**\n"
             f"📈 Engagement Rate: **{er}%**\n"
         )
         if analytics.ai_recommendation:
@@ -2044,7 +2050,11 @@ async def pa_view(callback: CallbackQuery):
 
         await safe_edit_message(
             callback.message, text,
-            get_post_analytics_actions_keyboard(analytics_id, has_ai=bool(analytics.ai_recommendation))
+            get_post_analytics_actions_keyboard(
+                analytics_id,
+                has_ai=bool(analytics.ai_recommendation),
+                scheduled_post_id=scheduled_post_id,
+            )
         )
     except Exception as e:
         logger.error(f"Error in pa_view: {traceback.format_exc()}")
@@ -2268,6 +2278,7 @@ async def pa_ai_recommend(callback: CallbackQuery):
             a_forwards = analytics.forwards or 0
             a_saves = analytics.saves or 0
             a_comments = analytics.comments or 0
+            scheduled_post_id = analytics.scheduled_post_id
             ch_name = channel.name if channel else "Канал"
             avg_views = int(channel.avg_reach or channel.avg_reach_24h or 0) if channel else 0
             cpm = float(channel.cpm or 0) if channel else 0
@@ -2304,7 +2315,11 @@ async def pa_ai_recommend(callback: CallbackQuery):
 
         await safe_edit_message(
             callback.message, text,
-            get_post_analytics_actions_keyboard(analytics_id, has_ai=bool(recommendation))
+            get_post_analytics_actions_keyboard(
+                analytics_id,
+                has_ai=bool(recommendation),
+                scheduled_post_id=scheduled_post_id,
+            )
         )
     except Exception as e:
         logger.error(f"Error in pa_ai_recommend: {traceback.format_exc()}")
@@ -2322,10 +2337,16 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
 
     try:
         async with async_session_maker() as session:
-            # Топ-5 постов по Engagement Rate
+            # Посты с любыми ненулевыми метриками (не только просмотры)
             result = await session.execute(
                 select(PostAnalytics)
-                .where(PostAnalytics.views > 0)
+                .where(
+                    (PostAnalytics.views > 0)
+                    | (PostAnalytics.reactions > 0)
+                    | (PostAnalytics.forwards > 0)
+                    | (PostAnalytics.saves > 0)
+                    | (PostAnalytics.comments > 0)
+                )
                 .order_by(PostAnalytics.recorded_at.desc())
                 .limit(10)
             )
@@ -2336,6 +2357,7 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
                 callback.message,
                 "🤖 **AI-рекомендации**\n\nЕщё нет данных для анализа.\nВнесите метрики для опубликованных постов.",
                 InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📊 Аналитика постов", callback_data="autopost_analytics")],
                     [InlineKeyboardButton(text="✅ Опубликованные посты", callback_data="autopost_posted")],
                     [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
                 ])
@@ -2345,8 +2367,9 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         # Рассчитываем ER для каждого поста
         ranked = []
         for a in analytics_list:
-            total_engage = a.reactions + a.forwards + a.saves + a.comments
-            er = round(total_engage / a.views * 100, 2) if a.views > 0 else 0
+            views = a.views or 0
+            total_engage = (a.reactions or 0) + (a.forwards or 0) + (a.saves or 0) + (a.comments or 0)
+            er = round(total_engage / views * 100, 2) if views > 0 else 0
             ranked.append((a, er))
         ranked.sort(key=lambda x: x[1], reverse=True)
 
@@ -2354,7 +2377,8 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         buttons = []
         for i, (a, er) in enumerate(ranked[:5], 1):
             has_rec = "✅" if a.ai_recommendation else "💡"
-            text += f"{i}. #{a.id} — 👁{a.views:,} | ER: {er}% {has_rec}\n"
+            views = a.views or 0
+            text += f"{i}. #{a.id} — 👁{views:,} | ER: {er}% {has_rec}\n"
             buttons.append([InlineKeyboardButton(
                 text=f"#{a.id} — ER {er}% {'(есть рек.)' if a.ai_recommendation else '→ получить'}",
                 callback_data=f"pa_ai:{a.id}" if not a.ai_recommendation else f"pa_view:{a.id}"

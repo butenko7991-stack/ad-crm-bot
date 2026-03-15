@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
 from database import init_db, async_session_maker
-from database.models import Slot, ScheduledPost, Channel
+from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
 from services.channel_collector import refresh_all_channels
 from services.settings import get_manager_group_chat_id
@@ -131,6 +131,19 @@ async def publish_scheduled_posts(bot: Bot):
                     post.status = "posted"
                     post.posted_at = datetime.utcnow()
                     post.message_id = sent.message_id
+
+                    # Создаём начальную запись аналитики, если её ещё нет
+                    existing_analytics = (await session.execute(
+                        select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
+                    )).scalar_one_or_none()
+                    if not existing_analytics:
+                        initial_analytics = PostAnalytics(
+                            scheduled_post_id=post.id,
+                            order_id=post.order_id,
+                            channel_id=post.channel_id,
+                        )
+                        session.add(initial_analytics)
+
                     await session.commit()
                     logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
 
