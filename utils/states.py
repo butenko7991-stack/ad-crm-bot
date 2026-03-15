@@ -101,6 +101,13 @@ class AdminManagerStates(StatesGroup):
     waiting_commission_rate = State()  # Ожидание ввода процента комиссии
 
 
+class AdminEditPostStates(StatesGroup):
+    """Состояния редактирования запланированного поста"""
+    editing_content = State()
+    selecting_date = State()
+    entering_time = State()
+
+
 class AdminSettingsStates(StatesGroup):
     """Состояния редактирования настроек бота"""
     waiting_manager_chat_id = State()  # Ожидание ввода ID чата менеджеров

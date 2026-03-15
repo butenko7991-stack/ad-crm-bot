@@ -20,7 +20,7 @@ from database import async_session_maker, Channel, Manager, Order, ScheduledPost
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates
-from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
@@ -3922,7 +3922,14 @@ async def adm_view_post(callback: CallbackQuery):
         else:
             title = f"⏳ **Пост #{post_id} в очереди**"
             buttons = [
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_pending")]
+                [
+                    InlineKeyboardButton(text="✏️ Изменить контент", callback_data=f"adm_post_edit_content:{post_id}"),
+                ],
+                [
+                    InlineKeyboardButton(text="📅 Изменить время", callback_data=f"adm_post_edit_time:{post_id}"),
+                    InlineKeyboardButton(text="🗑 Удалить", callback_data=f"adm_post_delete:{post_id}"),
+                ],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_pending")],
             ]
 
         text = (
@@ -3941,6 +3948,297 @@ async def adm_view_post(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_view_post: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== РЕДАКТИРОВАНИЕ / УДАЛЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА ====================
+
+@router.callback_query(F.data.startswith("adm_post_delete:"))
+async def adm_post_delete(callback: CallbackQuery, state: FSMContext):
+    """Удалить запланированный пост (отмена)"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.answer("❌ Пост не найден", show_alert=True)
+                return
+            post.status = "cancelled"
+            await session.commit()
+
+        await state.clear()
+        await safe_edit_message(
+            callback.message,
+            f"🗑 **Пост #{post_id} удалён**\n\nПост отменён и больше не будет опубликован.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К списку постов", callback_data="autopost_pending")]
+            ])
+        )
+    except Exception:
+        logger.error(f"Error in adm_post_delete: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_post_edit_content:"))
+async def adm_post_edit_content_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование контента запланированного поста"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+        await state.update_data(edit_post_id=post_id)
+
+        await safe_edit_message(
+            callback.message,
+            f"✏️ **Редактирование поста #{post_id}**\n\n"
+            f"Отправьте новый контент поста\n"
+            f"(текст, или текст с фото/видео/документом):",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_post:{post_id}")]
+            ])
+        )
+        await state.set_state(AdminEditPostStates.editing_content)
+    except Exception:
+        logger.error(f"Error in adm_post_edit_content_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminEditPostStates.editing_content)
+async def adm_post_edit_content_receive(message: Message, state: FSMContext):
+    """Получить новый контент и сохранить в БД"""
+    content_text = message.text or message.caption or ""
+    file_id = None
+    file_type = None
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "video"
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+
+    if not content_text and not file_id:
+        await message.answer(
+            "❌ Отправьте текст или медиафайл (фото/видео/документ).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="autopost_pending")]
+            ])
+        )
+        return
+
+    data = await state.get_data()
+    post_id = data.get("edit_post_id")
+
+    try:
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await message.answer("❌ Пост не найден.")
+                await state.clear()
+                return
+            post.content = content_text or None
+            post.file_id = file_id
+            post.file_type = file_type
+            await session.commit()
+
+        await state.clear()
+        await message.answer(
+            f"✅ **Контент поста #{post_id} обновлён!**",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К посту", callback_data=f"adm_post:{post_id}")],
+                [InlineKeyboardButton(text="◀️ К списку постов", callback_data="autopost_pending")],
+            ]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception:
+        logger.error(f"Error in adm_post_edit_content_receive: {traceback.format_exc()}")
+        await message.answer("❌ Ошибка при сохранении. Попробуйте снова.")
+
+
+@router.callback_query(F.data.startswith("adm_post_edit_time:"))
+async def adm_post_edit_time_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование времени публикации — показываем календарь"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+        await state.update_data(edit_post_id=post_id)
+
+        today = date_type.today()
+        await safe_edit_message(
+            callback.message,
+            f"📅 **Изменение времени поста #{post_id}**\n\nВыберите новую дату публикации:",
+            get_free_calendar_keyboard(
+                today.year, today.month,
+                back_cb=f"adm_post:{post_id}",
+                date_cb_prefix="edit_post_cal_date",
+                nav_cb_prefix="edit_post_cal_nav",
+            )
+        )
+        await state.set_state(AdminEditPostStates.selecting_date)
+    except Exception:
+        logger.error(f"Error in adm_post_edit_time_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("edit_post_cal_nav:"), AdminEditPostStates.selecting_date)
+async def edit_post_cal_nav(callback: CallbackQuery, state: FSMContext):
+    """Навигация по месяцам в календаре редактирования"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        _, year_str, month_str = callback.data.split(":")
+        year, month = int(year_str), int(month_str)
+        data = await state.get_data()
+        post_id = data.get("edit_post_id")
+
+        await safe_edit_message(
+            callback.message,
+            f"📅 **Изменение времени поста #{post_id}**\n\nВыберите новую дату публикации:",
+            get_free_calendar_keyboard(
+                year, month,
+                back_cb=f"adm_post:{post_id}",
+                date_cb_prefix="edit_post_cal_date",
+                nav_cb_prefix="edit_post_cal_nav",
+            )
+        )
+    except Exception:
+        logger.error(f"Error in edit_post_cal_nav: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("edit_post_cal_date:"), AdminEditPostStates.selecting_date)
+async def edit_post_cal_date(callback: CallbackQuery, state: FSMContext):
+    """Дата выбрана — показываем выбор времени"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        date_iso = callback.data.split(":", 1)[1]
+        selected_date = date_type.fromisoformat(date_iso)
+        data = await state.get_data()
+        post_id = data.get("edit_post_id")
+
+        await state.update_data(edit_post_selected_date=date_iso)
+
+        await safe_edit_message(
+            callback.message,
+            f"📅 **Изменение времени поста #{post_id}**\n\n"
+            f"📅 Дата: **{selected_date.strftime('%d.%m.%Y')}**\n\n"
+            f"Выберите новое время публикации:",
+            get_time_picker_keyboard(date_iso, back_cb="edit_post_cal_back", time_cb_prefix="edit_post_time")
+        )
+        await state.set_state(AdminEditPostStates.entering_time)
+    except Exception:
+        logger.error(f"Error in edit_post_cal_date: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "edit_post_cal_back", AdminEditPostStates.entering_time)
+async def edit_post_cal_back(callback: CallbackQuery, state: FSMContext):
+    """Вернуться из выбора времени обратно к календарю"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        data = await state.get_data()
+        post_id = data.get("edit_post_id")
+        date_iso = data.get("edit_post_selected_date", "")
+        if date_iso:
+            d = date_type.fromisoformat(date_iso)
+            year, month = d.year, d.month
+        else:
+            today = date_type.today()
+            year, month = today.year, today.month
+
+        await safe_edit_message(
+            callback.message,
+            f"📅 **Изменение времени поста #{post_id}**\n\nВыберите новую дату публикации:",
+            get_free_calendar_keyboard(
+                year, month,
+                back_cb=f"adm_post:{post_id}",
+                date_cb_prefix="edit_post_cal_date",
+                nav_cb_prefix="edit_post_cal_nav",
+            )
+        )
+        await state.set_state(AdminEditPostStates.selecting_date)
+    except Exception:
+        logger.error(f"Error in edit_post_cal_back: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("edit_post_time:"), AdminEditPostStates.entering_time)
+async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
+    """Время выбрано — сохраняем новое расписание в БД"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        parts = callback.data.split(":")  # edit_post_time:YYYY-MM-DD:HHMM
+        date_iso = parts[1]
+        cb_time = parts[2]  # e.g. "1400"
+        time_str = f"{cb_time[:2]}:{cb_time[2:]}"  # "14:00"
+        scheduled_time_msk = datetime.fromisoformat(f"{date_iso}T{time_str}")
+        scheduled_time_utc = scheduled_time_msk - LOCAL_TZ_OFFSET
+
+        if scheduled_time_utc < datetime.utcnow():
+            await callback.answer("❌ Выбранное время уже прошло. Выберите другое.", show_alert=True)
+            return
+
+        data = await state.get_data()
+        post_id = data.get("edit_post_id")
+
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.answer("❌ Пост не найден", show_alert=True)
+                await state.clear()
+                return
+            post.scheduled_time = scheduled_time_utc
+            await session.commit()
+
+        await state.clear()
+        await safe_edit_message(
+            callback.message,
+            f"✅ **Время публикации поста #{post_id} обновлено!**\n\n"
+            f"📅 Новое время: **{scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}**",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К посту", callback_data=f"adm_post:{post_id}")],
+                [InlineKeyboardButton(text="◀️ К списку постов", callback_data="autopost_pending")],
+            ])
+        )
+    except Exception:
+        logger.error(f"Error in edit_post_select_time: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
