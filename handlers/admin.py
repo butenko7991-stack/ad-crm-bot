@@ -14,7 +14,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
-from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL, OWNER_ID
+from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
@@ -2726,46 +2726,6 @@ async def autopost_create_content(message: Message, state: FSMContext):
         sched_str = scheduled_time_iso
 
     delete_str = "не удалять" if delete_hours == 0 else f"через {delete_hours}ч"
-
-    # Владелец не требует подтверждения — пост создаётся сразу
-    if OWNER_ID and message.from_user.id == OWNER_ID:
-        try:
-            scheduled_time = datetime.fromisoformat(scheduled_time_iso)
-
-            async with async_session_maker() as session:
-                post = ScheduledPost(
-                    channel_id=data["create_channel_id"],
-                    content=data.get("create_content") or None,
-                    file_id=data.get("create_file_id"),
-                    file_type=data.get("create_file_type"),
-                    scheduled_time=scheduled_time,
-                    delete_after_hours=delete_hours,
-                    status="pending",
-                    created_by=message.from_user.id
-                )
-                session.add(post)
-                await session.commit()
-                post_id = post.id
-
-            await state.clear()
-
-            await message.answer(
-                f"✅ **Пост #{post_id} создан!**\n\n"
-                f"📢 Канал: **{channel_name}**\n"
-                f"📅 Публикация: **{(scheduled_time + LOCAL_TZ_OFFSET).strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}**\n"
-                f"🗑 Удаление: **{delete_str}**\n\n"
-                f"Пост поставлен в очередь автопостинга.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📋 Запланированные", callback_data="autopost_pending")],
-                    [InlineKeyboardButton(text="◀️ Автопостинг", callback_data="adm_autoposting")]
-                ]),
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception as e:
-            await state.clear()
-            logger.error(f"Error in autopost_create_content (owner, user_id={message.from_user.id}): {traceback.format_exc()}")
-            await message.answer(f"❌ Ошибка при создании поста:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
-        return
 
     preview = (
         f"📋 **Подтверждение создания поста**\n\n"

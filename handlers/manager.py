@@ -13,7 +13,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
 
-from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL
+from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL, OWNER_ID
 from database import async_session_maker, Manager, Order, Client, Channel, ManagerPayout, Slot, ScheduledPost
 from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu, get_calendar_keyboard, get_timezone_keyboard
 from utils import ManagerStates, ManagerPostStates, ManagerRegisterStates, ManagerSettingsStates
@@ -1257,6 +1257,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
             slot_dt = datetime.combine(date.fromisoformat(selected_date_str), slot.slot_time)
             scheduled_time = slot_dt - LOCAL_TZ_OFFSET  # UTC
 
+            is_owner = bool(OWNER_ID and callback.from_user.id == OWNER_ID)
             post = ScheduledPost(
                 channel_id=channel_id,
                 content=data.get("mgr_ad_content", ""),
@@ -1266,7 +1267,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                 delete_after_hours=FORMAT_DELETE_HOURS.get(
                     data.get("mgr_format_type", "1/24"), 24
                 ),
-                status="moderation",
+                status="pending" if is_owner else "moderation",
                 created_by=callback.from_user.id
             )
             session.add(post)
@@ -1279,32 +1280,43 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
         mgr_tz_offset, mgr_tz_label = _manager_tz(manager)
         scheduled_local = scheduled_time + mgr_tz_offset
 
-        await callback.message.edit_text(
-            f"✅ **Пост #{post_id} отправлен на модерацию!**\n\n"
-            f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
-            f"Администратор рассмотрит его в ближайшее время.\n"
-            f"После одобрения пост будет автоматически опубликован в указанное время.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")]
-            ]),
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if is_owner:
+            await callback.message.edit_text(
+                f"✅ **Пост #{post_id} поставлен в очередь!**\n\n"
+                f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
+                f"Пост будет автоматически опубликован в указанное время.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")]
+                ]),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await callback.message.edit_text(
+                f"✅ **Пост #{post_id} отправлен на модерацию!**\n\n"
+                f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
+                f"Администратор рассмотрит его в ближайшее время.\n"
+                f"После одобрения пост будет автоматически опубликован в указанное время.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")]
+                ]),
+                parse_mode=ParseMode.MARKDOWN
+            )
 
-        # Уведомляем администраторов (время в timezone бота)
-        scheduled_admin = scheduled_time + LOCAL_TZ_OFFSET
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    admin_id,
-                    f"📝 **Новый пост на модерацию #{post_id}**\n\n"
-                    f"От менеджера: {callback.from_user.first_name or callback.from_user.username}\n"
-                    f"📢 Канал ID: {channel_id}\n"
-                    f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}\n\n"
-                    f"Проверьте в разделе 📝 Модерация.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            except Exception:
-                logger.warning(f"Could not notify admin {admin_id} about new post #{post_id}", exc_info=True)
+            # Уведомляем администраторов (время в timezone бота)
+            scheduled_admin = scheduled_time + LOCAL_TZ_OFFSET
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"📝 **Новый пост на модерацию #{post_id}**\n\n"
+                        f"От менеджера: {callback.from_user.first_name or callback.from_user.username}\n"
+                        f"📢 Канал ID: {channel_id}\n"
+                        f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}\n\n"
+                        f"Проверьте в разделе 📝 Модерация.",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception:
+                    logger.warning(f"Could not notify admin {admin_id} about new post #{post_id}", exc_info=True)
 
     except Exception as e:
         logger.error(f"Error in mgr_post_confirm: {traceback.format_exc()}")
