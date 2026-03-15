@@ -3775,8 +3775,23 @@ async def adm_view_post(callback: CallbackQuery):
         channel_name = channel.name if channel else "—"
         scheduled_time = (post.scheduled_time + LOCAL_TZ_OFFSET).strftime("%d.%m.%Y %H:%M") + f" {LOCAL_TZ_LABEL}" if post.scheduled_time else "—"
 
+        if post.status == "moderation":
+            title = f"📄 **Пост #{post_id} на модерации**"
+            buttons = [
+                [
+                    InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_post_approve:{post_id}"),
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_post_reject:{post_id}")
+                ],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_moderation")]
+            ]
+        else:
+            title = f"⏳ **Пост #{post_id} в очереди**"
+            buttons = [
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_pending")]
+            ]
+
         text = (
-            f"📄 **Пост #{post_id} на модерации**\n\n"
+            f"{title}\n\n"
             f"📢 Канал: {channel_name}\n"
             f"📅 Время: {scheduled_time}\n"
             f"🗑 Удалить через: {post.delete_after_hours}ч\n\n"
@@ -3787,14 +3802,6 @@ async def adm_view_post(callback: CallbackQuery):
 
         if post.file_type:
             text += f"\n📎 Медиа: {post.file_type}\n"
-
-        buttons = [
-            [
-                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_post_approve:{post_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_post_reject:{post_id}")
-            ],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_moderation")]
-        ]
 
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
