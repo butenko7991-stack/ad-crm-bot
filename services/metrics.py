@@ -156,6 +156,7 @@ async def get_channel_metrics() -> Optional[dict]:
                     func.sum(Order.final_price).label("rev"),
                     func.count(Order.id).label("cnt"),
                 )
+                .select_from(Order)
                 .join(Slot, Order.slot_id == Slot.id)
                 .join(Channel, Slot.channel_id == Channel.id)
                 .where(Order.status == "payment_confirmed")
@@ -202,7 +203,7 @@ async def get_channel_metrics() -> Optional[dict]:
             )).scalar() or 0
 
         return {
-            "top_by_revenue": [(r.name, float(r.rev), r.cnt) for r in top_by_revenue],
+            "top_by_revenue": [(r.name, float(r.rev or 0), r.cnt) for r in top_by_revenue],
             "avg_cpm": avg_cpm,
             "avg_err": avg_err,
             "avg_reach": round(avg_reach),
@@ -380,15 +381,15 @@ async def get_format_metrics() -> Optional[dict]:
             )).all()
 
             total_orders = sum(r.cnt for r in rows)
-            total_revenue = sum(float(r.rev) for r in rows)
+            total_revenue = sum(float(r.rev or 0) for r in rows)
 
         formats = [
             {
                 "type": r.format_type or "—",
                 "orders": r.cnt,
-                "revenue": float(r.rev),
+                "revenue": float(r.rev or 0),
                 "order_share": round(r.cnt / total_orders * 100, 1) if total_orders > 0 else 0,
-                "revenue_share": round(float(r.rev) / total_revenue * 100, 1) if total_revenue > 0 else 0,
+                "revenue_share": round(float(r.rev or 0) / total_revenue * 100, 1) if total_revenue > 0 else 0,
             }
             for r in rows
         ]

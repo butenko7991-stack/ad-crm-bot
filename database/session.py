@@ -51,6 +51,7 @@ async def init_db():
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ad_content TEXT",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ad_file_id VARCHAR(500)",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ad_file_type VARCHAR(20)",
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS format_type VARCHAR(20) DEFAULT '1/24'",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50)",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_screenshot VARCHAR(500)",
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP",

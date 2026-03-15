@@ -2412,7 +2412,7 @@ async def autopost_create_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("autopost_create_ch:"), AdminCreatePostStates.selecting_channel)
+@router.callback_query(F.data.startswith("autopost_create_ch:"))
 async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
     """Шаг 2 — выбор даты публикации через календарь"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
@@ -2796,6 +2796,7 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
             f"🗑 Удаление: **{delete_str}**\n\n"
             f"Пост поставлен в очередь автопостинга.",
             InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Ещё пост для этого канала", callback_data=f"autopost_create_ch:{data['create_channel_id']}")],
                 [InlineKeyboardButton(text="📋 Запланированные", callback_data="autopost_pending")],
                 [InlineKeyboardButton(text="◀️ Автопостинг", callback_data="adm_autoposting")]
             ])
