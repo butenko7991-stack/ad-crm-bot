@@ -15,6 +15,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localho
 ADMIN_IDS: List[int] = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
+# Владелец бота — не требует подтверждения при автопостинге
+_owner_id_raw = os.getenv("OWNER_ID", "")
+OWNER_ID: Optional[int] = int(_owner_id_raw) if _owner_id_raw.strip().lstrip("-").isdigit() else None
+
 # Чат менеджеров — ID группы/канала, куда бот отправляет статистику при продаже
 # Установите переменную окружения MANAGER_GROUP_CHAT_ID (отрицательный ID для групп, например -1001234567890)
 MANAGER_GROUP_CHAT_ID: Optional[int] = int(os.getenv("MANAGER_GROUP_CHAT_ID", "0")) or None
