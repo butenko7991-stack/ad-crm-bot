@@ -181,7 +181,7 @@ async def record_post_views(
 
 async def refresh_all_channels(bot: Bot) -> int:
     """
-    Обновить количество подписчиков для всех активных каналов.
+    Обновить подписчиков и пересчитать ERR/охват для всех активных каналов.
 
     Используется планировщиком для периодического обновления.
     Возвращает количество успешно обновлённых каналов.
@@ -197,8 +197,10 @@ async def refresh_all_channels(bot: Bot) -> int:
             count = await refresh_channel_subscribers(bot, channel)
             if count is not None:
                 updated += 1
+            # Пересчитываем avg_reach и ERR из накопленных PostAnalytics
+            await update_channel_reach_from_analytics(channel.id)
 
-        logger.info(f"Плановое обновление подписчиков: {updated}/{len(channels)} каналов")
+        logger.info(f"Плановое обновление каналов: {updated}/{len(channels)} обновлено")
     except Exception as e:
         logger.error(f"Ошибка refresh_all_channels: {e}")
     return updated

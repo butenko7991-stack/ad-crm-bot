@@ -2391,6 +2391,142 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
+# ==================== АНАЛИТИКА КАНАЛОВ ====================
+
+async def _render_channel_analytics_page(message, channel_id: int) -> bool:
+    """Построить и отобразить страницу аналитики канала. Возвращает False при ошибке."""
+    from services.metrics import get_channel_analytics_detail
+
+    data = await get_channel_analytics_detail(channel_id)
+    if not data:
+        return False
+
+    ch = data["channel"]
+    updated = ch["analytics_updated"].strftime("%d.%m.%Y %H:%M") if ch["analytics_updated"] else "—"
+
+    text = (
+        f"📈 **Аналитика канала: {_md_escape(ch['name'])}**\n\n"
+        f"👥 Подписчиков: **{ch['subscribers']:,}**\n"
+        f"👁 Средний охват: **{ch['avg_reach']:,}**\n"
+        f"📊 ERR: **{ch['err_percent']:.1f}%**\n"
+        f"🔄 Обновлено: {updated}\n\n"
+        f"📝 Постов отслежено: **{data['posts_count']}** "
+        f"(с просмотрами: {data['posts_with_views']})\n"
+        f"👁 Суммарно просмотров: **{data['total_views']:,}**\n"
+        f"📈 Среднее просмотров/пост: **{data['avg_views']:,}**\n"
+        f"⚡ Средний ER: **{data['avg_er']}%**\n"
+    )
+    if data["recent_posts"]:
+        text += "\n🕐 **Последние посты с просмотрами:**\n"
+        for p in data["recent_posts"]:
+            dt = p["recorded_at"].strftime("%d.%m %H:%M") if p["recorded_at"] else "—"
+            text += f"  #{p['id']}: 👁{p['views']:,} 👍{p['reactions']} ↩️{p['forwards']} ER:{p['er']}% ({dt})\n"
+    else:
+        text += "\n_Просмотры постов ещё не собраны._\n"
+
+    buttons = [
+        [InlineKeyboardButton(
+            text="🔄 Обновить данные",
+            callback_data=f"ch_analytics_refresh:{channel_id}"
+        )],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_channel_analytics")],
+    ]
+    await safe_edit_message(message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    return True
+
+
+@router.callback_query(F.data == "autopost_channel_analytics")
+async def autopost_channel_analytics(callback: CallbackQuery):
+    """Список каналов с краткой аналитикой"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        from services.metrics import get_channels_analytics_summary
+
+        channels = await get_channels_analytics_summary()
+
+        if not channels:
+            await safe_edit_message(
+                callback.message,
+                "📈 **Аналитика каналов**\n\nАктивных каналов нет. Добавьте каналы в разделе «Каналы».",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
+        text = "📈 **Аналитика каналов**\n\n"
+        buttons = []
+        for ch in channels:
+            text += (
+                f"📢 **{_md_escape(ch['name'])}**\n"
+                f"  👥 {ch['subscribers']:,} | 👁 охват {ch['avg_reach']:,}"
+                f" | ERR {ch['err_percent']:.1f}% | 📊 {ch['posts_count']} постов"
+                f" | 👁 {ch['total_views']:,} просм.\n"
+            )
+            buttons.append([InlineKeyboardButton(
+                text=f"📈 {ch['name']} ({ch['posts_count']}📊)",
+                callback_data=f"ch_analytics:{ch['id']}"
+            )])
+
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")])
+        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        logger.error(f"Error in autopost_channel_analytics: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("ch_analytics:"))
+async def ch_analytics_detail(callback: CallbackQuery):
+    """Детальная аналитика одного канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        channel_id = int(callback.data.split(":")[1])
+        ok = await _render_channel_analytics_page(callback.message, channel_id)
+        if not ok:
+            await callback.answer("❌ Канал не найден", show_alert=True)
+    except Exception as e:
+        logger.error(f"Error in ch_analytics_detail: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("ch_analytics_refresh:"))
+async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
+    """Обновить статистику канала и вернуть страницу аналитики"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer("🔄 Обновляю данные…")
+
+    try:
+        channel_id = int(callback.data.split(":")[1])
+
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.answer("❌ Канал не найден", show_alert=True)
+                return
+
+        from services.channel_collector import refresh_channel_subscribers, update_channel_reach_from_analytics
+        await refresh_channel_subscribers(bot, channel)
+        await update_channel_reach_from_analytics(channel_id)
+
+        await _render_channel_analytics_page(callback.message, channel_id)
+    except Exception as e:
+        logger.error(f"Error in ch_analytics_refresh: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
 # ==================== СОЗДАНИЕ ПОСТА (АВТОПОСТИНГ) ====================
 
 @router.callback_query(F.data == "autopost_create")

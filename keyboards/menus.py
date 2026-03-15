@@ -196,6 +196,7 @@ def get_channel_settings_keyboard(channel_id: int, is_active: bool) -> InlineKey
     """Клавиатура настроек канала"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"adm_ch_update:{channel_id}")],
+        [InlineKeyboardButton(text="📈 Аналитика канала", callback_data=f"ch_analytics:{channel_id}")],
         [InlineKeyboardButton(text="💰 Изменить цены", callback_data=f"adm_ch_prices:{channel_id}")],
         [InlineKeyboardButton(text="📅 Слоты", callback_data=f"adm_ch_slots:{channel_id}")],
         [InlineKeyboardButton(
@@ -542,6 +543,7 @@ def get_autoposting_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📊 Аналитика постов", callback_data="autopost_analytics"),
             InlineKeyboardButton(text="🤖 AI-рекомендации", callback_data="autopost_ai_recommend"),
         ],
+        [InlineKeyboardButton(text="📈 Аналитика каналов", callback_data="autopost_channel_analytics")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
     ])
 
