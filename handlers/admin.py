@@ -168,8 +168,9 @@ async def admin_logout(callback: CallbackQuery):
 # ==================== АДМИН-ПАНЕЛЬ ====================
 
 @router.callback_query(F.data == "adm_back")
-async def adm_back(callback: CallbackQuery):
+async def adm_back(callback: CallbackQuery, state: FSMContext):
     """Назад в админ-панель"""
+    await state.clear()
     await callback.answer()
     await safe_edit_message(
         callback.message,
@@ -1765,12 +1766,13 @@ async def adm_cpm_receive_value(message: Message, state: FSMContext):
 # ==================== АВТОПОСТИНГ ====================
 
 @router.callback_query(F.data == "adm_autoposting")
-async def adm_autoposting(callback: CallbackQuery):
+async def adm_autoposting(callback: CallbackQuery, state: FSMContext):
     """Раздел Автопостинг"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
 
+    await state.clear()
     await callback.answer()
 
     try:

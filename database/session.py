@@ -67,6 +67,12 @@ async def init_db():
             "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS scheduled_time TIMESTAMP",
             "UPDATE scheduled_posts SET scheduled_time = scheduled_at WHERE scheduled_time IS NULL AND scheduled_at IS NOT NULL",
             "ALTER TABLE scheduled_posts ALTER COLUMN scheduled_at DROP NOT NULL",
+            # Миграции для scheduled_posts (добавлены позже)
+            "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS inline_buttons TEXT",
+            "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS delete_after_hours INTEGER DEFAULT 24",
+            "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS message_id BIGINT",
+            "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+            "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS created_by BIGINT",
             # Миграции для post_analytics (добавлены позже)
             "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS saves INTEGER DEFAULT 0",
             "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS comments INTEGER DEFAULT 0",
