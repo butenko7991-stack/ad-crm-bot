@@ -312,6 +312,7 @@ def get_free_calendar_keyboard(
     back_cb: str = "adm_autoposting",
     date_cb_prefix: str = "autopost_cal_date",
     nav_cb_prefix: str = "autopost_cal_nav",
+    publish_now_cb: Optional[str] = None,
 ) -> InlineKeyboardMarkup:
     """Свободный календарь для выбора даты публикации (без привязки к слотам).
 
@@ -373,7 +374,11 @@ def get_free_calendar_keyboard(
                     ))
         buttons.append(row)
 
-    # ── Кнопка «Назад» ────────────────────────────────────────────────
+    # ── Кнопка «Опубликовать сейчас» (опциональная) ───────────────────
+    if publish_now_cb:
+        buttons.append([InlineKeyboardButton(text="📤 Опубликовать сейчас", callback_data=publish_now_cb)])
+
+    # ── Кнопка «Назад» (get_free_calendar_keyboard) ───────────────────
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb)])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)

@@ -2440,7 +2440,7 @@ async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
             f"➕ **Создание поста**\n\n"
             f"📢 Канал: **{channel_name}**\n\n"
             f"Шаг 2/4 — Выберите дату публикации:",
-            get_free_calendar_keyboard(today.year, today.month)
+            get_free_calendar_keyboard(today.year, today.month, publish_now_cb="autopost_publish_now")
         )
         await state.set_state(AdminCreatePostStates.selecting_date)
     except Exception as e:
@@ -2468,7 +2468,7 @@ async def autopost_cal_nav(callback: CallbackQuery, state: FSMContext):
             f"➕ **Создание поста**\n\n"
             f"📢 Канал: **{channel_name}**\n\n"
             f"Шаг 2/4 — Выберите дату публикации:",
-            get_free_calendar_keyboard(year, month)
+            get_free_calendar_keyboard(year, month, publish_now_cb="autopost_publish_now")
         )
     except Exception:
         logger.error(f"Error in autopost_cal_nav: {traceback.format_exc()}")
@@ -2531,11 +2531,48 @@ async def autopost_cal_back(callback: CallbackQuery, state: FSMContext):
             f"➕ **Создание поста**\n\n"
             f"📢 Канал: **{channel_name}**\n\n"
             f"Шаг 2/4 — Выберите дату публикации:",
-            get_free_calendar_keyboard(year, month)
+            get_free_calendar_keyboard(year, month, publish_now_cb="autopost_publish_now")
         )
         await state.set_state(AdminCreatePostStates.selecting_date)
     except Exception:
         logger.error(f"Error in autopost_cal_back: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "autopost_publish_now", AdminCreatePostStates.selecting_date)
+async def autopost_publish_now(callback: CallbackQuery, state: FSMContext):
+    """Опубликовать пост немедленно — пропускаем выбор даты/времени"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        # Сохраняем текущее UTC-время как время публикации
+        now_utc = datetime.utcnow()
+        await state.update_data(create_scheduled_time=now_utc.isoformat())
+
+        data = await state.get_data()
+        channel_name = data.get("create_channel_name", "—")
+
+        await safe_edit_message(
+            callback.message,
+            f"📤 **Публикация сейчас**\n\n"
+            f"📢 Канал: **{channel_name}**\n\n"
+            f"Шаг 3/4 — Через сколько часов удалить пост?",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="24ч", callback_data="autopost_del:24"),
+                    InlineKeyboardButton(text="48ч", callback_data="autopost_del:48"),
+                    InlineKeyboardButton(text="Не удалять", callback_data="autopost_del:0"),
+                ],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
+            ])
+        )
+        await state.set_state(AdminCreatePostStates.entering_delete_hours)
+    except Exception:
+        logger.error(f"Error in autopost_publish_now: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
