@@ -1257,7 +1257,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
             slot_dt = datetime.combine(date.fromisoformat(selected_date_str), slot.slot_time)
             scheduled_time = slot_dt - LOCAL_TZ_OFFSET  # UTC
 
-            is_owner = OWNER_ID and callback.from_user.id == OWNER_ID
+            is_owner = OWNER_ID is not None and callback.from_user.id == OWNER_ID
             post = ScheduledPost(
                 channel_id=channel_id,
                 content=data.get("mgr_ad_content", ""),
@@ -1286,6 +1286,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                 f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
                 f"Пост будет автоматически опубликован в указанное время.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ Ещё пост для этого канала", callback_data=f"mgr_submit_post:{channel_id}")],
                     [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")]
                 ]),
                 parse_mode=ParseMode.MARKDOWN
@@ -1297,6 +1298,7 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                 f"Администратор рассмотрит его в ближайшее время.\n"
                 f"После одобрения пост будет автоматически опубликован в указанное время.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ Ещё пост для этого канала", callback_data=f"mgr_submit_post:{channel_id}")],
                     [InlineKeyboardButton(text="◀️ В кабинет", callback_data="mgr_back")]
                 ]),
                 parse_mode=ParseMode.MARKDOWN
