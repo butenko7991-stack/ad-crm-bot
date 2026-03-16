@@ -198,6 +198,7 @@ def get_channel_settings_keyboard(channel_id: int, is_active: bool) -> InlineKey
         [InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"adm_ch_update:{channel_id}")],
         [InlineKeyboardButton(text="📈 Аналитика канала", callback_data=f"ch_analytics:{channel_id}")],
         [InlineKeyboardButton(text="💰 Изменить цены", callback_data=f"adm_ch_prices:{channel_id}")],
+        [InlineKeyboardButton(text="🔗 Изменить ссылку", callback_data=f"adm_ch_set_link:{channel_id}")],
         [InlineKeyboardButton(text="📅 Слоты", callback_data=f"adm_ch_slots:{channel_id}")],
         [InlineKeyboardButton(
             text="❌ Деактивировать" if is_active else "✅ Активировать",

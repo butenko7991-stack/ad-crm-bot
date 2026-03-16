@@ -24,6 +24,7 @@ class AdminChannelStates(StatesGroup):
     waiting_manual_reach = State()
     waiting_manual_err = State()
     waiting_cpm = State()  # Ручной ввод CPM для канала
+    waiting_username = State()  # Ручной ввод username/ссылки канала
 
 
 class AdminCPMStates(StatesGroup):
