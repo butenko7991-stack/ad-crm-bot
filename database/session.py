@@ -79,6 +79,7 @@ async def init_db():
         "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS message_id BIGINT",
         "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS created_by BIGINT",
+        "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS payment_screenshot VARCHAR(500)",
         # Миграции для post_analytics (добавлены позже)
         "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS channel_id INTEGER REFERENCES channels(id) ON DELETE CASCADE",
         "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS saves INTEGER DEFAULT 0",

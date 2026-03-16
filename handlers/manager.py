@@ -19,6 +19,7 @@ from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_trainin
 from utils import ManagerStates, ManagerPostStates, ManagerRegisterStates, ManagerSettingsStates, channel_link
 from utils.helpers import escape_md
 from services import gamification_service
+from services.settings import get_setting, PAYMENT_LINK_KEY
 
 
 logger = logging.getLogger(__name__)
@@ -1434,26 +1435,58 @@ async def mgr_post_receive_content(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "mgr_post_confirm", ManagerPostStates.confirming)
 async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Создание ScheduledPost со статусом moderation"""
+    """Запрос скрина оплаты перед отправкой поста на модерацию"""
     await callback.answer()
+
+    payment_link = await get_setting(PAYMENT_LINK_KEY)
+    if payment_link:
+        safe_link = payment_link.replace("`", "'")
+        payment_info = f"\n💳 **Реквизиты для оплаты:**\n`{safe_link}`\n"
+    else:
+        payment_info = ""
+
+    await callback.message.edit_text(
+        f"💳 **Загрузите скриншот оплаты**\n{payment_info}\n"
+        "Оплатите размещение и отправьте фото или документ с подтверждением перевода.\n\n"
+        "После проверки скриншота ваш пост будет передан на модерацию.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(ManagerPostStates.uploading_payment)
+
+
+@router.message(ManagerPostStates.uploading_payment)
+async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot):
+    """Получение скриншота оплаты и создание поста на модерации"""
+    file_id = None
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document:
+        file_id = message.document.file_id
+
+    if not file_id:
+        await message.answer("❌ Отправьте фото или документ с подтверждением оплаты.")
+        return
 
     data = await state.get_data()
 
     try:
         async with async_session_maker() as session:
             result = await session.execute(
-                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+                select(Manager).where(Manager.telegram_id == message.from_user.id)
             )
             manager = result.scalar_one_or_none()
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await message.answer("❌ Вы не менеджер")
                 await state.clear()
                 return
 
             slot_id = data.get("mgr_slot_id")
             slot = await session.get(Slot, slot_id)
             if not slot or slot.status != "available":
-                await callback.message.edit_text(
+                await message.answer(
                     "❌ Выбранный слот уже недоступен. Попробуйте снова.",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]
@@ -1464,11 +1497,10 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
 
             channel_id = data.get("mgr_channel_id")
             selected_date_str = data.get("mgr_selected_date", "")
-            # slot_time is in the bot's global timezone (LOCAL_TZ_OFFSET); convert to UTC for storage
             slot_dt = datetime.combine(date.fromisoformat(selected_date_str), slot.slot_time)
             scheduled_time = slot_dt - LOCAL_TZ_OFFSET  # UTC
 
-            is_owner = OWNER_ID is not None and callback.from_user.id == OWNER_ID
+            is_owner = OWNER_ID is not None and message.from_user.id == OWNER_ID
             post = ScheduledPost(
                 channel_id=channel_id,
                 content=data.get("mgr_ad_content", ""),
@@ -1479,7 +1511,8 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                     data.get("mgr_format_type", "1/24"), 24
                 ),
                 status="pending" if is_owner else "moderation",
-                created_by=callback.from_user.id
+                created_by=message.from_user.id,
+                payment_screenshot=file_id,
             )
             session.add(post)
             await session.commit()
@@ -1487,12 +1520,11 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
 
         await state.clear()
 
-        # Показываем время в timezone менеджера
         mgr_tz_offset, mgr_tz_label = _manager_tz(manager)
         scheduled_local = scheduled_time + mgr_tz_offset
 
         if is_owner:
-            await callback.message.edit_text(
+            await message.answer(
                 f"✅ **Пост #{post_id} поставлен в очередь!**\n\n"
                 f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
                 f"Пост будет автоматически опубликован в указанное время.",
@@ -1503,10 +1535,10 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
                 parse_mode=ParseMode.MARKDOWN
             )
         else:
-            await callback.message.edit_text(
-                f"✅ **Пост #{post_id} отправлен на модерацию!**\n\n"
+            await message.answer(
+                f"✅ **Скриншот получен! Пост #{post_id} отправлен на модерацию.**\n\n"
                 f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
-                f"Администратор рассмотрит его в ближайшее время.\n"
+                f"Администратор проверит оплату и рассмотрит пост в ближайшее время.\n"
                 f"После одобрения пост будет автоматически опубликован в указанное время.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="➕ Ещё пост для этого канала", callback_data=f"mgr_submit_post:{channel_id}")],
@@ -1520,21 +1552,36 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
             channel_name_notify = data.get("mgr_channel_name") or str(channel_id)
             for admin_id in ADMIN_IDS:
                 try:
-                    await bot.send_message(
-                        admin_id,
+                    caption = (
                         f"📝 **Новый пост на модерацию #{post_id}**\n\n"
-                        f"От менеджера: {callback.from_user.first_name or callback.from_user.username}\n"
+                        f"От менеджера: {message.from_user.first_name or message.from_user.username}\n"
                         f"📢 Канал: {channel_name_notify}\n"
-                        f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}",
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="🔍 Перейти к модерации", callback_data=f"adm_post:{post_id}")]
-                        ])
+                        f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}\n\n"
+                        f"💳 Скриншот оплаты прикреплён."
                     )
+                    moderation_markup = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔍 Перейти к модерации", callback_data=f"adm_post:{post_id}")]
+                    ])
+                    if message.photo:
+                        await bot.send_photo(
+                            admin_id,
+                            file_id,
+                            caption=caption,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=moderation_markup,
+                        )
+                    else:
+                        await bot.send_document(
+                            admin_id,
+                            file_id,
+                            caption=caption,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=moderation_markup,
+                        )
                 except Exception:
                     logger.warning(f"Could not notify admin {admin_id} about new post #{post_id}", exc_info=True)
 
     except Exception as e:
-        logger.error(f"Error in mgr_post_confirm: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"Error in mgr_post_receive_payment: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка: {str(e)[:200]}")
         await state.clear()
