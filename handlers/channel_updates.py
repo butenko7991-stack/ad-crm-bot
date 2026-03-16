@@ -22,7 +22,7 @@ router = Router()
 @router.channel_post()
 async def on_channel_post(message: Message) -> None:
     """Фиксируем начальные просмотры при публикации поста."""
-    if message.views is None:
+    if getattr(message, "views", None) is None:
         return
     await _save_views(message)
 
@@ -33,7 +33,7 @@ async def on_edited_channel_post(message: Message) -> None:
     Telegram периодически присылает edited_channel_post по мере роста
     просмотров — каждый такой апдейт несёт свежее значение views.
     """
-    if message.views is None:
+    if getattr(message, "views", None) is None:
         return
     await _save_views(message)
 
@@ -42,7 +42,7 @@ async def _save_views(message: Message) -> None:
     """Извлечь просмотры/реакции из сообщения и передать коллектору."""
     channel_tg_id = message.chat.id
     message_id = message.message_id
-    views = message.views or 0
+    views = getattr(message, "views", None) or 0
 
     # Суммарные реакции (если поддерживаются версией Bot API)
     reactions = 0
