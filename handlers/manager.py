@@ -991,6 +991,75 @@ async def payout_history(callback: CallbackQuery):
         await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
 
 
+# ==================== МОИ ПОСТЫ ====================
+
+@router.callback_query(F.data == "mgr_my_posts")
+async def mgr_my_posts(callback: CallbackQuery):
+    """Показать посты, поданные менеджером"""
+    await callback.answer()
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost)
+                .where(ScheduledPost.created_by == callback.from_user.id)
+                .order_by(ScheduledPost.created_at.desc())
+                .limit(15)
+            )
+            posts = result.scalars().all()
+
+            manager_result = await session.execute(
+                select(Manager).where(Manager.telegram_id == callback.from_user.id)
+            )
+            manager = manager_result.scalar_one_or_none()
+            if not manager:
+                await callback.message.answer("❌ Вы не менеджер")
+                return
+
+            posts_data = []
+            for post in posts:
+                channel = await session.get(Channel, post.channel_id)
+                posts_data.append({
+                    "id": post.id,
+                    "channel": channel.name if channel else "—",
+                    "status": post.status,
+                    "scheduled_time": post.scheduled_time,
+                })
+
+        mgr_tz_offset, mgr_tz_label = _manager_tz(manager)
+
+        status_labels = {
+            "moderation": "🔍 На модерации",
+            "pending": "⏳ В очереди",
+            "posted": "✅ Опубликован",
+            "rejected": "❌ Отклонён",
+            "cancelled": "🚫 Отменён",
+            "error": "⚠️ Ошибка",
+        }
+
+        if not posts_data:
+            text = "📋 **Мои посты**\n\nУ вас ещё нет поданных постов."
+        else:
+            text = f"📋 **Мои посты** ({len(posts_data)})\n\n"
+            for p in posts_data:
+                status_label = status_labels.get(p["status"], p["status"])
+                sched = (
+                    (p["scheduled_time"] + mgr_tz_offset).strftime("%d.%m %H:%M") + f" {mgr_tz_label}"
+                    if p["scheduled_time"] else "—"
+                )
+                text += f"#{p['id']} | {p['channel']} | {sched}\n{status_label}\n\n"
+
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in mgr_my_posts: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
 # ==================== ПОДАЧА ПОСТА НА МОДЕРАЦИЮ ====================
 
 @router.callback_query(F.data == "mgr_submit_post")

@@ -114,7 +114,10 @@ def get_manager_cabinet_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💰 Вывод средств", callback_data="request_payout"),
             InlineKeyboardButton(text="🏆 Рейтинг", callback_data="mgr_leaderboard")
         ],
-        [InlineKeyboardButton(text="📝 Подать пост на модерацию", callback_data="mgr_submit_post")],
+        [
+            InlineKeyboardButton(text="📝 Подать пост на модерацию", callback_data="mgr_submit_post"),
+            InlineKeyboardButton(text="📋 Мои посты", callback_data="mgr_my_posts"),
+        ],
         [
             InlineKeyboardButton(text="🔗 Моя реф-ссылка", callback_data="copy_ref_link"),
             InlineKeyboardButton(text="⚙️ Настройки", callback_data="mgr_settings"),
