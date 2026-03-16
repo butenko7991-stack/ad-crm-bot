@@ -2492,7 +2492,7 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
 
 # ==================== АНАЛИТИКА КАНАЛОВ ====================
 
-async def _render_channel_analytics_page(message, channel_id: int) -> bool:
+async def _render_channel_analytics_page(message, channel_id: int, back_callback: str = "autopost_channel_analytics") -> bool:
     """Построить и отобразить страницу аналитики канала. Возвращает False при ошибке."""
     from services.metrics import get_channel_analytics_detail
 
@@ -2503,8 +2503,13 @@ async def _render_channel_analytics_page(message, channel_id: int) -> bool:
     ch = data["channel"]
     updated = ch["analytics_updated"].strftime("%d.%m.%Y %H:%M") if ch["analytics_updated"] else "—"
 
+    # Use escaped name in heading (avoids "can't parse entities" when mixing bold with markdown links)
+    ch_name_safe = _md_escape(ch["name"])
+    ch_link = channel_link(ch["name"], ch.get("username"))
+
     text = (
-        f"📈 **Аналитика канала: {channel_link(ch['name'], ch.get('username'))}**\n\n"
+        f"📈 **Аналитика канала: {ch_name_safe}**\n"
+        f"📢 {ch_link}\n\n"
         f"👥 Подписчиков: **{ch['subscribers']:,}**\n"
         f"👁 Средний охват: **{ch['avg_reach']:,}**\n"
         f"📊 ERR: **{ch['err_percent']:.1f}%**\n"
@@ -2528,7 +2533,7 @@ async def _render_channel_analytics_page(message, channel_id: int) -> bool:
             text="🔄 Обновить данные",
             callback_data=f"ch_analytics_refresh:{channel_id}"
         )],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_channel_analytics")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=back_callback)],
     ]
     await safe_edit_message(message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     return True
@@ -2590,12 +2595,15 @@ async def ch_analytics_detail(callback: CallbackQuery):
 
     try:
         channel_id = int(callback.data.split(":")[1])
-        ok = await _render_channel_analytics_page(callback.message, channel_id)
+        ok = await _render_channel_analytics_page(
+            callback.message, channel_id,
+            back_callback=f"adm_ch:{channel_id}"
+        )
         if not ok:
-            await callback.answer("❌ Канал не найден", show_alert=True)
+            await callback.answer("❌ Не удалось загрузить аналитику", show_alert=True)
     except Exception as e:
         logger.error(f"Error in ch_analytics_detail: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.answer("❌ Ошибка при загрузке аналитики", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("ch_analytics_refresh:"))
@@ -2620,7 +2628,7 @@ async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
         await refresh_channel_subscribers(bot, channel)
         await update_channel_reach_from_analytics(channel_id)
 
-        await _render_channel_analytics_page(callback.message, channel_id)
+        await _render_channel_analytics_page(callback.message, channel_id, back_callback=f"adm_ch:{channel_id}")
     except Exception as e:
         logger.error(f"Error in ch_analytics_refresh: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
