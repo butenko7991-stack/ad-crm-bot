@@ -17,6 +17,7 @@ from config import MANAGER_LEVELS, CHANNEL_CATEGORIES, ADMIN_IDS, LOCAL_TZ_OFFSE
 from database import async_session_maker, Manager, Order, Client, Channel, ManagerPayout, Slot, ScheduledPost
 from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu, get_calendar_keyboard, get_timezone_keyboard
 from utils import ManagerStates, ManagerPostStates, ManagerRegisterStates, ManagerSettingsStates, channel_link
+from utils.helpers import escape_md
 from services import gamification_service
 
 
@@ -507,7 +508,7 @@ async def mgr_my_sales(callback: CallbackQuery):
             month_result = await session.execute(
                 select(Order)
                 .where(Order.manager_id == manager_id)
-                .where(Order.status == "confirmed")
+                .where(Order.status == "payment_confirmed")
                 .where(Order.paid_at >= month_start)
                 .order_by(Order.paid_at.desc())
             )
@@ -521,7 +522,7 @@ async def mgr_my_sales(callback: CallbackQuery):
             recent_result = await session.execute(
                 select(Order)
                 .where(Order.manager_id == manager_id)
-                .where(Order.status == "confirmed")
+                .where(Order.status == "payment_confirmed")
                 .order_by(Order.paid_at.desc())
                 .limit(5)
             )
@@ -562,7 +563,7 @@ async def mgr_my_sales(callback: CallbackQuery):
         if recent_data:
             text += f"\n💼 **Последние заказы:**\n"
             for i, o in enumerate(recent_data, 1):
-                text += f"{i}. {o['channel']} — {o['price']:,.0f}₽ ({o['format']}) — {o['date']}\n"
+                text += f"{i}. {escape_md(o['channel'])} — {o['price']:,.0f}₽ ({o['format']}) — {o['date']}\n"
         elif total_sales == 0:
             text += "\n_Пока нет продаж. Отправляйте реф-ссылку клиентам!_"
         
@@ -1047,7 +1048,7 @@ async def mgr_my_posts(callback: CallbackQuery):
                     (p["scheduled_time"] + mgr_tz_offset).strftime("%d.%m %H:%M") + f" {mgr_tz_label}"
                     if p["scheduled_time"] else "—"
                 )
-                text += f"#{p['id']} | {p['channel']} | {sched}\n{status_label}\n\n"
+                text += f"#{p['id']} | {escape_md(p['channel'])} | {sched}\n{status_label}\n\n"
 
         buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
         await callback.message.edit_text(

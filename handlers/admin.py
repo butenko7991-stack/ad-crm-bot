@@ -21,6 +21,7 @@ from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_c
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
+from utils.helpers import escape_md
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
@@ -4684,7 +4685,7 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
                 await bot.send_message(
                     creator_id,
                     f"✅ **Пост #{post_id} одобрен!**\n\n"
-                    f"📢 Канал: {channel_name}\n"
+                    f"📢 Канал: {escape_md(channel_name)}\n"
                     f"📅 Публикация: {scheduled_str}\n\n"
                     f"Пост будет опубликован автоматически в указанное время.",
                     parse_mode=ParseMode.MARKDOWN
@@ -4737,7 +4738,7 @@ async def adm_reject_post(callback: CallbackQuery, bot: Bot):
                 await bot.send_message(
                     creator_id,
                     f"❌ **Пост #{post_id} отклонён**\n\n"
-                    f"📢 Канал: {channel_name}\n\n"
+                    f"📢 Канал: {escape_md(channel_name)}\n\n"
                     f"Обратитесь к администратору за подробностями.",
                     parse_mode=ParseMode.MARKDOWN
                 )
