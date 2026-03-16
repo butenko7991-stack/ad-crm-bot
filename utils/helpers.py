@@ -127,7 +127,13 @@ def get_status_emoji(status: str) -> str:
 
 
 def escape_md(text: str) -> str:
-    """Escape special characters for Telegram's Markdown parse mode."""
+    """Escape special characters for Telegram's Markdown parse mode.
+
+    Returns an empty string for None or empty input to prevent crashes when
+    database fields are unexpectedly None.
+    """
+    if not text:
+        return ""
     for char in ("_", "*", "`", "[", "]"):
         text = text.replace(char, f"\\{char}")
     return text
@@ -146,6 +152,8 @@ def channel_link(name: str, username: Optional[str]) -> str:
     Если username не задан (или равен '—'), возвращает просто название,
     экранируя специальные символы Markdown v1.
     """
+    if not name:
+        return "—"
     if not username or username in ("—", ""):
         return escape_md(name)
     safe_name = name.replace("]", "\\]")
