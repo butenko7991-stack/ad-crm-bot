@@ -112,6 +112,7 @@ class AdminEditPostStates(StatesGroup):
 class AdminSettingsStates(StatesGroup):
     """Состояния редактирования настроек бота"""
     waiting_manager_chat_id = State()  # Ожидание ввода ID чата менеджеров
+    waiting_payment_link = State()  # Ожидание ввода платёжной ссылки / реквизитов
 
 
 class ManagerRegisterStates(StatesGroup):

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Ключи настроек ───────────────────────────────────────────────────────────
 MANAGER_GROUP_CHAT_ID_KEY = "manager_group_chat_id"
+PAYMENT_LINK_KEY = "payment_link"
 
 
 async def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
