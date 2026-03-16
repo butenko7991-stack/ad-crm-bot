@@ -19,6 +19,7 @@ from keyboards import (
     get_channels_keyboard, get_training_menu
 )
 from handlers.admin import authenticated_admins
+from handlers.manager import _build_manager_cabinet_text
 from utils import channel_link
 
 
@@ -164,15 +165,8 @@ async def cmd_manager(message: Message):
         )
         return
     
-    level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
-    
     await message.answer(
-        f"👤 **Кабинет менеджера**\n\n"
-        f"{level_info['emoji']} {manager.first_name}\n"
-        f"📊 Уровень: **{level_info['name']}**\n"
-        f"💰 Баланс: **{float(manager.balance):,.0f}₽**\n"
-        f"📦 Продаж: {manager.total_sales}\n"
-        f"💵 Выручка: {float(manager.total_revenue):,.0f}₽",
+        _build_manager_cabinet_text(manager),
         reply_markup=get_manager_cabinet_menu(),
         parse_mode=ParseMode.MARKDOWN
     )

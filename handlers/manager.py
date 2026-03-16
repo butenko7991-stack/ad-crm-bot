@@ -23,6 +23,54 @@ from services import gamification_service
 logger = logging.getLogger(__name__)
 router = Router()
 
+# XP thresholds per level: (level_start_xp, next_level_start_xp)
+_XP_LEVEL_RANGES = {
+    1: (0, 200),
+    2: (200, 800),
+    3: (800, 2000),
+    4: (2000, 5000),
+    5: (5000, None),
+}
+
+
+def _xp_progress_line(level: int, xp: int) -> str:
+    """Format XP progress line for the manager cabinet message."""
+    xp_range = _XP_LEVEL_RANGES.get(level)
+    if xp_range is None or xp_range[1] is None:
+        return f"⭐ Опыт: **{xp} XP** — максимальный уровень"
+    level_start, level_end = xp_range
+    bar_width = 10
+    progress = max(0, xp - level_start)
+    total = level_end - level_start
+    filled = min(bar_width, int(progress / total * bar_width))
+    bar = "█" * filled + "░" * (bar_width - filled)
+    next_level_info = MANAGER_LEVELS.get(level + 1, {})
+    next_name = next_level_info.get("name", "")
+    remaining = level_end - xp
+    return f"⭐ Опыт: **{xp} XP** [{bar}] → ещё {remaining} XP до **{next_name}**"
+
+
+def _build_manager_cabinet_text(manager) -> str:
+    """Build the main manager cabinet message text."""
+    level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
+    name = manager.first_name or manager.username or "Менеджер"
+    balance = float(manager.balance or 0)
+    total_sales = manager.total_sales or 0
+    total_revenue = float(manager.total_revenue or 0)
+    total_earned = float(manager.total_earned or 0)
+    xp = manager.experience_points or 0
+    commission = float(manager.commission_rate or level_info.get("commission", 10))
+    return (
+        f"👤 **Кабинет менеджера**\n\n"
+        f"{level_info['emoji']} **{name}**\n"
+        f"📊 Уровень: **{manager.level} — {level_info['name']}** | 🎓 Комиссия: **{commission:.0f}%**\n"
+        f"{_xp_progress_line(manager.level, xp)}\n\n"
+        f"💰 Баланс: **{balance:,.0f}₽**\n"
+        f"📦 Продаж: **{total_sales}** | 💵 Выручка: **{total_revenue:,.0f}₽**\n"
+        f"💸 Всего заработано: **{total_earned:,.0f}₽**"
+    )
+
+
 # Часы удаления поста по формату размещения
 FORMAT_DELETE_HOURS = {
     "1/24": 24,
@@ -249,18 +297,9 @@ async def mgr_back(callback: CallbackQuery):
             if not manager:
                 await callback.message.edit_text("❌ Вы не менеджер")
                 return
-            
-            level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
-            name = manager.first_name or "Менеджер"
-            balance = float(manager.balance or 0)
-            total_sales = manager.total_sales or 0
         
         await callback.message.edit_text(
-            f"👤 **Кабинет менеджера**\n\n"
-            f"{level_info['emoji']} {name}\n"
-            f"📊 Уровень: **{level_info['name']}**\n"
-            f"💰 Баланс: **{balance:,.0f}₽**\n"
-            f"📦 Продаж: {total_sales}",
+            _build_manager_cabinet_text(manager),
             reply_markup=get_manager_cabinet_menu(),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -414,19 +453,78 @@ async def mgr_my_sales(callback: CallbackQuery):
                 await callback.message.answer("❌ Вы не менеджер")
                 return
             
-            # Сохраняем данные
+            # Общие данные
             total_sales = manager.total_sales or 0
             total_revenue = float(manager.total_revenue or 0)
             total_earned = float(manager.total_earned or 0)
+            commission = float(manager.commission_rate or 10)
             manager_id = manager.id
-        
+
+            # Статистика за текущий месяц
+            today = datetime.utcnow()
+            month_start = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            month_result = await session.execute(
+                select(Order)
+                .where(Order.manager_id == manager_id)
+                .where(Order.status == "confirmed")
+                .where(Order.paid_at >= month_start)
+                .order_by(Order.paid_at.desc())
+            )
+            month_orders = month_result.scalars().all()
+
+            month_sales = len(month_orders)
+            month_revenue = sum(float(o.final_price or 0) for o in month_orders)
+            month_earned = month_revenue * commission / 100
+
+            # Последние 5 подтверждённых заказов
+            recent_result = await session.execute(
+                select(Order)
+                .where(Order.manager_id == manager_id)
+                .where(Order.status == "confirmed")
+                .order_by(Order.paid_at.desc())
+                .limit(5)
+            )
+            recent_orders = recent_result.scalars().all()
+
+            # Получаем названия каналов для последних заказов
+            recent_data = []
+            for order in recent_orders:
+                channel_name = "—"
+                if order.slot_id:
+                    slot = await session.get(Slot, order.slot_id)
+                    if slot and slot.channel_id:
+                        ch = await session.get(Channel, slot.channel_id)
+                        if ch:
+                            channel_name = ch.name
+                date_str = order.paid_at.strftime("%d.%m.%y") if order.paid_at else "—"
+                recent_data.append({
+                    "channel": channel_name,
+                    "price": float(order.final_price or 0),
+                    "format": order.format_type or "—",
+                    "date": date_str,
+                })
+
+        month_label = today.strftime("%m.%Y")
         text = f"📊 **Мои продажи**\n\n"
-        text += f"Всего продаж: **{total_sales}**\n"
-        text += f"Общая выручка: **{total_revenue:,.0f}₽**\n"
-        text += f"Мой заработок: **{total_earned:,.0f}₽**\n\n"
-        
-        if total_sales == 0:
-            text += "_Пока нет продаж. Отправляйте реф-ссылку клиентам!_"
+
+        text += f"📅 **За {month_label}:**\n"
+        text += f"• Продаж: **{month_sales}**\n"
+        text += f"• Выручка: **{month_revenue:,.0f}₽**\n"
+        text += f"• Заработано: **{month_earned:,.0f}₽**\n\n"
+
+        text += f"📈 **Всего:**\n"
+        text += f"• Продаж: **{total_sales}**\n"
+        text += f"• Выручка: **{total_revenue:,.0f}₽**\n"
+        text += f"• Заработано: **{total_earned:,.0f}₽**\n"
+        text += f"• Комиссия: **{commission:.0f}%**\n"
+
+        if recent_data:
+            text += f"\n💼 **Последние заказы:**\n"
+            for i, o in enumerate(recent_data, 1):
+                text += f"{i}. {o['channel']} — {o['price']:,.0f}₽ ({o['format']}) — {o['date']}\n"
+        elif total_sales == 0:
+            text += "\n_Пока нет продаж. Отправляйте реф-ссылку клиентам!_"
         
         buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
         
