@@ -4639,7 +4639,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("adm_post_approve:"))
-async def adm_approve_post(callback: CallbackQuery):
+async def adm_approve_post(callback: CallbackQuery, bot: Bot):
     """Одобрить пост"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
@@ -4655,24 +4655,49 @@ async def adm_approve_post(callback: CallbackQuery):
                 return
 
             post.status = "pending"
+            creator_id = post.created_by
+            scheduled_time = post.scheduled_time
+            channel = await session.get(Channel, post.channel_id)
+            channel_name = channel.name if channel else "—"
             await session.commit()
 
         await callback.answer("✅ Пост одобрен и поставлен в очередь!", show_alert=True)
 
-        await safe_edit_message(
-            callback.message,
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass  # Message may already be deleted or not editable
+        await callback.message.answer(
             f"✅ **Пост #{post_id} одобрен**\n\nПоставлен в очередь автопостинга.",
-            InlineKeyboardMarkup(inline_keyboard=[
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ К модерации", callback_data="adm_moderation")]
-            ])
+            ]),
+            parse_mode=ParseMode.MARKDOWN
         )
+
+        if creator_id:
+            try:
+                scheduled_str = (
+                    (scheduled_time + LOCAL_TZ_OFFSET).strftime("%d.%m.%Y %H:%M") + f" {LOCAL_TZ_LABEL}"
+                    if scheduled_time else "—"
+                )
+                await bot.send_message(
+                    creator_id,
+                    f"✅ **Пост #{post_id} одобрен!**\n\n"
+                    f"📢 Канал: {channel_name}\n"
+                    f"📅 Публикация: {scheduled_str}\n\n"
+                    f"Пост будет опубликован автоматически в указанное время.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                logger.warning(f"Could not notify creator {creator_id} about approved post #{post_id}", exc_info=True)
     except Exception as e:
         logger.error(f"Error in adm_approve_post: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("adm_post_reject:"))
-async def adm_reject_post(callback: CallbackQuery):
+async def adm_reject_post(callback: CallbackQuery, bot: Bot):
     """Отклонить пост"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
@@ -4688,17 +4713,36 @@ async def adm_reject_post(callback: CallbackQuery):
                 return
 
             post.status = "rejected"
+            creator_id = post.created_by
+            channel = await session.get(Channel, post.channel_id)
+            channel_name = channel.name if channel else "—"
             await session.commit()
 
         await callback.answer("❌ Пост отклонён", show_alert=True)
 
-        await safe_edit_message(
-            callback.message,
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass  # Message may already be deleted or not editable
+        await callback.message.answer(
             f"❌ **Пост #{post_id} отклонён**",
-            InlineKeyboardMarkup(inline_keyboard=[
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ К модерации", callback_data="adm_moderation")]
-            ])
+            ]),
+            parse_mode=ParseMode.MARKDOWN
         )
+
+        if creator_id:
+            try:
+                await bot.send_message(
+                    creator_id,
+                    f"❌ **Пост #{post_id} отклонён**\n\n"
+                    f"📢 Канал: {channel_name}\n\n"
+                    f"Обратитесь к администратору за подробностями.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                logger.warning(f"Could not notify creator {creator_id} about rejected post #{post_id}", exc_info=True)
     except Exception as e:
         logger.error(f"Error in adm_reject_post: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
