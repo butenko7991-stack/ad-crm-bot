@@ -89,12 +89,14 @@ async def get_channel_card(channel_id: int) -> tuple:
     category_info = CHANNEL_CATEGORIES.get(ch_data["category"], {"name": "📁 Другое"})
     status = "✅ Активен" if ch_data["is_active"] else "❌ Неактивен"
     ch_title = channel_link(ch_data["name"], ch_data["username"])
+    username_display = f"@{ch_data['username']}" if ch_data["username"] else "не задан"
     
     text = (
         f"⚙️ **Настройки канала**\n\n"
         f"📢 **{ch_title}**\n"
         f"{category_info['name']}\n"
-        f"{status}\n\n"
+        f"{status}\n"
+        f"🔗 Username: `{username_display}`\n\n"
         f"👥 Подписчиков: **{ch_data['subscribers']:,}**\n"
         f"👁 Охват 24ч: **{ch_data['avg_reach']:,}**\n"
         f"💰 CPM: **{ch_data['cpm']:,.0f}₽**\n\n"
@@ -521,6 +523,87 @@ async def receive_channel_cpm(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in receive_channel_cpm: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await state.clear()
+
+
+# ==================== ИЗМЕНЕНИЕ ССЫЛКИ (USERNAME) ====================
+
+@router.callback_query(F.data.startswith("adm_ch_set_link:"))
+async def adm_set_channel_link_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование username/ссылки канала"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    channel_id = int(callback.data.split(":")[1])
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await callback.message.answer("❌ Канал не найден")
+                return
+            current_username = channel.username if channel.username else "не задан"
+
+        await state.update_data(editing_channel_id=channel_id)
+        await safe_edit_message(
+            callback.message,
+            f"🔗 **Изменение ссылки канала «{channel.name}»**\n\n"
+            f"Текущий username: `{current_username}`\n\n"
+            f"Отправьте @username канала (например: `@mychannel`) или только имя без @.\n"
+            f"Чтобы убрать ссылку — отправьте `-`.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch:{channel_id}")]
+            ])
+        )
+        await state.set_state(AdminChannelStates.waiting_username)
+    except Exception as e:
+        logger.error(f"Error in adm_set_channel_link_start: {traceback.format_exc()}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+
+@router.message(AdminChannelStates.waiting_username)
+async def receive_channel_username(message: Message, state: FSMContext):
+    """Сохранить новый username/ссылку канала"""
+    data = await state.get_data()
+    channel_id = data.get("editing_channel_id")
+    if not channel_id:
+        await message.answer("❌ Ошибка. Начните заново.")
+        await state.clear()
+        return
+
+    raw = message.text.strip() if message.text else ""
+    if raw == "-":
+        new_username = None
+    else:
+        stripped = raw.lstrip("@")
+        new_username = stripped if stripped else None
+
+    try:
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                await message.answer("❌ Канал не найден")
+                await state.clear()
+                return
+            channel.username = new_username
+            await session.commit()
+
+        await state.clear()
+
+        display = f"@{new_username}" if new_username else "убрана"
+        await message.answer(
+            f"✅ Ссылка канала обновлена: **{display}**",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К каналу", callback_data=f"adm_ch:{channel_id}")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in receive_channel_username: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
         await state.clear()
 
