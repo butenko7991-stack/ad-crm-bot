@@ -143,10 +143,11 @@ def truncate_text(text: str, max_length: int = 100) -> str:
 def channel_link(name: str, username: Optional[str]) -> str:
     """Вернуть Markdown-ссылку на канал вида [Название](https://t.me/username).
 
-    Если username не задан (или равен '—'), возвращает просто название.
+    Если username не задан (или равен '—'), возвращает просто название,
+    экранируя специальные символы Markdown v1.
     """
     if not username or username in ("—", ""):
-        return name
+        return escape_md(name)
     safe_name = name.replace("]", "\\]")
     return f"[{safe_name}](https://t.me/{username})"
 
