@@ -19,6 +19,7 @@ from keyboards import (
     get_channels_keyboard, get_training_menu
 )
 from handlers.admin import authenticated_admins
+from utils import channel_link
 
 
 logger = logging.getLogger(__name__)
@@ -355,6 +356,7 @@ async def btn_sales(message: Message):
         channels_data = [{
             "id": ch.id,
             "name": ch.name,
+            "username": ch.username,
             "prices": ch.prices or {}
         } for ch in channels]
     
@@ -368,7 +370,7 @@ async def btn_sales(message: Message):
     for ch in channels_data:
         prices = ch["prices"]
         price_124 = prices.get("1/24", 0)
-        text += f"📢 **{ch['name']}** — от {price_124:,}₽\n"
+        text += f"📢 **{channel_link(ch['name'], ch.get('username'))}** — от {price_124:,}₽\n"
         buttons.append([InlineKeyboardButton(
             text=f"📊 {ch['name']}",
             callback_data=f"analyze_ch:{ch['id']}"
