@@ -126,6 +126,13 @@ def get_status_emoji(status: str) -> str:
     return statuses.get(status, "❓")
 
 
+def escape_md(text: str) -> str:
+    """Escape special characters for Telegram's Markdown parse mode."""
+    for char in ("_", "*", "`", "[", "]"):
+        text = text.replace(char, f"\\{char}")
+    return text
+
+
 def truncate_text(text: str, max_length: int = 100) -> str:
     """Обрезать текст"""
     if len(text) <= max_length:
