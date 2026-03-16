@@ -4659,12 +4659,16 @@ async def adm_approve_post(callback: CallbackQuery):
 
         await callback.answer("✅ Пост одобрен и поставлен в очередь!", show_alert=True)
 
-        await safe_edit_message(
-            callback.message,
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass  # Message may already be deleted or not editable
+        await callback.message.answer(
             f"✅ **Пост #{post_id} одобрен**\n\nПоставлен в очередь автопостинга.",
-            InlineKeyboardMarkup(inline_keyboard=[
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ К модерации", callback_data="adm_moderation")]
-            ])
+            ]),
+            parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
         logger.error(f"Error in adm_approve_post: {traceback.format_exc()}")
@@ -4692,12 +4696,16 @@ async def adm_reject_post(callback: CallbackQuery):
 
         await callback.answer("❌ Пост отклонён", show_alert=True)
 
-        await safe_edit_message(
-            callback.message,
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass  # Message may already be deleted or not editable
+        await callback.message.answer(
             f"❌ **Пост #{post_id} отклонён**",
-            InlineKeyboardMarkup(inline_keyboard=[
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ К модерации", callback_data="adm_moderation")]
-            ])
+            ]),
+            parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
         logger.error(f"Error in adm_reject_post: {traceback.format_exc()}")
