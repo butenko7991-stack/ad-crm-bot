@@ -1118,6 +1118,9 @@ async def mgr_cal_nav(callback: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError):
         logger.warning(f"mgr_cal_nav: malformed callback data: {callback.data!r}")
         return
+
+    data = await state.get_data()
+    channel_id = data.get("mgr_channel_id")
     if not channel_id:
         return
 
@@ -1235,11 +1238,10 @@ async def mgr_post_select_time(callback: CallbackQuery, state: FSMContext):
 
     buttons = []
     for fmt, label in format_names.items():
-        if prices.get(fmt, 0) > 0:
-            buttons.append([InlineKeyboardButton(
-                text=label,
-                callback_data=f"mgr_post_format:{fmt}"
-            )])
+        buttons.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"mgr_post_format:{fmt}"
+        )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"mgr_post_date:{selected_date}")])
 
     await callback.message.edit_text(
