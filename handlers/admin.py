@@ -1345,7 +1345,7 @@ async def metrics_channels(callback: CallbackQuery):
         if not data:
             await safe_edit_message(
                 callback.message,
-                "❌ Не удалось получить метрики каналов. Проверьте соединение с базой данных.",
+                "❌ Не удалось получить метрики каналов. Проверьте логи бота для деталей.",
                 _METRICS_BACK,
             )
             return

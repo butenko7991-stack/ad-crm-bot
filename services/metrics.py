@@ -155,57 +155,85 @@ async def get_channel_metrics() -> Optional[dict]:
         from database.models import Slot
         async with async_session_maker() as session:
             # Топ каналов по выручке (Order -> Slot -> Channel)
-            top_by_revenue = (await session.execute(
-                select(
-                    Channel.name,
-                    func.sum(Order.final_price).label("rev"),
-                    func.count(Order.id).label("cnt"),
-                )
-                .select_from(Order)
-                .join(Slot, Order.slot_id == Slot.id)
-                .join(Channel, Slot.channel_id == Channel.id)
-                .where(Order.status == "payment_confirmed")
-                .group_by(Channel.id, Channel.name)
-                .order_by(func.sum(Order.final_price).desc())
-                .limit(5)
-            )).all()
+            top_by_revenue = []
+            try:
+                top_by_revenue = (await session.execute(
+                    select(
+                        Channel.name,
+                        func.sum(Order.final_price).label("rev"),
+                        func.count(Order.id).label("cnt"),
+                    )
+                    .select_from(Order)
+                    .join(Slot, Order.slot_id == Slot.id)
+                    .join(Channel, Slot.channel_id == Channel.id)
+                    .where(Order.status == "payment_confirmed")
+                    .group_by(Channel.id, Channel.name)
+                    .order_by(func.sum(Order.final_price).desc())
+                    .limit(5)
+                )).all()
+            except Exception as e:
+                logger.warning(f"get_channel_metrics: top_by_revenue query failed: {e}", exc_info=True)
 
             # Средний CPM по активным каналам
-            avg_cpm = float((await session.execute(
-                select(func.avg(Channel.cpm)).where(
-                    Channel.is_active == True,
-                    Channel.cpm > 0,
-                )
-            )).scalar() or 0)
+            avg_cpm = 0.0
+            try:
+                avg_cpm = float((await session.execute(
+                    select(func.avg(Channel.cpm)).where(
+                        Channel.is_active == True,
+                        Channel.cpm > 0,
+                    )
+                )).scalar() or 0)
+            except Exception as e:
+                logger.warning(f"get_channel_metrics: avg_cpm query failed: {e}", exc_info=True)
 
             # Средний ERR из поля канала (рассчитывается коллектором из PostAnalytics)
-            avg_err = float((await session.execute(
-                select(func.avg(Channel.err_percent)).where(
-                    Channel.is_active == True,
-                    Channel.err_percent > 0,
-                )
-            )).scalar() or 0)
+            avg_err = 0.0
+            try:
+                avg_err = float((await session.execute(
+                    select(func.avg(Channel.err_percent)).where(
+                        Channel.is_active == True,
+                        Channel.err_percent > 0,
+                    )
+                )).scalar() or 0)
+            except Exception as e:
+                logger.warning(f"get_channel_metrics: avg_err query failed: {e}", exc_info=True)
 
             # Средний охват из поля канала (рассчитывается коллектором из PostAnalytics)
-            avg_reach = float((await session.execute(
-                select(func.avg(Channel.avg_reach_24h)).where(
-                    Channel.is_active == True,
-                    Channel.avg_reach_24h > 0,
-                )
-            )).scalar() or 0)
+            avg_reach = 0.0
+            try:
+                avg_reach = float((await session.execute(
+                    select(func.avg(Channel.avg_reach_24h)).where(
+                        Channel.is_active == True,
+                        Channel.avg_reach_24h > 0,
+                    )
+                )).scalar() or 0)
+            except Exception as e:
+                logger.warning(f"get_channel_metrics: avg_reach query failed: {e}", exc_info=True)
 
-            total_active = (await session.execute(
-                select(func.count(Channel.id)).where(Channel.is_active == True)
-            )).scalar() or 0
+            total_active = 0
+            try:
+                total_active = (await session.execute(
+                    select(func.count(Channel.id)).where(Channel.is_active == True)
+                )).scalar() or 0
+            except Exception as e:
+                logger.warning(f"get_channel_metrics: total_active query failed: {e}", exc_info=True)
 
             # Суммарные просмотры по PostAnalytics (факт, собранные ботом)
-            total_views = (await session.execute(
-                select(func.sum(PostAnalytics.views)).where(PostAnalytics.views > 0)
-            )).scalar() or 0
+            total_views = 0
+            try:
+                total_views = (await session.execute(
+                    select(func.sum(PostAnalytics.views)).where(PostAnalytics.views > 0)
+                )).scalar() or 0
+            except Exception as e:
+                logger.warning(f"get_channel_metrics: total_views query failed: {e}", exc_info=True)
 
-            analytics_posts = (await session.execute(
-                select(func.count(PostAnalytics.id)).where(PostAnalytics.views > 0)
-            )).scalar() or 0
+            analytics_posts = 0
+            try:
+                analytics_posts = (await session.execute(
+                    select(func.count(PostAnalytics.id)).where(PostAnalytics.views > 0)
+                )).scalar() or 0
+            except Exception as e:
+                logger.warning(f"get_channel_metrics: analytics_posts query failed: {e}", exc_info=True)
 
         return {
             "top_by_revenue": [(r.name, float(r.rev or 0), r.cnt) for r in top_by_revenue],
@@ -217,7 +245,7 @@ async def get_channel_metrics() -> Optional[dict]:
             "analytics_posts": analytics_posts,
         }
     except Exception as e:
-        logger.error(f"get_channel_metrics error: {e}")
+        logger.error(f"get_channel_metrics error: {e}", exc_info=True)
         return None
 
 
