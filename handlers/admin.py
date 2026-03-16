@@ -4321,10 +4321,27 @@ async def adm_view_post(callback: CallbackQuery):
         if post.content:
             text += f"📝 Текст:\n{post.content[:400]}{'...' if len(post.content) > 400 else ''}\n"
 
-        if post.file_type:
-            text += f"\n📎 Медиа: {post.file_type}\n"
+        markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-        await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+        if post.file_id and post.file_type:
+            # Show actual media so the admin can review it for moderation.
+            # Telegram caption limit is 1024 characters.
+            caption = text[:1024]
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass  # Message may already be deleted or not editable
+            if post.file_type == "photo":
+                await callback.message.answer_photo(post.file_id, caption=caption, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            elif post.file_type == "video":
+                await callback.message.answer_video(post.file_id, caption=caption, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            elif post.file_type == "document":
+                await callback.message.answer_document(post.file_id, caption=caption, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            else:
+                text += f"\n📎 Медиа: {post.file_type}\n"
+                await callback.message.answer(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await safe_edit_message(callback.message, text, markup)
     except Exception as e:
         logger.error(f"Error in adm_view_post: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)

@@ -1118,6 +1118,9 @@ async def mgr_cal_nav(callback: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError):
         logger.warning(f"mgr_cal_nav: malformed callback data: {callback.data!r}")
         return
+
+    data = await state.get_data()
+    channel_id = data.get("mgr_channel_id")
     if not channel_id:
         return
 
@@ -1235,11 +1238,10 @@ async def mgr_post_select_time(callback: CallbackQuery, state: FSMContext):
 
     buttons = []
     for fmt, label in format_names.items():
-        if prices.get(fmt, 0) > 0:
-            buttons.append([InlineKeyboardButton(
-                text=label,
-                callback_data=f"mgr_post_format:{fmt}"
-            )])
+        buttons.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"mgr_post_format:{fmt}"
+        )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"mgr_post_date:{selected_date}")])
 
     await callback.message.edit_text(
@@ -1445,16 +1447,19 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
 
             # Уведомляем администраторов (время в timezone бота)
             scheduled_admin = scheduled_time + LOCAL_TZ_OFFSET
+            channel_name_notify = data.get("mgr_channel_name") or str(channel_id)
             for admin_id in ADMIN_IDS:
                 try:
                     await bot.send_message(
                         admin_id,
                         f"📝 **Новый пост на модерацию #{post_id}**\n\n"
                         f"От менеджера: {callback.from_user.first_name or callback.from_user.username}\n"
-                        f"📢 Канал ID: {channel_id}\n"
-                        f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}\n\n"
-                        f"Проверьте в разделе 📝 Модерация.",
-                        parse_mode=ParseMode.MARKDOWN
+                        f"📢 Канал: {channel_name_notify}\n"
+                        f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="🔍 Перейти к модерации", callback_data=f"adm_post:{post_id}")]
+                        ])
                     )
                 except Exception:
                     logger.warning(f"Could not notify admin {admin_id} about new post #{post_id}", exc_info=True)
