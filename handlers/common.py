@@ -371,6 +371,7 @@ async def btn_sales(message: Message):
         )])
     
     buttons.append([InlineKeyboardButton(text="📋 Моя реф-ссылка", callback_data="copy_ref_link")])
+    buttons.append([InlineKeyboardButton(text="💡 Как работает схема?", callback_data="mgr_sales_howto")])
     
     await message.answer(
         text,

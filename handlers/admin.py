@@ -21,7 +21,7 @@ from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_c
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
-from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY
+from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
 
@@ -3215,6 +3215,9 @@ async def adm_settings(callback: CallbackQuery):
     chat_id = await get_manager_group_chat_id()
     chat_status = f"🟢 {chat_id}" if chat_id else "🔴 Не задан"
 
+    payment_link = await get_setting(PAYMENT_LINK_KEY)
+    payment_status = "🟢 Задана" if payment_link else "🔴 Не задана"
+
     text = (
         "⚙️ **Настройки**\n\n"
         f"📝 Автопостинг: {'🟢' if AUTOPOST_ENABLED else '🔴'}\n"
@@ -3222,11 +3225,13 @@ async def adm_settings(callback: CallbackQuery):
         f"📊 Telemetr API: {'🟢' if TELEMETR_API_TOKEN else '🔴'}\n"
         f"🔵 Max Bot: {'🟢 Подключён' if MAX_BOT_TOKEN else '🔴 Не подключён'}\n"
         f"💬 Чат менеджеров: {chat_status}\n"
+        f"💳 Платёжные реквизиты: {payment_status}\n"
         f"👤 Админы: {len(ADMIN_IDS)}"
     )
 
     buttons = [
         [InlineKeyboardButton(text="💬 Чат менеджеров", callback_data="adm_manager_chat_settings")],
+        [InlineKeyboardButton(text="💳 Платёжные реквизиты", callback_data="adm_payment_settings")],
         [InlineKeyboardButton(text="🔵 Настройки Max Bot", callback_data="adm_max_settings")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
     ]
@@ -3338,6 +3343,120 @@ async def adm_manager_chat_clear(callback: CallbackQuery):
     await safe_edit_message(
         callback.message,
         "🗑 **Чат менеджеров сброшен.**\n\nСтатистика больше не будет отправляться в группу.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ К настройкам", callback_data="adm_settings")]
+        ])
+    )
+
+
+# ==================== ПЛАТЁЖНЫЕ РЕКВИЗИТЫ ====================
+
+@router.callback_query(F.data == "adm_payment_settings")
+async def adm_payment_settings(callback: CallbackQuery):
+    """Настройки платёжных реквизитов."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    payment_link = await get_setting(PAYMENT_LINK_KEY)
+
+    if payment_link:
+        safe_link = payment_link.replace("`", "'")
+        status = (
+            f"🟢 **Платёжные реквизиты заданы**\n\n"
+            f"Текущее значение:\n`{safe_link}`\n\n"
+            f"Клиенты будут видеть эти реквизиты при оплате заказа."
+        )
+    else:
+        status = (
+            "🔴 **Платёжные реквизиты не заданы**\n\n"
+            "Клиенты не видят, куда переводить деньги!\n\n"
+            "**Что можно указать:**\n"
+            "• Номер карты/телефона: `4276 1234 5678 9012`\n"
+            "• Ссылку на YooMoney / Donationalerts / Boosty\n"
+            "• Ссылку на платёжный шлюз\n"
+            "• Любые реквизиты в свободном формате\n\n"
+            "**Как работает схема оплаты:**\n"
+            "1️⃣ Менеджер отправляет реф-ссылку рекламодателю\n"
+            "2️⃣ Рекламодатель создаёт заказ через бот\n"
+            "3️⃣ Бот показывает ваши реквизиты и сумму к оплате\n"
+            "4️⃣ Рекламодатель переводит деньги и отправляет скриншот\n"
+            "5️⃣ Вы подтверждаете оплату — комиссия зачисляется менеджеру"
+        )
+
+    await safe_edit_message(
+        callback.message,
+        status,
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Изменить реквизиты", callback_data="adm_payment_link_input")],
+            [InlineKeyboardButton(text="🗑 Сбросить", callback_data="adm_payment_link_clear")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")],
+        ])
+    )
+
+
+@router.callback_query(F.data == "adm_payment_link_input")
+async def adm_payment_link_input(callback: CallbackQuery, state: FSMContext):
+    """Запросить новые платёжные реквизиты."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    await safe_edit_message(
+        callback.message,
+        "💳 **Введите платёжные реквизиты**\n\n"
+        "Примеры:\n"
+        "• `4276 1234 5678 9012` — номер карты\n"
+        "• `+7 900 123-45-67` — номер телефона СБП\n"
+        "• `https://yoomoney.ru/to/41001234567` — ссылка YooMoney\n"
+        "• `https://donationalerts.com/r/yourname` — Donationalerts\n\n"
+        "Вы можете написать любой текст, он будет показан клиентам при оплате.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_payment_settings")]
+        ])
+    )
+    await state.set_state(AdminSettingsStates.waiting_payment_link)
+
+
+@router.message(AdminSettingsStates.waiting_payment_link)
+async def adm_payment_link_receive(message: Message, state: FSMContext):
+    """Сохранить платёжные реквизиты."""
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("❌ Реквизиты не могут быть пустыми. Попробуйте снова.")
+        return
+
+    await set_setting(PAYMENT_LINK_KEY, value, updated_by=message.from_user.id)
+    await state.clear()
+
+    safe_value = value.replace("`", "'")
+    await message.answer(
+        f"✅ **Платёжные реквизиты обновлены!**\n\n"
+        f"Клиенты будут видеть:\n`{safe_value}`",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ К настройкам", callback_data="adm_settings")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.callback_query(F.data == "adm_payment_link_clear")
+async def adm_payment_link_clear(callback: CallbackQuery):
+    """Сбросить платёжные реквизиты."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    await set_setting(PAYMENT_LINK_KEY, None, updated_by=callback.from_user.id)
+
+    await safe_edit_message(
+        callback.message,
+        "🗑 **Платёжные реквизиты сброшены.**\n\nКлиенты больше не будут видеть реквизиты при оплате.",
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ К настройкам", callback_data="adm_settings")]
         ])

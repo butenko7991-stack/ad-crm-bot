@@ -17,6 +17,7 @@ from config import CHANNEL_CATEGORIES, ADMIN_IDS, LOYALTY_DISCOUNTS
 from database import async_session_maker, Channel, Slot, Client, Order, Manager, PromoCode
 from keyboards import get_channels_keyboard, get_dates_keyboard, get_calendar_keyboard, get_times_keyboard, get_format_keyboard
 from utils import BookingStates, channel_link
+from services.settings import get_setting, PAYMENT_LINK_KEY
 
 
 logger = logging.getLogger(__name__)
@@ -585,6 +586,9 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         
         await state.clear()
 
+        # Получаем платёжные реквизиты из настроек
+        payment_link = await get_setting(PAYMENT_LINK_KEY)
+
         # Формируем сообщение об успехе
         confirm_text = (
             f"✅ **Заказ #{order_id} создан!**\n\n"
@@ -598,7 +602,13 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             )
         else:
             confirm_text += f"💰 К оплате: **{price:,.0f}₽**\n\n"
-        confirm_text += "📤 Отправьте скриншот оплаты для подтверждения."
+
+        if payment_link:
+            safe_link = payment_link.replace("`", "'")
+            confirm_text += f"💳 **Реквизиты для оплаты:**\n`{safe_link}`\n\n"
+            confirm_text += "После оплаты загрузите скриншот перевода для подтверждения."
+        else:
+            confirm_text += "📤 Отправьте скриншот оплаты для подтверждения."
         
         await callback.message.edit_text(
             confirm_text,
@@ -632,9 +642,17 @@ async def upload_payment_start(callback: CallbackQuery, state: FSMContext):
     
     order_id = int(callback.data.split(":")[1])
     await state.update_data(payment_order_id=order_id)
-    
+
+    # Показываем реквизиты, если они заданы
+    payment_link = await get_setting(PAYMENT_LINK_KEY)
+    if payment_link:
+        safe_link = payment_link.replace("`", "'")
+        payment_info = f"\n💳 **Реквизиты для оплаты:**\n`{safe_link}`\n"
+    else:
+        payment_info = ""
+
     await callback.message.edit_text(
-        "📤 **Загрузите скриншот оплаты**\n\n"
+        f"📤 **Загрузите скриншот оплаты**\n{payment_info}\n"
         "Отправьте фото или документ:",
         parse_mode=ParseMode.MARKDOWN
     )

@@ -424,6 +424,7 @@ async def back_to_sales(callback: CallbackQuery):
             )])
         
         buttons.append([InlineKeyboardButton(text="📋 Моя реф-ссылка", callback_data="copy_ref_link")])
+        buttons.append([InlineKeyboardButton(text="💡 Как работает схема?", callback_data="mgr_sales_howto")])
         
         await callback.message.edit_text(
             text,
@@ -433,6 +434,45 @@ async def back_to_sales(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in back_to_sales: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+
+
+# ==================== КАК РАБОТАЕТ СХЕМА ====================
+
+@router.callback_query(F.data == "mgr_sales_howto")
+async def mgr_sales_howto(callback: CallbackQuery):
+    """Объяснение схемы работы рекламодатель→менеджер"""
+    await callback.answer()
+
+    text = (
+        "💡 **Как работает схема оплаты**\n\n"
+        "Вы — менеджер-посредник. Рекламодатель платит напрямую владельцу бота.\n"
+        "Ваша задача — привести клиента и помочь ему оформить заказ.\n\n"
+
+        "**📋 Пошагово:**\n\n"
+        "1️⃣ **Вы находите рекламодателя** (через соцсети, чаты, знакомых)\n\n"
+        "2️⃣ **Отправляете ему свою реф-ссылку** — нажмите «📋 Моя реф-ссылка»\n\n"
+        "3️⃣ **Рекламодатель переходит по ссылке** в бот, выбирает канал, "
+        "дату и формат размещения\n\n"
+        "4️⃣ **Бот показывает сумму и реквизиты для оплаты** "
+        "(карта / СБП / ссылка на оплату)\n\n"
+        "5️⃣ **Рекламодатель переводит деньги** на указанные реквизиты "
+        "и загружает скриншот перевода\n\n"
+        "6️⃣ **Администратор проверяет оплату** и подтверждает заказ\n\n"
+        "7️⃣ **Ваша комиссия автоматически зачисляется на баланс** 💰\n\n"
+
+        "**💸 Как получить деньги?**\n"
+        "Перейдите в «Кабинет менеджера» → «💰 Вывод средств» "
+        "и укажите свои реквизиты для выплаты."
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Моя реф-ссылка", callback_data="copy_ref_link")],
+            [InlineKeyboardButton(text="◀️ К каналам", callback_data="back_to_sales")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 
 # ==================== МОИ ПРОДАЖИ ====================
