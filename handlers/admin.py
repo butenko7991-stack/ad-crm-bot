@@ -553,7 +553,8 @@ async def adm_set_channel_link_start(callback: CallbackQuery, state: FSMContext)
             callback.message,
             f"🔗 **Изменение ссылки канала «{channel.name}»**\n\n"
             f"Текущий username: `{current_username}`\n\n"
-            f"Отправьте @username канала (например: `@mychannel`) или только имя без @.\n"
+            f"Отправьте @username (например: `@mychannel`) для публичного канала\n"
+            f"или ссылку-приглашение (например: `https://t.me/+VHnrtBdF7kUwOGQy`) для приватного.\n"
             f"Чтобы убрать ссылку — отправьте `-`.",
             InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_ch:{channel_id}")]
@@ -579,8 +580,17 @@ async def receive_channel_username(message: Message, state: FSMContext):
     if raw == "-":
         new_username = None
     else:
-        stripped = raw.lstrip("@")
-        new_username = stripped if stripped else None
+        # Handle different input formats:
+        # - https://t.me/+VHnrtBdF7kUwOGQy  (private invite link URL)
+        # - https://t.me/channelname          (public channel URL)
+        # - @channelname                      (public channel with @)
+        # - channelname                       (public channel without @)
+        # - +VHnrtBdF7kUwOGQy                (private invite code)
+        if "t.me/" in raw:
+            extracted = raw.split("t.me/")[-1].strip("/").strip()
+        else:
+            extracted = raw.lstrip("@").strip()
+        new_username = extracted if extracted else None
 
     try:
         async with async_session_maker() as session:
@@ -594,7 +604,12 @@ async def receive_channel_username(message: Message, state: FSMContext):
 
         await state.clear()
 
-        display = f"@{new_username}" if new_username else "убрана"
+        if not new_username:
+            display = "убрана"
+        elif new_username.startswith("+"):
+            display = f"https://t.me/{new_username}"
+        else:
+            display = f"@{new_username}"
         await message.answer(
             f"✅ Ссылка канала обновлена: **{display}**",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
