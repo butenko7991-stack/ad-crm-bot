@@ -69,6 +69,7 @@ class ManagerPostStates(StatesGroup):
     selecting_format = State()
     entering_content = State()
     confirming = State()
+    uploading_payment = State()
 
 
 class AdminPasswordState(StatesGroup):

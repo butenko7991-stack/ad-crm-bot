@@ -4343,6 +4343,26 @@ async def adm_view_post(callback: CallbackQuery):
                 await callback.message.answer(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
         else:
             await safe_edit_message(callback.message, text, markup)
+
+        # If this post is on moderation and has a payment screenshot, send it as a separate message.
+        if post.status == "moderation" and post.payment_screenshot:
+            try:
+                await callback.message.answer_photo(
+                    post.payment_screenshot,
+                    caption=f"💳 **Скриншот оплаты** к посту #{post_id}",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as photo_exc:
+                # File may be a document rather than a photo; log and retry as document.
+                logger.debug(f"answer_photo failed for payment screenshot of post #{post_id}: {photo_exc}")
+                try:
+                    await callback.message.answer_document(
+                        post.payment_screenshot,
+                        caption=f"💳 **Скриншот оплаты** к посту #{post_id}",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                except Exception:
+                    logger.warning(f"Could not send payment screenshot for post #{post_id}", exc_info=True)
     except Exception as e:
         logger.error(f"Error in adm_view_post: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)

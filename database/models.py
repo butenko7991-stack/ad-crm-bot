@@ -204,6 +204,7 @@ class ScheduledPost(Base):
     delete_after_hours = Column(Integer, default=24)
     
     status = Column(String(20), default="pending")
+    payment_screenshot = Column(String(500))
     message_id = Column(BigInteger)
     posted_at = Column(DateTime)
     deleted_at = Column(DateTime)
