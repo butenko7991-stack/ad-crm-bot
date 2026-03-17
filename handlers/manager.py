@@ -538,7 +538,7 @@ async def mgr_my_sales(callback: CallbackQuery):
                     if slot and slot.channel_id:
                         ch = await session.get(Channel, slot.channel_id)
                         if ch:
-                            channel_name = ch.name
+                            channel_name = ch.name or "—"
                 date_str = order.paid_at.strftime("%d.%m.%y") if order.paid_at else "—"
                 recent_data.append({
                     "channel": channel_name,
@@ -564,7 +564,7 @@ async def mgr_my_sales(callback: CallbackQuery):
         if recent_data:
             text += f"\n💼 **Последние заказы:**\n"
             for i, o in enumerate(recent_data, 1):
-                text += f"{i}. {escape_md(o['channel'])} — {o['price']:,.0f}₽ ({o['format']}) — {o['date']}\n"
+                text += f"{i}. {escape_md(o['channel'])} — {o['price']:,.0f}₽ ({escape_md(o['format'])}) — {o['date']}\n"
         elif total_sales == 0:
             text += "\n_Пока нет продаж. Отправляйте реф-ссылку клиентам!_"
         
