@@ -22,7 +22,7 @@ from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
 from services.channel_collector import refresh_all_channels
 from services.settings import get_manager_group_chat_id
-from utils.helpers import format_channel_stats_for_group
+from utils.helpers import format_channel_stats_for_group, utc_now
 
 
 # Настройка логирования
@@ -40,7 +40,7 @@ async def cleanup_expired_slots():
             result = await session.execute(
                 select(Slot).where(
                     Slot.status == "reserved",
-                    Slot.reserved_until < datetime.utcnow()
+                    Slot.reserved_until < utc_now()
                 )
             )
             expired_slots = result.scalars().all()
@@ -62,7 +62,7 @@ async def publish_scheduled_posts(bot: Bot):
             result = await session.execute(
                 select(ScheduledPost).where(
                     ScheduledPost.status == "pending",
-                    ScheduledPost.scheduled_time <= datetime.utcnow()
+                    ScheduledPost.scheduled_time <= utc_now()
                 )
             )
             posts = result.scalars().all()
@@ -129,7 +129,7 @@ async def publish_scheduled_posts(bot: Bot):
                         )
 
                     post.status = "posted"
-                    post.posted_at = datetime.utcnow()
+                    post.posted_at = utc_now()
                     post.message_id = sent.message_id
 
                     # Создаём начальную запись аналитики, если её ещё нет
@@ -216,7 +216,7 @@ async def delete_posted_posts(bot: Bot):
             )
             posts = result.scalars().all()
 
-            now = datetime.utcnow()
+            now = utc_now()
             for post in posts:
                 if post.posted_at + timedelta(hours=post.delete_after_hours) > now:
                     continue

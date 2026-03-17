@@ -43,7 +43,7 @@ async def cmd_start(message: Message, state: FSMContext):
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             ref_manager_id = int(args[1].replace("ref_", ""))
-        except:
+        except Exception:
             pass
     
     is_admin = user_id in ADMIN_IDS

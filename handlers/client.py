@@ -16,7 +16,7 @@ from sqlalchemy import select, update, or_
 from config import CHANNEL_CATEGORIES, ADMIN_IDS, LOYALTY_DISCOUNTS
 from database import async_session_maker, Channel, Slot, Client, Order, Manager, PromoCode
 from keyboards import get_channels_keyboard, get_dates_keyboard, get_calendar_keyboard, get_times_keyboard, get_format_keyboard
-from utils import BookingStates, channel_link
+from utils import BookingStates, channel_link, utc_now
 from services.settings import get_setting, PAYMENT_LINK_KEY
 
 
@@ -531,7 +531,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             
             slot.status = "reserved"
             slot.reserved_by = user.id
-            slot.reserved_until = datetime.utcnow() + timedelta(hours=24)
+            slot.reserved_until = utc_now() + timedelta(hours=24)
             
             # Определяем менеджера по реферальной ссылке клиента
             manager_id = None
@@ -600,10 +600,6 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
                             f"Не удалось деактивировать исчерпанный промокод id={promo_row.id}",
                             exc_info=True,
                         )
-
-            # Обновляем статистику клиента
-            client.total_orders = (client.total_orders or 0) + 1
-            client.total_spent = (client.total_spent or Decimal("0")) + final_price.quantize(Decimal("0.01"))
 
             await session.commit()
             
@@ -733,7 +729,7 @@ async def receive_payment_screenshot(message: Message, state: FSMContext, bot: B
                     f"💳 **Новая оплата!**\n\nЗаказ #{order_id}\nПроверьте в админ-панели.",
                     parse_mode=ParseMode.MARKDOWN
                 )
-            except:
+            except Exception:
                 pass
     except Exception as e:
         logger.error(f"Error in receive_payment_screenshot: {traceback.format_exc()}")

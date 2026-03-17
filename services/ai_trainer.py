@@ -32,17 +32,17 @@ class AITrainerService:
     def _get_user_history(self, user_id: int) -> List[dict]:
         """Получить историю диалога пользователя, создав запись при необходимости."""
         return self.conversation_history.setdefault(
-            user_id, {"history": [], "last_active": datetime.utcnow()}
+            user_id, {"history": [], "last_active": utc_now()}
         )["history"]
 
     def _touch_user_history(self, user_id: int) -> None:
         """Обновить метку активности пользователя."""
         if user_id in self.conversation_history:
-            self.conversation_history[user_id]["last_active"] = datetime.utcnow()
+            self.conversation_history[user_id]["last_active"] = utc_now()
 
     def _cleanup_stale_histories(self) -> None:
         """Удалить истории диалогов неактивных пользователей (старше TTL)."""
-        cutoff = datetime.utcnow() - timedelta(hours=_CONVERSATION_TTL_HOURS)
+        cutoff = utc_now() - timedelta(hours=_CONVERSATION_TTL_HOURS)
         stale = []
         for uid, data in self.conversation_history.items():
             last_active = data.get("last_active")

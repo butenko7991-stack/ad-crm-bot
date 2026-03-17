@@ -15,9 +15,14 @@ logger = logging.getLogger(__name__)
 
 # ─── Московское время (UTC+3) ─────────────────────────────────────────────────
 
+def utc_now() -> datetime:
+    """Текущий момент UTC как naive datetime (замена устаревшего datetime.utcnow())."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def msk_now() -> datetime:
     """Текущий момент по московскому времени (UTC+3) как naive datetime."""
-    return datetime.utcnow() + MSK_OFFSET
+    return utc_now() + MSK_OFFSET
 
 
 def to_utc(msk_dt: datetime) -> datetime:

@@ -21,7 +21,7 @@ from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_c
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
-from utils.helpers import escape_md
+from utils.helpers import escape_md, utc_now
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
@@ -42,7 +42,7 @@ class _TimedAuthSet:
         self._sessions: dict[int, datetime] = {}
 
     def add(self, user_id: int) -> None:
-        self._sessions[user_id] = datetime.utcnow()
+        self._sessions[user_id] = utc_now()
 
     def discard(self, user_id: int) -> None:
         self._sessions.pop(user_id, None)
@@ -51,7 +51,7 @@ class _TimedAuthSet:
         ts = self._sessions.get(user_id)
         if ts is None:
             return False
-        if datetime.utcnow() - ts > self._timeout:
+        if utc_now() - ts > self._timeout:
             del self._sessions[user_id]
             return False
         return True
@@ -167,7 +167,7 @@ async def check_admin_password(message: Message, state: FSMContext):
     """Проверить пароль админа"""
     try:
         await message.delete()
-    except:
+    except Exception:
         pass
     
     if message.text == ADMIN_PASSWORD:
@@ -190,7 +190,7 @@ async def admin_logout(callback: CallbackQuery):
     await callback.answer("👋 Вы вышли из админ-панели", show_alert=True)
     try:
         await callback.message.delete()
-    except:
+    except Exception:
         pass
 
 
@@ -362,7 +362,7 @@ async def receive_new_price(message: Message, state: FSMContext):
     """Получить новую цену"""
     try:
         new_price = int(message.text.strip().replace(" ", "").replace(",", ""))
-    except:
+    except Exception:
         await message.answer("❌ Введите число!")
         return
     
@@ -1085,7 +1085,7 @@ async def receive_channel_forward(message: Message, state: FSMContext, bot: Bot)
             channel_id = chat.id
             channel_name = chat.title
             channel_username = chat.username
-        except:
+        except Exception:
             await message.answer("❌ Канал не найден")
             return
     else:
@@ -1101,7 +1101,7 @@ async def receive_channel_forward(message: Message, state: FSMContext, bot: Bot)
     
     try:
         member_count = await bot.get_chat_member_count(channel_id)
-    except:
+    except Exception:
         member_count = 0
     
     await state.update_data(
@@ -1873,7 +1873,7 @@ async def adm_cpm_receive_value(message: Message, state: FSMContext):
             db_row = result.scalar_one_or_none()
             if db_row:
                 db_row.cpm = new_cpm
-                db_row.updated_at = datetime.utcnow()
+                db_row.updated_at = utc_now()
                 db_row.updated_by = message.from_user.id
             else:
                 session.add(CategoryCPM(
@@ -2347,7 +2347,7 @@ async def pa_receive_comments(message: Message, state: FSMContext):
                 existing.forwards = forwards
                 existing.saves = saves
                 existing.comments = comments
-                existing.recorded_at = datetime.utcnow()
+                existing.recorded_at = utc_now()
                 existing.recorded_by = message.from_user.id
                 existing.ai_recommendation = None  # Сбрасываем старую рекомендацию
                 analytics = existing
@@ -2883,7 +2883,7 @@ async def autopost_publish_now(callback: CallbackQuery, state: FSMContext):
 
     try:
         # Сохраняем текущее UTC-время как время публикации
-        now_utc = datetime.utcnow()
+        now_utc = utc_now()
         await state.update_data(create_scheduled_time=now_utc.isoformat())
 
         data = await state.get_data()
@@ -2927,7 +2927,7 @@ async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
         scheduled_time_msk = datetime.fromisoformat(f"{date_iso}T{time_str}")
         scheduled_time = scheduled_time_msk - LOCAL_TZ_OFFSET
 
-        if scheduled_time < datetime.utcnow():
+        if scheduled_time < utc_now():
             await callback.message.answer("❌ Выбранное время уже прошло. Выберите другое.")
             return
 
@@ -2980,7 +2980,7 @@ async def autopost_enter_time_text(message: Message, state: FSMContext):
     scheduled_time_msk = datetime.combine(date_type.fromisoformat(date_iso), time_obj)
     scheduled_time = scheduled_time_msk - LOCAL_TZ_OFFSET  # convert local → UTC
 
-    if scheduled_time < datetime.utcnow():
+    if scheduled_time < utc_now():
         await message.answer("❌ Дата публикации должна быть в будущем. Введите другое время.")
         return
 
@@ -3924,7 +3924,7 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                 return
 
             order.status = "payment_confirmed"
-            order.paid_at = datetime.utcnow()
+            order.paid_at = utc_now()
 
             # Начисляем комиссию менеджеру
             manager_telegram_id = None
@@ -3938,9 +3938,14 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                     manager.total_earned = (manager.total_earned or Decimal("0")) + commission
                     manager_telegram_id = manager.telegram_id
 
+            # Обновляем статистику клиента (только при реальной оплате)
+            client = await session.get(Client, order.client_id)
+            if client:
+                client.total_orders = (client.total_orders or 0) + 1
+                client.total_spent = (client.total_spent or Decimal("0")) + order.final_price
+
             await session.commit()
 
-            client = await session.get(Client, order.client_id)
             client_telegram_id = client.telegram_id if client else None
 
             # Получаем канал для уведомления в чат менеджеров
@@ -4015,6 +4020,15 @@ async def adm_reject_payment(callback: CallbackQuery, bot: Bot):
                 return
 
             order.status = "cancelled"
+
+            # Освобождаем слот, чтобы другие клиенты могли его забронировать
+            if order.slot_id:
+                slot = await session.get(Slot, order.slot_id)
+                if slot and slot.status == "reserved":
+                    slot.status = "available"
+                    slot.reserved_by = None
+                    slot.reserved_until = None
+
             await session.commit()
 
             client = await session.get(Client, order.client_id)
@@ -4066,7 +4080,7 @@ async def adm_mark_posted(callback: CallbackQuery, bot: Bot):
                 return
 
             order.status = "posted"
-            order.posted_at = datetime.utcnow()
+            order.posted_at = utc_now()
 
             # Помечаем слот как забронированный
             if order.slot_id:
@@ -4700,7 +4714,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
         scheduled_time_msk = datetime.fromisoformat(f"{date_iso}T{time_str}")
         scheduled_time_utc = scheduled_time_msk - LOCAL_TZ_OFFSET
 
-        if scheduled_time_utc < datetime.utcnow():
+        if scheduled_time_utc < utc_now():
             await callback.message.answer("❌ Выбранное время уже прошло. Выберите другое.")
             return
 
