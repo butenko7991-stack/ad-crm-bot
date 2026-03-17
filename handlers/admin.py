@@ -461,7 +461,7 @@ async def set_channel_cpm_start(callback: CallbackQuery, state: FSMContext):
         async with async_session_maker() as session:
             channel = await session.get(Channel, channel_id)
             if not channel:
-                await callback.answer("❌ Канал не найден", show_alert=True)
+                await callback.message.answer("❌ Канал не найден")
                 return
             current_cpm = float(channel.cpm or 0)
             channel_name = channel.name
@@ -479,7 +479,7 @@ async def set_channel_cpm_start(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminChannelStates.waiting_cpm)
     except Exception as e:
         logger.error(f"Error in set_channel_cpm_start: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.message(AdminChannelStates.waiting_cpm)
@@ -564,7 +564,7 @@ async def adm_set_channel_link_start(callback: CallbackQuery, state: FSMContext)
         await state.set_state(AdminChannelStates.waiting_username)
     except Exception as e:
         logger.error(f"Error in adm_set_channel_link_start: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.message(AdminChannelStates.waiting_username)
@@ -733,7 +733,7 @@ async def adm_channel_slots(callback: CallbackQuery):
         async with async_session_maker() as session:
             channel = await session.get(Channel, channel_id)
             if not channel:
-                await callback.answer("❌ Канал не найден", show_alert=True)
+                await callback.message.answer("❌ Канал не найден")
                 return
 
             slots_result = await session.execute(
@@ -770,7 +770,7 @@ async def adm_channel_slots(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in adm_channel_slots: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("adm_slots_gen:"))
@@ -931,13 +931,13 @@ async def adm_slots_clear(callback: CallbackQuery):
             await session.commit()
 
         channel_name = channel.name if channel else f"#{channel_id}"
-        await callback.answer(f"🗑 Удалено {count} слотов", show_alert=True)
+        await callback.message.answer(f"🗑 Удалено {count} слотов")
         # Обновляем экран слотов
         callback.data = f"adm_ch_slots:{channel_id}"
         await adm_channel_slots(callback)
     except Exception as e:
         logger.error(f"Error in adm_slots_clear: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== УДАЛЕНИЕ КАНАЛА ====================
@@ -1166,7 +1166,7 @@ async def adm_managers(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_managers: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== ОПЛАТЫ ====================
@@ -1202,7 +1202,7 @@ async def adm_payments(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_payments: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== МОДЕРАЦИЯ ====================
@@ -1242,7 +1242,7 @@ async def adm_moderation(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_moderation: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== СТАТИСТИКА ====================
@@ -1369,7 +1369,7 @@ async def adm_stats(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, get_metrics_menu())
     except Exception as e:
         logger.error(f"Error in adm_stats: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== ДЕТАЛЬНЫЕ МЕТРИКИ ====================
@@ -1704,7 +1704,7 @@ async def adm_competitions(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in adm_competitions: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== CPM ====================
@@ -1777,7 +1777,7 @@ async def adm_cpm_edit_start(callback: CallbackQuery, state: FSMContext):
     category_key = callback.data.split(":")[1]
     cat_info = CHANNEL_CATEGORIES.get(category_key)
     if not cat_info:
-        await callback.answer("❌ Тематика не найдена", show_alert=True)
+        await callback.message.answer("❌ Тематика не найдена")
         return
 
     # Проверяем текущее переопределение в БД
@@ -1896,7 +1896,7 @@ async def adm_autoposting(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(callback.message, text, get_autoposting_menu())
     except Exception as e:
         logger.error(f"Error in adm_autoposting: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "autopost_pending")
@@ -1948,7 +1948,7 @@ async def autopost_pending(callback: CallbackQuery):
             )
     except Exception as e:
         logger.error(f"Error in autopost_pending: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "autopost_posted")
@@ -2000,7 +2000,7 @@ async def autopost_posted(callback: CallbackQuery):
             )
     except Exception as e:
         logger.error(f"Error in autopost_posted: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("autopost_view_posted:"))
@@ -2017,7 +2017,7 @@ async def autopost_view_posted(callback: CallbackQuery):
         async with async_session_maker() as session:
             post = await session.get(ScheduledPost, post_id)
             if not post:
-                await callback.answer("❌ Пост не найден", show_alert=True)
+                await callback.message.answer("❌ Пост не найден")
                 return
 
             channel = await session.get(Channel, post.channel_id)
@@ -2062,7 +2062,7 @@ async def autopost_view_posted(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in autopost_view_posted: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== АНАЛИТИКА ПОСТОВ ====================
@@ -2101,7 +2101,7 @@ async def autopost_analytics(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in autopost_analytics: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("pa_view:"))
@@ -2118,7 +2118,7 @@ async def pa_view(callback: CallbackQuery):
         async with async_session_maker() as session:
             analytics = await session.get(PostAnalytics, analytics_id)
             if not analytics:
-                await callback.answer("❌ Запись не найдена", show_alert=True)
+                await callback.message.answer("❌ Запись не найдена")
                 return
             channel = await session.get(Channel, analytics.channel_id)
             scheduled_post_id = analytics.scheduled_post_id
@@ -2157,7 +2157,7 @@ async def pa_view(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in pa_view: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("pa_enter:"))
@@ -2174,7 +2174,7 @@ async def pa_enter_start(callback: CallbackQuery, state: FSMContext):
         async with async_session_maker() as session:
             post = await session.get(ScheduledPost, post_id)
             if not post:
-                await callback.answer("❌ Пост не найден", show_alert=True)
+                await callback.message.answer("❌ Пост не найден")
                 return
 
         await state.update_data(pa_post_id=post_id, pa_channel_id=post.channel_id)
@@ -2188,7 +2188,7 @@ async def pa_enter_start(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminAutopostingStates.waiting_post_views)
     except Exception as e:
         logger.error(f"Error in pa_enter_start: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.message(AdminAutopostingStates.waiting_post_views)
@@ -2487,7 +2487,7 @@ async def autopost_ai_recommend_overview(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in autopost_ai_recommend_overview: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== АНАЛИТИКА КАНАЛОВ ====================
@@ -2553,6 +2553,16 @@ async def autopost_channel_analytics(callback: CallbackQuery):
 
         channels = await get_channels_analytics_summary()
 
+        if channels is None:
+            await safe_edit_message(
+                callback.message,
+                "📈 **Аналитика каналов**\n\n❌ Ошибка при загрузке данных. Проверьте логи бота.",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
         if not channels:
             await safe_edit_message(
                 callback.message,
@@ -2581,7 +2591,7 @@ async def autopost_channel_analytics(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in autopost_channel_analytics: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("ch_analytics:"))
@@ -2600,10 +2610,10 @@ async def ch_analytics_detail(callback: CallbackQuery):
             back_callback=f"adm_ch:{channel_id}"
         )
         if not ok:
-            await callback.answer("❌ Не удалось загрузить аналитику", show_alert=True)
+            await callback.message.answer("❌ Не удалось загрузить аналитику")
     except Exception as e:
         logger.error(f"Error in ch_analytics_detail: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка при загрузке аналитики", show_alert=True)
+        await callback.message.answer("❌ Ошибка при загрузке аналитики")
 
 
 @router.callback_query(F.data.startswith("ch_analytics_refresh:"))
@@ -2621,7 +2631,7 @@ async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
         async with async_session_maker() as session:
             channel = await session.get(Channel, channel_id)
             if not channel:
-                await callback.answer("❌ Канал не найден", show_alert=True)
+                await callback.message.answer("❌ Канал не найден")
                 return
 
         from services.channel_collector import refresh_channel_subscribers, update_channel_reach_from_analytics
@@ -2631,7 +2641,7 @@ async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
         await _render_channel_analytics_page(callback.message, channel_id, back_callback=f"adm_ch:{channel_id}")
     except Exception as e:
         logger.error(f"Error in ch_analytics_refresh: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка при обновлении аналитики")
 
 
 # ==================== СОЗДАНИЕ ПОСТА (АВТОПОСТИНГ) ====================
@@ -2679,7 +2689,7 @@ async def autopost_create_start(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminCreatePostStates.selecting_channel)
     except Exception as e:
         logger.error(f"Error in autopost_create_start: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("autopost_create_ch:"))
@@ -2697,7 +2707,7 @@ async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
         async with async_session_maker() as session:
             channel = await session.get(Channel, channel_id)
             if not channel:
-                await callback.answer("❌ Канал не найден", show_alert=True)
+                await callback.message.answer("❌ Канал не найден")
                 return
             channel_name = channel.name
 
@@ -2714,7 +2724,7 @@ async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminCreatePostStates.selecting_date)
     except Exception as e:
         logger.error(f"Error in autopost_create_channel: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("autopost_cal_nav:"), AdminCreatePostStates.selecting_date)
@@ -2741,7 +2751,7 @@ async def autopost_cal_nav(callback: CallbackQuery, state: FSMContext):
         )
     except Exception:
         logger.error(f"Error in autopost_cal_nav: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("autopost_cal_date:"), AdminCreatePostStates.selecting_date)
@@ -2772,7 +2782,7 @@ async def autopost_cal_date(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminCreatePostStates.entering_time)
     except Exception:
         logger.error(f"Error in autopost_cal_date: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "autopost_cal_back", AdminCreatePostStates.entering_time)
@@ -2805,7 +2815,7 @@ async def autopost_cal_back(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminCreatePostStates.selecting_date)
     except Exception:
         logger.error(f"Error in autopost_cal_back: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "autopost_publish_now", AdminCreatePostStates.selecting_date)
@@ -2842,7 +2852,7 @@ async def autopost_publish_now(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminCreatePostStates.entering_delete_hours)
     except Exception:
         logger.error(f"Error in autopost_publish_now: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("autopost_time:"), AdminCreatePostStates.entering_time)
@@ -2864,7 +2874,7 @@ async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
         scheduled_time = scheduled_time_msk - LOCAL_TZ_OFFSET
 
         if scheduled_time < datetime.utcnow():
-            await callback.answer("❌ Выбранное время уже прошло. Выберите другое.", show_alert=True)
+            await callback.message.answer("❌ Выбранное время уже прошло. Выберите другое.")
             return
 
         await state.update_data(create_scheduled_time=scheduled_time.isoformat())
@@ -2889,7 +2899,7 @@ async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminCreatePostStates.entering_delete_hours)
     except Exception:
         logger.error(f"Error in autopost_select_time: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.message(AdminCreatePostStates.entering_time)
@@ -3604,7 +3614,7 @@ async def adm_diagnostics(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in adm_diagnostics: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка диагностики", show_alert=True)
+        await callback.message.answer("❌ Ошибка диагностики")
 
 
 @router.callback_query(F.data == "adm_ai_improve")
@@ -3667,7 +3677,7 @@ async def adm_ai_improve(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in adm_ai_improve: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "adm_deep_diagnostics")
@@ -3840,7 +3850,7 @@ async def adm_view_order(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_view_order: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("adm_confirm_payment:"))
@@ -4103,7 +4113,7 @@ async def adm_view_manager(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_view_manager: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("adm_mgr_promote:"))
@@ -4204,7 +4214,7 @@ async def adm_mgr_set_commission_start(callback: CallbackQuery, state: FSMContex
         async with async_session_maker() as session:
             manager = await session.get(Manager, manager_id)
             if not manager:
-                await callback.answer("❌ Менеджер не найден", show_alert=True)
+                await callback.message.answer("❌ Менеджер не найден")
                 return
             current_rate = float(manager.commission_rate)
 
@@ -4223,7 +4233,7 @@ async def adm_mgr_set_commission_start(callback: CallbackQuery, state: FSMContex
         )
     except Exception as e:
         logger.error(f"Error in adm_mgr_set_commission_start: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.message(AdminManagerStates.waiting_commission_rate)
@@ -4373,7 +4383,7 @@ async def adm_view_post(callback: CallbackQuery):
                     logger.warning(f"Could not send payment screenshot for post #{post_id}", exc_info=True)
     except Exception as e:
         logger.error(f"Error in adm_view_post: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 # ==================== РЕДАКТИРОВАНИЕ / УДАЛЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА ====================
@@ -4392,7 +4402,7 @@ async def adm_post_delete(callback: CallbackQuery, state: FSMContext):
         async with async_session_maker() as session:
             post = await session.get(ScheduledPost, post_id)
             if not post:
-                await callback.answer("❌ Пост не найден", show_alert=True)
+                await callback.message.answer("❌ Пост не найден")
                 return
             post.status = "cancelled"
             await session.commit()
@@ -4407,7 +4417,7 @@ async def adm_post_delete(callback: CallbackQuery, state: FSMContext):
         )
     except Exception:
         logger.error(f"Error in adm_post_delete: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("adm_post_edit_content:"))
@@ -4435,7 +4445,7 @@ async def adm_post_edit_content_start(callback: CallbackQuery, state: FSMContext
         await state.set_state(AdminEditPostStates.editing_content)
     except Exception:
         logger.error(f"Error in adm_post_edit_content_start: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.message(AdminEditPostStates.editing_content)
@@ -4520,7 +4530,7 @@ async def adm_post_edit_time_start(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminEditPostStates.selecting_date)
     except Exception:
         logger.error(f"Error in adm_post_edit_time_start: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("edit_post_cal_nav:"), AdminEditPostStates.selecting_date)
@@ -4550,7 +4560,7 @@ async def edit_post_cal_nav(callback: CallbackQuery, state: FSMContext):
         )
     except Exception:
         logger.error(f"Error in edit_post_cal_nav: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("edit_post_cal_date:"), AdminEditPostStates.selecting_date)
@@ -4580,7 +4590,7 @@ async def edit_post_cal_date(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminEditPostStates.entering_time)
     except Exception:
         logger.error(f"Error in edit_post_cal_date: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "edit_post_cal_back", AdminEditPostStates.entering_time)
@@ -4616,7 +4626,7 @@ async def edit_post_cal_back(callback: CallbackQuery, state: FSMContext):
         await state.set_state(AdminEditPostStates.selecting_date)
     except Exception:
         logger.error(f"Error in edit_post_cal_back: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("edit_post_time:"), AdminEditPostStates.entering_time)
@@ -4637,7 +4647,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
         scheduled_time_utc = scheduled_time_msk - LOCAL_TZ_OFFSET
 
         if scheduled_time_utc < datetime.utcnow():
-            await callback.answer("❌ Выбранное время уже прошло. Выберите другое.", show_alert=True)
+            await callback.message.answer("❌ Выбранное время уже прошло. Выберите другое.")
             return
 
         data = await state.get_data()
@@ -4646,7 +4656,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
         async with async_session_maker() as session:
             post = await session.get(ScheduledPost, post_id)
             if not post:
-                await callback.answer("❌ Пост не найден", show_alert=True)
+                await callback.message.answer("❌ Пост не найден")
                 await state.clear()
                 return
             post.scheduled_time = scheduled_time_utc
@@ -4664,7 +4674,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
         )
     except Exception:
         logger.error(f"Error in edit_post_select_time: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data.startswith("adm_post_approve:"))
@@ -5188,7 +5198,7 @@ async def adm_promo_list(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_promo_list: {traceback.format_exc()}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await callback.message.answer("❌ Ошибка")
 
 
 @router.callback_query(F.data == "adm_promo_create")
