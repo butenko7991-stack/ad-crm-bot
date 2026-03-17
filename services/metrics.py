@@ -554,25 +554,26 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
                 "analytics_updated": channel.analytics_updated,
             }
 
-        recent_posts = []
-        total_er = 0.0
-        er_count = 0
-        for r in recent_rows:
-            views = r.views or 0
-            engage = (r.reactions or 0) + (r.forwards or 0) + (r.saves or 0) + (r.comments or 0)
-            er = round(engage / views * 100, 2) if views > 0 else 0
-            total_er += er
-            er_count += 1
-            recent_posts.append({
-                "id": r.id,
-                "views": views,
-                "reactions": r.reactions or 0,
-                "forwards": r.forwards or 0,
-                "er": er,
-                "recorded_at": r.recorded_at,
-            })
+            # Build recent_posts inside session while ORM objects are still live
+            recent_posts = []
+            total_er = 0.0
+            er_count = 0
+            for r in recent_rows:
+                views = r.views or 0
+                engage = (r.reactions or 0) + (r.forwards or 0) + (r.saves or 0) + (r.comments or 0)
+                er = round(engage / views * 100, 2) if views > 0 else 0
+                total_er += er
+                er_count += 1
+                recent_posts.append({
+                    "id": r.id,
+                    "views": views,
+                    "reactions": r.reactions or 0,
+                    "forwards": r.forwards or 0,
+                    "er": er,
+                    "recorded_at": r.recorded_at,
+                })
 
-        avg_er = round(total_er / er_count, 2) if er_count > 0 else 0
+            avg_er = round(total_er / er_count, 2) if er_count > 0 else 0
 
         return {
             "channel": ch_snapshot,
@@ -584,7 +585,7 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
             "recent_posts": recent_posts,
         }
     except Exception as e:
-        logger.error(f"get_channel_analytics_detail error: {e}")
+        logger.error(f"get_channel_analytics_detail error: {e}", exc_info=True)
         return None
 
 
