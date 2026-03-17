@@ -96,6 +96,8 @@ async def publish_scheduled_posts(bot: Bot):
                             exc_info=True,
                         )
 
+                # Отправляем пост в канал — только ошибки отправки меняют статус
+                sent = None
                 try:
                     if post.file_id and post.file_type == "photo":
                         sent = await bot.send_photo(
@@ -128,75 +130,84 @@ async def publish_scheduled_posts(bot: Bot):
                             parse_mode=None,
                             reply_markup=post_markup,
                         )
-
-                    post.status = "posted"
-                    post.posted_at = utc_now()
-                    post.message_id = sent.message_id
-
-                    # Создаём начальную запись аналитики, если её ещё нет
-                    existing_analytics = (await session.execute(
-                        select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
-                    )).scalar_one_or_none()
-                    if not existing_analytics:
-                        initial_analytics = PostAnalytics(
-                            scheduled_post_id=post.id,
-                            order_id=post.order_id,
-                            channel_id=post.channel_id,
-                        )
-                        session.add(initial_analytics)
-
-                    await session.commit()
-                    logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
-
-                    # Уведомляем администраторов
-                    ch_name = channel.name
-                    content_len = len(post.content) if post.content else 0
-                    text_preview = (post.content[:50] + "…") if content_len > 50 else (post.content or "📎 медиа")
-                    notify_text = (
-                        f"✅ Пост #{post.id} опубликован!\n\n"
-                        f"📢 Канал: {ch_name}\n"
-                        f"🕐 Время публикации: {post.posted_at.strftime('%d.%m.%Y %H:%M')} UTC\n"
-                        f"📝 Превью: {text_preview}"
-                    )
-                    for admin_id in ADMIN_IDS:
-                        try:
-                            await bot.send_message(admin_id, notify_text, parse_mode=None)
-                        except Exception:
-                            logger.warning(f"Не удалось уведомить админа {admin_id} о посте #{post.id}", exc_info=True)
-
-                    # Отправляем статистику канала и пересылаем пост в чат менеджеров
-                    # Посты с delete_after_hours=0 ("не удалять") не являются рекламными
-                    # и не отправляются в чат менеджеров
-                    mgr_chat_id = await get_manager_group_chat_id()
-                    if mgr_chat_id and post.delete_after_hours != 0:
-                        try:
-                            await bot.send_message(
-                                mgr_chat_id,
-                                format_channel_stats_for_group(channel),
-                                parse_mode="Markdown",
-                            )
-                        except Exception:
-                            logger.warning(
-                                f"Не удалось отправить статистику канала в чат менеджеров "
-                                f"(пост #{post.id})",
-                                exc_info=True,
-                            )
-                        try:
-                            await bot.forward_message(
-                                chat_id=mgr_chat_id,
-                                from_chat_id=channel_tg_id,
-                                message_id=sent.message_id,
-                            )
-                        except Exception:
-                            logger.warning(
-                                f"Не удалось переслать пост #{post.id} в чат менеджеров",
-                                exc_info=True,
-                            )
-
                 except Exception:
                     logger.error(f"Ошибка публикации поста #{post.id}: {traceback.format_exc()}")
                     post.status = "error"
                     await session.commit()
+                    continue
+
+                if sent is None:
+                    logger.error(f"Пост #{post.id}: sent=None после отправки — пропускаем")
+                    post.status = "error"
+                    await session.commit()
+                    continue
+
+                # Пост отправлен — фиксируем статус «опубликован» немедленно,
+                # чтобы сбой в уведомлениях не мог оставить пост в статусе «pending»
+                posted_at = utc_now()
+                post.status = "posted"
+                post.posted_at = posted_at
+                post.message_id = sent.message_id
+
+                # Создаём начальную запись аналитики, если её ещё нет
+                existing_analytics = (await session.execute(
+                    select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
+                )).scalar_one_or_none()
+                if not existing_analytics:
+                    initial_analytics = PostAnalytics(
+                        scheduled_post_id=post.id,
+                        order_id=post.order_id,
+                        channel_id=post.channel_id,
+                    )
+                    session.add(initial_analytics)
+
+                await session.commit()
+                logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
+
+                # Уведомляем администраторов (сбои уведомлений не влияют на статус поста)
+                ch_name = channel.name
+                content_len = len(post.content) if post.content else 0
+                text_preview = (post.content[:50] + "…") if content_len > 50 else (post.content or "📎 медиа")
+                notify_text = (
+                    f"✅ Пост #{post.id} опубликован!\n\n"
+                    f"📢 Канал: {ch_name}\n"
+                    f"🕐 Время публикации: {posted_at.strftime('%d.%m.%Y %H:%M')} UTC\n"
+                    f"📝 Превью: {text_preview}"
+                )
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await bot.send_message(admin_id, notify_text, parse_mode=None)
+                    except Exception:
+                        logger.warning(f"Не удалось уведомить админа {admin_id} о посте #{post.id}", exc_info=True)
+
+                # Отправляем статистику канала и пересылаем пост в чат менеджеров
+                # Посты с delete_after_hours=0 ("не удалять") не являются рекламными
+                # и не отправляются в чат менеджеров
+                mgr_chat_id = await get_manager_group_chat_id()
+                if mgr_chat_id and post.delete_after_hours != 0:
+                    try:
+                        await bot.send_message(
+                            mgr_chat_id,
+                            format_channel_stats_for_group(channel),
+                            parse_mode="Markdown",
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"Не удалось отправить статистику канала в чат менеджеров "
+                            f"(пост #{post.id})",
+                            exc_info=True,
+                        )
+                    try:
+                        await bot.forward_message(
+                            chat_id=mgr_chat_id,
+                            from_chat_id=channel_tg_id,
+                            message_id=sent.message_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"Не удалось переслать пост #{post.id} в чат менеджеров",
+                            exc_info=True,
+                        )
 
     except Exception:
         logger.error(f"Ошибка в publish_scheduled_posts: {traceback.format_exc()}")
