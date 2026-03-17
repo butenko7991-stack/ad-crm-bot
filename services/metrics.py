@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select, func, case
+from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from database import async_session_maker, Channel, Manager, Order, Client, PostAnalytics
 
@@ -455,34 +456,56 @@ async def get_post_analytics_metrics() -> Optional[dict]:
             )).scalar() or 0)
 
             # Топ-5 постов по ER (реакции+пересылки+сохранения+комментарии / просмотры)
-            all_rows = (await session.execute(
-                select(
-                    PostAnalytics.id,
-                    PostAnalytics.views,
-                    PostAnalytics.reactions,
-                    PostAnalytics.forwards,
-                    PostAnalytics.saves,
-                    PostAnalytics.comments,
-                    Channel.name.label("channel_name"),
+            # JOIN по channel_id может завершиться ошибкой, если колонка ещё не добавлена
+            # миграцией — в этом случае возвращаем посты без названия канала.
+            try:
+                all_rows = (await session.execute(
+                    select(
+                        PostAnalytics.id,
+                        PostAnalytics.views,
+                        PostAnalytics.reactions,
+                        PostAnalytics.forwards,
+                        PostAnalytics.saves,
+                        PostAnalytics.comments,
+                        Channel.name.label("channel_name"),
+                    )
+                    .join(Channel, PostAnalytics.channel_id == Channel.id, isouter=True)
+                    .where(PostAnalytics.views > 0)
+                    .order_by(PostAnalytics.recorded_at.desc())
+                    .limit(100)
+                )).mappings().all()
+                all_rows = [dict(r) for r in all_rows]
+            except (ProgrammingError, OperationalError) as chan_join_e:
+                logger.warning(
+                    f"get_post_analytics_metrics: channel JOIN failed (falling back to no channel name): {chan_join_e}"
                 )
-                .join(Channel, PostAnalytics.channel_id == Channel.id, isouter=True)
-                .where(PostAnalytics.views > 0)
-                .order_by(PostAnalytics.recorded_at.desc())
-                .limit(100)
-            )).all()
+                raw_rows = (await session.execute(
+                    select(
+                        PostAnalytics.id,
+                        PostAnalytics.views,
+                        PostAnalytics.reactions,
+                        PostAnalytics.forwards,
+                        PostAnalytics.saves,
+                        PostAnalytics.comments,
+                    )
+                    .where(PostAnalytics.views > 0)
+                    .order_by(PostAnalytics.recorded_at.desc())
+                    .limit(100)
+                )).mappings().all()
+                all_rows = [dict(r, channel_name=None) for r in raw_rows]
 
         er_list = []
         total_er = 0.0
         er_count = 0
         for r in all_rows:
-            engage = r.reactions + r.forwards + r.saves + r.comments
-            er = round(engage / r.views * 100, 2) if r.views > 0 else 0
+            engage = r["reactions"] + r["forwards"] + r["saves"] + r["comments"]
+            er = round(engage / r["views"] * 100, 2) if r["views"] > 0 else 0
             total_er += er
             er_count += 1
             er_list.append({
-                "id": r.id,
-                "channel": r.channel_name or "—",
-                "views": r.views,
+                "id": r["id"],
+                "channel": r.get("channel_name") or "—",
+                "views": r["views"],
                 "er": er,
             })
 
@@ -620,20 +643,30 @@ async def get_channels_analytics_summary() -> Optional[list]:
     try:
         async with async_session_maker() as session:
             channels = (await session.execute(
-                select(Channel).where(Channel.is_active.isnot(False)).order_by(Channel.name)
+                select(Channel).where(Channel.is_active.is_not(False)).order_by(Channel.name)
             )).scalars().all()
 
-            # Количество PostAnalytics и суммарные просмотры по каналам
-            analytics_rows = (await session.execute(
-                select(
-                    PostAnalytics.channel_id,
-                    func.count(PostAnalytics.id).label("cnt"),
-                    func.sum(PostAnalytics.views).label("total_views"),
+            # Количество PostAnalytics и суммарные просмотры по каналам.
+            # Запрос оборачивается в try/except: если колонка channel_id ещё не добавлена
+            # миграцией (или содержит только NULL-значения), возвращаем пустой словарь
+            # и не падаем с ошибкой — каналы всё равно отображаются с нулевыми счётчиками.
+            posts_by_channel: dict = {}
+            try:
+                analytics_rows = (await session.execute(
+                    select(
+                        PostAnalytics.channel_id,
+                        func.count(PostAnalytics.id).label("cnt"),
+                        func.sum(PostAnalytics.views).label("total_views"),
+                    )
+                    .where(PostAnalytics.channel_id.is_not(None))
+                    .group_by(PostAnalytics.channel_id)
+                )).all()
+                posts_by_channel = {r.channel_id: (r.cnt, int(r.total_views or 0)) for r in analytics_rows}
+            except (ProgrammingError, OperationalError) as analytics_e:
+                logger.warning(
+                    f"get_channels_analytics_summary: PostAnalytics query failed, "
+                    f"returning zero counts: {analytics_e}"
                 )
-                .group_by(PostAnalytics.channel_id)
-            )).all()
-
-            posts_by_channel = {r.channel_id: (r.cnt, int(r.total_views or 0)) for r in analytics_rows}
 
             result = []
             for ch in channels:

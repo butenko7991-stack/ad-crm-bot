@@ -2555,7 +2555,7 @@ async def _render_channel_analytics_page(message, channel_id: int, back_callback
     if telemetr_id:
         buttons.append([InlineKeyboardButton(
             text="📊 Открыть на Telemetr",
-            url=f"https://telemetr.io/channel/{telemetr_id}"
+            url=f"https://telemetr.io/en/{telemetr_id}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back_callback)])
     await safe_edit_message(message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
