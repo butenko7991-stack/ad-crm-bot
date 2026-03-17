@@ -526,6 +526,7 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
                 "avg_reach": _channel_avg_reach(channel),
                 "err_percent": float(channel.err_percent or 0),
                 "analytics_updated": channel.analytics_updated,
+                "telemetr_id": channel.telemetr_id,
             }
 
             try:
