@@ -2553,6 +2553,16 @@ async def autopost_channel_analytics(callback: CallbackQuery):
 
         channels = await get_channels_analytics_summary()
 
+        if channels is None:
+            await safe_edit_message(
+                callback.message,
+                "📈 **Аналитика каналов**\n\n❌ Ошибка при загрузке данных. Проверьте логи бота.",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+                ])
+            )
+            return
+
         if not channels:
             await safe_edit_message(
                 callback.message,

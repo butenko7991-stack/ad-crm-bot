@@ -588,18 +588,20 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
         return None
 
 
-async def get_channels_analytics_summary() -> list:
+async def get_channels_analytics_summary() -> Optional[list]:
     """
     Краткая сводка по всем активным каналам для списка аналитики.
 
     Возвращает список словарей:
       id, name, subscribers, avg_reach, err_percent,
       posts_count, total_views
+
+    Возвращает None при ошибке обращения к БД.
     """
     try:
         async with async_session_maker() as session:
             channels = (await session.execute(
-                select(Channel).where(Channel.is_active == True).order_by(Channel.name)
+                select(Channel).where(Channel.is_active.isnot(False)).order_by(Channel.name)
             )).scalars().all()
 
             # Количество PostAnalytics и суммарные просмотры по каналам
@@ -614,20 +616,20 @@ async def get_channels_analytics_summary() -> list:
 
             posts_by_channel = {r.channel_id: (r.cnt, int(r.total_views or 0)) for r in analytics_rows}
 
-        result = []
-        for ch in channels:
-            cnt, total_v = posts_by_channel.get(ch.id, (0, 0))
-            result.append({
-                "id": ch.id,
-                "name": ch.name,
-                "username": ch.username,
-                "subscribers": ch.subscribers or 0,
-                "avg_reach": _channel_avg_reach(ch),
-                "err_percent": float(ch.err_percent or 0),
-                "posts_count": cnt,
-                "total_views": total_v,
-            })
+            result = []
+            for ch in channels:
+                cnt, total_v = posts_by_channel.get(ch.id, (0, 0))
+                result.append({
+                    "id": ch.id,
+                    "name": ch.name,
+                    "username": ch.username,
+                    "subscribers": ch.subscribers or 0,
+                    "avg_reach": _channel_avg_reach(ch),
+                    "err_percent": float(ch.err_percent or 0),
+                    "posts_count": cnt,
+                    "total_views": total_v,
+                })
         return result
     except Exception as e:
-        logger.error(f"get_channels_analytics_summary error: {e}")
-        return []
+        logger.error(f"get_channels_analytics_summary error: {e}", exc_info=True)
+        return None
