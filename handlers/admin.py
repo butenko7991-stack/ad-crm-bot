@@ -645,6 +645,7 @@ async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
         from services.channel_collector import (
             refresh_channel_subscribers,
             update_channel_reach_from_analytics,
+            refresh_channel_from_telemetr,
         )
 
         # 1. Обновляем имя и число подписчиков через Bot API
@@ -664,11 +665,21 @@ async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
         # 2. Пересчитываем avg_reach и ERR из накопленных PostAnalytics
         reach_data = await update_channel_reach_from_analytics(channel_id)
 
+        # 3. Обновляем данные из Telemetr (если токен настроен)
+        telemetr_data = await refresh_channel_from_telemetr(channel)
+
         # Формируем сообщение об обновлении
         parts = []
         if member_count is not None:
             parts.append(f"👥 {member_count:,} подписчиков")
-        if reach_data.get("records_used", 0) > 0:
+        if telemetr_data:
+            avg_24h = int(telemetr_data.get("avg_views_24h") or 0)
+            err = float(telemetr_data.get("err_percent") or 0)
+            if avg_24h or err:
+                parts.append(f"📊 Telemetr: охват 24ч {avg_24h:,} | ERR {err:.1f}%")
+            else:
+                parts.append("📊 Telemetr: данные обновлены")
+        elif reach_data.get("records_used", 0) > 0:
             parts.append(
                 f"👁 Охват {reach_data['avg_reach']:,} "
                 f"| ERR {reach_data['err_percent']:.1f}% "
@@ -679,7 +690,7 @@ async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
 
         await callback.answer(" | ".join(parts) if parts else "✅ Обновлено", show_alert=True)
 
-        # 3. Обновляем карточку канала
+        # 4. Обновляем карточку канала
         text, is_active, _ = await get_channel_card(channel_id)
         if text:
             await safe_edit_message(callback.message, text, get_channel_settings_keyboard(channel_id, is_active))
@@ -2514,27 +2525,39 @@ async def _render_channel_analytics_page(message, channel_id: int, back_callback
         f"👁 Средний охват: **{ch['avg_reach']:,}**\n"
         f"📊 ERR: **{ch['err_percent']:.1f}%**\n"
         f"🔄 Обновлено: {updated}\n\n"
-        f"📝 Постов отслежено: **{data['posts_count']}** "
-        f"(с просмотрами: {data['posts_with_views']})\n"
-        f"👁 Суммарно просмотров: **{data['total_views']:,}**\n"
-        f"📈 Среднее просмотров/пост: **{data['avg_views']:,}**\n"
-        f"⚡ Средний ER: **{data['avg_er']}%**\n"
     )
-    if data["recent_posts"]:
-        text += "\n🕐 **Последние посты с просмотрами:**\n"
-        for p in data["recent_posts"]:
-            dt = p["recorded_at"].strftime("%d.%m %H:%M") if p["recorded_at"] else "—"
-            text += f"  #{p['id']}: 👁{p['views']:,} 👍{p['reactions']} ↩️{p['forwards']} ER:{p['er']}% ({dt})\n"
+
+    if data.get("analytics_unavailable"):
+        text += "⚠️ _Данные аналитики постов временно недоступны._\n"
     else:
-        text += "\n_Просмотры постов ещё не собраны._\n"
+        text += (
+            f"📝 Постов отслежено: **{data['posts_count']}** "
+            f"(с просмотрами: {data['posts_with_views']})\n"
+            f"👁 Суммарно просмотров: **{data['total_views']:,}**\n"
+            f"📈 Среднее просмотров/пост: **{data['avg_views']:,}**\n"
+            f"⚡ Средний ER: **{data['avg_er']}%**\n"
+        )
+        if data["recent_posts"]:
+            text += "\n🕐 **Последние посты с просмотрами:**\n"
+            for p in data["recent_posts"]:
+                dt = p["recorded_at"].strftime("%d.%m %H:%M") if p["recorded_at"] else "—"
+                text += f"  #{p['id']}: 👁{p['views']:,} 👍{p['reactions']} ↩️{p['forwards']} ER:{p['er']}% ({dt})\n"
+        else:
+            text += "\n_Просмотры постов ещё не собраны._\n"
 
     buttons = [
         [InlineKeyboardButton(
             text="🔄 Обновить данные",
             callback_data=f"ch_analytics_refresh:{channel_id}"
         )],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data=back_callback)],
     ]
+    telemetr_id = ch.get("telemetr_id")
+    if telemetr_id:
+        buttons.append([InlineKeyboardButton(
+            text="📊 Открыть на Telemetr",
+            url=f"https://telemetr.io/channel/{telemetr_id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back_callback)])
     await safe_edit_message(message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     return True
 
@@ -2634,9 +2657,14 @@ async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
                 await callback.message.answer("❌ Канал не найден")
                 return
 
-        from services.channel_collector import refresh_channel_subscribers, update_channel_reach_from_analytics
+        from services.channel_collector import (
+            refresh_channel_subscribers,
+            update_channel_reach_from_analytics,
+            refresh_channel_from_telemetr,
+        )
         await refresh_channel_subscribers(bot, channel)
         await update_channel_reach_from_analytics(channel_id)
+        await refresh_channel_from_telemetr(channel)
 
         await _render_channel_analytics_page(callback.message, channel_id, back_callback=f"adm_ch:{channel_id}")
     except Exception as e:

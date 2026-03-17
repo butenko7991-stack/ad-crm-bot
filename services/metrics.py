@@ -508,7 +508,9 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
 
     Возвращает словарь с ключами:
       channel, posts_count, posts_with_views, total_views,
-      avg_views, avg_er, recent_posts
+      avg_views, avg_er, recent_posts, analytics_unavailable (опционально)
+
+    Возвращает None только если канал не найден или критическая ошибка БД.
     """
     try:
         async with async_session_maker() as session:
@@ -516,34 +518,6 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
             if not channel:
                 return None
 
-            posts_count = (await session.execute(
-                select(func.count(PostAnalytics.id))
-                .where(PostAnalytics.channel_id == channel_id)
-            )).scalar() or 0
-
-            posts_with_views = (await session.execute(
-                select(func.count(PostAnalytics.id))
-                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
-            )).scalar() or 0
-
-            total_views = int((await session.execute(
-                select(func.sum(PostAnalytics.views))
-                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
-            )).scalar() or 0)
-
-            avg_views_raw = float((await session.execute(
-                select(func.avg(PostAnalytics.views))
-                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
-            )).scalar() or 0)
-
-            recent_rows = (await session.execute(
-                select(PostAnalytics)
-                .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
-                .order_by(PostAnalytics.recorded_at.desc())
-                .limit(5)
-            )).scalars().all()
-
-            # Snapshot channel fields inside session
             ch_snapshot = {
                 "id": channel.id,
                 "name": channel.name,
@@ -552,38 +526,82 @@ async def get_channel_analytics_detail(channel_id: int) -> Optional[dict]:
                 "avg_reach": _channel_avg_reach(channel),
                 "err_percent": float(channel.err_percent or 0),
                 "analytics_updated": channel.analytics_updated,
+                "telemetr_id": channel.telemetr_id,
             }
 
-            # Build recent_posts inside session while ORM objects are still live
-            recent_posts = []
-            total_er = 0.0
-            er_count = 0
-            for r in recent_rows:
-                views = r.views or 0
-                engage = (r.reactions or 0) + (r.forwards or 0) + (r.saves or 0) + (r.comments or 0)
-                er = round(engage / views * 100, 2) if views > 0 else 0
-                total_er += er
-                er_count += 1
-                recent_posts.append({
-                    "id": r.id,
-                    "views": views,
-                    "reactions": r.reactions or 0,
-                    "forwards": r.forwards or 0,
-                    "er": er,
-                    "recorded_at": r.recorded_at,
-                })
+            try:
+                posts_count = (await session.execute(
+                    select(func.count(PostAnalytics.id))
+                    .where(PostAnalytics.channel_id == channel_id)
+                )).scalar() or 0
 
-            avg_er = round(total_er / er_count, 2) if er_count > 0 else 0
+                posts_with_views = (await session.execute(
+                    select(func.count(PostAnalytics.id))
+                    .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+                )).scalar() or 0
 
-        return {
-            "channel": ch_snapshot,
-            "posts_count": posts_count,
-            "posts_with_views": posts_with_views,
-            "total_views": total_views,
-            "avg_views": round(avg_views_raw),
-            "avg_er": avg_er,
-            "recent_posts": recent_posts,
-        }
+                total_views = int((await session.execute(
+                    select(func.sum(PostAnalytics.views))
+                    .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+                )).scalar() or 0)
+
+                avg_views_raw = float((await session.execute(
+                    select(func.avg(PostAnalytics.views))
+                    .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+                )).scalar() or 0)
+
+                recent_rows = (await session.execute(
+                    select(PostAnalytics)
+                    .where(PostAnalytics.channel_id == channel_id, PostAnalytics.views > 0)
+                    .order_by(PostAnalytics.recorded_at.desc())
+                    .limit(5)
+                )).scalars().all()
+
+                # Build recent_posts inside session while ORM objects are still live
+                recent_posts = []
+                total_er = 0.0
+                er_count = 0
+                for r in recent_rows:
+                    views = r.views or 0
+                    engage = (r.reactions or 0) + (r.forwards or 0) + (r.saves or 0) + (r.comments or 0)
+                    er = round(engage / views * 100, 2) if views > 0 else 0
+                    total_er += er
+                    er_count += 1
+                    recent_posts.append({
+                        "id": r.id,
+                        "views": views,
+                        "reactions": r.reactions or 0,
+                        "forwards": r.forwards or 0,
+                        "er": er,
+                        "recorded_at": r.recorded_at,
+                    })
+
+                avg_er = round(total_er / er_count, 2) if er_count > 0 else 0
+
+                return {
+                    "channel": ch_snapshot,
+                    "posts_count": posts_count,
+                    "posts_with_views": posts_with_views,
+                    "total_views": total_views,
+                    "avg_views": round(avg_views_raw),
+                    "avg_er": avg_er,
+                    "recent_posts": recent_posts,
+                }
+            except Exception as analytics_e:
+                logger.error(
+                    f"get_channel_analytics_detail PostAnalytics error for channel {channel_id}: {analytics_e}",
+                    exc_info=True,
+                )
+                return {
+                    "channel": ch_snapshot,
+                    "posts_count": 0,
+                    "posts_with_views": 0,
+                    "total_views": 0,
+                    "avg_views": 0,
+                    "avg_er": 0,
+                    "recent_posts": [],
+                    "analytics_unavailable": True,
+                }
     except Exception as e:
         logger.error(f"get_channel_analytics_detail error: {e}", exc_info=True)
         return None

@@ -90,6 +90,9 @@ async def init_db():
         "ALTER TABLE managers ADD COLUMN IF NOT EXISTS timezone_offset INTEGER DEFAULT 3",
         "ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
         "UPDATE channels SET is_active = TRUE WHERE is_active IS NULL",
+        # Заполняем channel_id для записей post_analytics, у которых он не задан,
+        # беря значение из связанного scheduled_post
+        "UPDATE post_analytics pa SET channel_id = sp.channel_id FROM scheduled_posts sp WHERE pa.scheduled_post_id = sp.id AND pa.channel_id IS NULL",
     ]
 
     for migration in migrations:

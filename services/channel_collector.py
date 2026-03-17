@@ -107,6 +107,68 @@ async def update_channel_reach_from_analytics(channel_id: int) -> dict:
         return {}
 
 
+async def refresh_channel_from_telemetr(channel: Channel) -> Optional[dict]:
+    """
+    Обновить аналитику канала через Telemetr API.
+
+    Сохраняет в БД:
+      avg_reach_24h, avg_reach_48h, avg_reach (из telemetr avg_views),
+      err_percent, err24_percent, telemetr_id, subscribers.
+
+    Возвращает словарь со свежими показателями, либо None если Telemetr
+    не настроен или канал не найден в базе Telemetr.
+    """
+    from services.telemetr import telemetr_service
+
+    if not telemetr_service.api_token:
+        return None
+
+    try:
+        stats = await telemetr_service.get_full_stats(
+            telegram_id=channel.telegram_id,
+            username=channel.username,
+        )
+        if not stats:
+            logger.info(f"Канал «{channel.name}»: не найден в Telemetr")
+            return None
+
+        async with async_session_maker() as session:
+            ch = await session.get(Channel, channel.id)
+            if not ch:
+                return None
+
+            if stats.get("internal_id"):
+                ch.telemetr_id = str(stats["internal_id"])
+            if stats.get("subscribers"):
+                ch.subscribers = int(stats["subscribers"])
+            avg_24h = int(stats.get("avg_views_24h") or 0)
+            avg_48h = int(stats.get("avg_views_48h") or 0)
+            avg_all = int(stats.get("avg_views") or 0)
+            if avg_24h:
+                ch.avg_reach_24h = avg_24h
+            if avg_48h:
+                ch.avg_reach_48h = avg_48h
+            if avg_all:
+                ch.avg_reach = avg_all
+            err = float(stats.get("err_percent") or 0)
+            err24 = float(stats.get("err24_percent") or 0)
+            if err:
+                ch.err_percent = err
+            if err24:
+                ch.err24_percent = err24
+            ch.analytics_updated = datetime.now(timezone.utc).replace(tzinfo=None)
+            await session.commit()
+
+        logger.info(
+            f"Канал «{channel.name}»: Telemetr — охват 24ч {avg_24h:,}, "
+            f"ERR {err:.1f}%, id={stats.get('internal_id')}"
+        )
+        return stats
+    except Exception as e:
+        logger.error(f"Ошибка обновления канала {channel.id} через Telemetr: {e}")
+        return None
+
+
 async def record_post_views(
     channel_tg_id: int,
     message_id: int,
