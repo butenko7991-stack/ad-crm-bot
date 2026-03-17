@@ -4118,9 +4118,10 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                 client.total_orders = (client.total_orders or 0) + 1
                 client.total_spent = (client.total_spent or Decimal("0")) + order.final_price
 
-            await session.commit()
-
+            # Сохраняем telegram_id до commit(), чтобы не обращаться к истекшему объекту
             client_telegram_id = client.telegram_id if client else None
+
+            await session.commit()
 
             # Получаем канал для уведомления в чат менеджеров
             channel_for_notify = None

@@ -12,6 +12,7 @@ from sqlalchemy import select, func
 
 from config import CLAUDE_API_KEY, CLAUDE_MODEL, AI_TRAINER_SYSTEM_PROMPT
 from database import async_session_maker, AIInsight
+from utils.helpers import utc_now
 
 
 logger = logging.getLogger(__name__)

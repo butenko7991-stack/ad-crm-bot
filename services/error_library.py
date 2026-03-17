@@ -16,9 +16,10 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from utils.helpers import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +371,7 @@ def record_unknown_error(
     При превышении ERROR_LOG_MAX_ENTRIES старые записи удаляются.
     """
     entry = {
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ts": utc_now().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "exc_type": type(exc).__name__,
         "exc_msg": str(exc)[:300],
         "traceback": traceback_text[-1000:],

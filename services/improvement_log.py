@@ -22,9 +22,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from utils.helpers import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ def log_improvement(
         author: Кто добавил ('system', 'ai', 'admin:<id>').
     """
     entry = {
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ts": utc_now().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "category": category,
         "title": title[:200],
         "description": description[:2000],

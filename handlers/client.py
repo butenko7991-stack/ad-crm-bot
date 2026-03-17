@@ -365,7 +365,7 @@ def _get_loyalty_discount(total_orders: int) -> int:
 
 async def _validate_promo(code: str) -> tuple[int, str]:
     """Валидировать промокод. Возвращает (discount_percent, error_message)."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = utc_now()
     try:
         async with async_session_maker() as session:
             result = await session.execute(
@@ -567,7 +567,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             # если другой клиент использовал последний «слот» одновременно,
             # UPDATE не затронет строку и мы вернём ошибку.
             if promo_code_used:
-                now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+                now_dt = utc_now()
                 promo_update_result = await session.execute(
                     update(PromoCode)
                     .where(
