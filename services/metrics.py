@@ -334,7 +334,7 @@ async def get_client_metrics() -> Optional[dict]:
     топ-5 клиентов по тратам.
     """
     try:
-        now = utc_now()
+        now = _utcnow()
         month_ago = now - timedelta(days=30)
         async with async_session_maker() as session:
             total_clients = (await session.execute(
