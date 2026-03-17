@@ -16,13 +16,14 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
-from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
+from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, ADMIN_PASSWORD
 from database import init_db, async_session_maker
 from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
 from services.channel_collector import refresh_all_channels
 from services.settings import get_manager_group_chat_id
-from utils.helpers import format_channel_stats_for_group
+from services.error_library import lookup_error, record_unknown_error
+from utils.helpers import format_channel_stats_for_group, utc_now
 
 
 # Настройка логирования
@@ -40,7 +41,7 @@ async def cleanup_expired_slots():
             result = await session.execute(
                 select(Slot).where(
                     Slot.status == "reserved",
-                    Slot.reserved_until < datetime.utcnow()
+                    Slot.reserved_until < utc_now()
                 )
             )
             expired_slots = result.scalars().all()
@@ -62,7 +63,7 @@ async def publish_scheduled_posts(bot: Bot):
             result = await session.execute(
                 select(ScheduledPost).where(
                     ScheduledPost.status == "pending",
-                    ScheduledPost.scheduled_time <= datetime.utcnow()
+                    ScheduledPost.scheduled_time <= utc_now()
                 )
             )
             posts = result.scalars().all()
@@ -129,7 +130,7 @@ async def publish_scheduled_posts(bot: Bot):
                         )
 
                     post.status = "posted"
-                    post.posted_at = datetime.utcnow()
+                    post.posted_at = utc_now()
                     post.message_id = sent.message_id
 
                     # Создаём начальную запись аналитики, если её ещё нет
@@ -216,7 +217,7 @@ async def delete_posted_posts(bot: Bot):
             )
             posts = result.scalars().all()
 
-            now = datetime.utcnow()
+            now = utc_now()
             for post in posts:
                 if post.posted_at + timedelta(hours=post.delete_after_hours) > now:
                     continue
@@ -247,15 +248,17 @@ async def delete_posted_posts(bot: Bot):
 async def global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
     """
     Глобальный обработчик ошибок aiogram 3.x.
-    Логирует ошибку и отправляет уведомление всем администраторам.
+    Логирует ошибку, обогащает уведомление подсказкой из библиотеки ошибок
+    и отправляет уведомление всем администраторам.
     """
     exception = event.exception
     update = event.update
 
     # Полный трейсбэк в лог
+    tb = traceback.format_exc()
     logger.error(
         f"Необработанное исключение при обработке обновления {update.update_id}: "
-        f"{type(exception).__name__}: {exception}\n{traceback.format_exc()}"
+        f"{type(exception).__name__}: {exception}\n{tb}"
     )
 
     # Определяем контекст обновления для диагностики
@@ -270,8 +273,19 @@ async def global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
     ctx = "\n".join(ctx_parts) if ctx_parts else "нет деталей"
 
     # Трейсбэк (первые 600 символов, чтобы не флудить)
-    tb = traceback.format_exc()
     tb_short = tb[-600:] if len(tb) > 600 else tb
+
+    # Поиск в библиотеке ошибок
+    known = lookup_error(exception, tb)
+    if known:
+        solution_block = (
+            f"\n\n📖 *Известная ошибка:* {known['title']}\n"
+            f"✅ *Решение:* {known['solution'][:400]}"
+        )
+    else:
+        # Записываем неизвестную ошибку для пополнения библиотеки
+        record_unknown_error(exception, tb, context=ctx)
+        solution_block = "\n\n❓ *Ошибка не найдена в библиотеке* — записана для анализа."
 
     notify_text = (
         f"🚨 *Ошибка в боте*\n\n"
@@ -279,6 +293,7 @@ async def global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
         f"*Сообщение:* `{str(exception)[:200]}`\n\n"
         f"*Контекст:*\n{ctx}\n\n"
         f"*Трейсбэк (конец):*\n```\n{tb_short}\n```"
+        f"{solution_block}"
     )
 
     for admin_id in ADMIN_IDS:
@@ -319,6 +334,13 @@ async def main():
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не установлен!")
         return
+
+    # Проверяем небезопасный пароль по умолчанию
+    if ADMIN_PASSWORD == "admin123":
+        logger.warning(
+            "⚠️  ADMIN_PASSWORD использует небезопасное значение по умолчанию 'admin123'. "
+            "Установите надёжный пароль через переменную окружения ADMIN_PASSWORD."
+        )
     
     # Инициализация бота
     bot = Bot(

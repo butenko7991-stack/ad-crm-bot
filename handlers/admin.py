@@ -20,18 +20,46 @@ from database import async_session_maker, Channel, Manager, Order, ScheduledPost
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
-from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
-from utils.helpers import escape_md
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates
+from utils.helpers import escape_md, utc_now
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
+from services.error_library import KNOWN_ERRORS, get_error_log, format_known_error
+from services.improvement_log import get_recent_improvements, get_improvement_stats, format_improvement_entry, log_improvement
 
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Хранилище авторизованных админов
-authenticated_admins = set()
+# Сессии администраторов с поддержкой автоматического истечения срока действия
+_ADMIN_SESSION_TIMEOUT_HOURS = 24
+
+
+class _TimedAuthSet:
+    """Множество авторизованных админов с автоматическим истечением сессии."""
+
+    def __init__(self, timeout_hours: int = _ADMIN_SESSION_TIMEOUT_HOURS):
+        self._timeout = timedelta(hours=timeout_hours)
+        self._sessions: dict[int, datetime] = {}
+
+    def add(self, user_id: int) -> None:
+        self._sessions[user_id] = utc_now()
+
+    def discard(self, user_id: int) -> None:
+        self._sessions.pop(user_id, None)
+
+    def __contains__(self, user_id: int) -> bool:
+        ts = self._sessions.get(user_id)
+        if ts is None:
+            return False
+        if utc_now() - ts > self._timeout:
+            del self._sessions[user_id]
+            return False
+        return True
+
+
+authenticated_admins = _TimedAuthSet()
 
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -39,7 +67,7 @@ authenticated_admins = set()
 def _md_escape(text: str) -> str:
     """Экранировать специальные символы Markdown v1 в пользовательских данных.
 
-    В Telegram Markdown v1 специальны только: _ * ` [
+    В Telegram Markdown v1 специальны: _ * ` [
     Каждый из них предваряется обратным слэшем.
     """
     for ch in ("_", "*", "`", "["):
@@ -141,7 +169,7 @@ async def check_admin_password(message: Message, state: FSMContext):
     """Проверить пароль админа"""
     try:
         await message.delete()
-    except:
+    except Exception:
         pass
     
     if message.text == ADMIN_PASSWORD:
@@ -164,7 +192,7 @@ async def admin_logout(callback: CallbackQuery):
     await callback.answer("👋 Вы вышли из админ-панели", show_alert=True)
     try:
         await callback.message.delete()
-    except:
+    except Exception:
         pass
 
 
@@ -336,7 +364,7 @@ async def receive_new_price(message: Message, state: FSMContext):
     """Получить новую цену"""
     try:
         new_price = int(message.text.strip().replace(" ", "").replace(",", ""))
-    except:
+    except Exception:
         await message.answer("❌ Введите число!")
         return
     
@@ -1059,7 +1087,7 @@ async def receive_channel_forward(message: Message, state: FSMContext, bot: Bot)
             channel_id = chat.id
             channel_name = chat.title
             channel_username = chat.username
-        except:
+        except Exception:
             await message.answer("❌ Канал не найден")
             return
     else:
@@ -1075,7 +1103,7 @@ async def receive_channel_forward(message: Message, state: FSMContext, bot: Bot)
     
     try:
         member_count = await bot.get_chat_member_count(channel_id)
-    except:
+    except Exception:
         member_count = 0
     
     await state.update_data(
@@ -1847,7 +1875,7 @@ async def adm_cpm_receive_value(message: Message, state: FSMContext):
             db_row = result.scalar_one_or_none()
             if db_row:
                 db_row.cpm = new_cpm
-                db_row.updated_at = datetime.utcnow()
+                db_row.updated_at = utc_now()
                 db_row.updated_by = message.from_user.id
             else:
                 session.add(CategoryCPM(
@@ -2321,7 +2349,7 @@ async def pa_receive_comments(message: Message, state: FSMContext):
                 existing.forwards = forwards
                 existing.saves = saves
                 existing.comments = comments
-                existing.recorded_at = datetime.utcnow()
+                existing.recorded_at = utc_now()
                 existing.recorded_by = message.from_user.id
                 existing.ai_recommendation = None  # Сбрасываем старую рекомендацию
                 analytics = existing
@@ -2857,7 +2885,7 @@ async def autopost_publish_now(callback: CallbackQuery, state: FSMContext):
 
     try:
         # Сохраняем текущее UTC-время как время публикации
-        now_utc = datetime.utcnow()
+        now_utc = utc_now()
         await state.update_data(create_scheduled_time=now_utc.isoformat())
 
         data = await state.get_data()
@@ -2901,7 +2929,7 @@ async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
         scheduled_time_msk = datetime.fromisoformat(f"{date_iso}T{time_str}")
         scheduled_time = scheduled_time_msk - LOCAL_TZ_OFFSET
 
-        if scheduled_time < datetime.utcnow():
+        if scheduled_time < utc_now():
             await callback.message.answer("❌ Выбранное время уже прошло. Выберите другое.")
             return
 
@@ -2954,7 +2982,7 @@ async def autopost_enter_time_text(message: Message, state: FSMContext):
     scheduled_time_msk = datetime.combine(date_type.fromisoformat(date_iso), time_obj)
     scheduled_time = scheduled_time_msk - LOCAL_TZ_OFFSET  # convert local → UTC
 
-    if scheduled_time < datetime.utcnow():
+    if scheduled_time < utc_now():
         await message.answer("❌ Дата публикации должна быть в будущем. Введите другое время.")
         return
 
@@ -3633,6 +3661,8 @@ async def adm_diagnostics(callback: CallbackQuery):
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_diagnostics")],
             [InlineKeyboardButton(text="🔬 Глубокая диагностика", callback_data="adm_deep_diagnostics")],
             [InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="📚 Библиотека ошибок", callback_data="adm_error_library")],
+            [InlineKeyboardButton(text="💡 Журнал улучшений", callback_data="adm_improvement_log")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
         ]
 
@@ -3706,6 +3736,176 @@ async def adm_ai_improve(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in adm_ai_improve: {traceback.format_exc()}")
         await callback.message.answer("❌ Ошибка")
+
+
+@router.callback_query(F.data.startswith("adm_error_library"))
+async def adm_error_library(callback: CallbackQuery):
+    """Просмотр библиотеки известных ошибок и журнала неизвестных ошибок."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    # Определяем режим: known (известные) или unknown (неизвестные/журнал)
+    data = callback.data  # "adm_error_library" | "adm_error_library:unknown"
+    show_unknown = data.endswith(":unknown")
+
+    try:
+        if show_unknown:
+            # Журнал неизвестных ошибок (runtime)
+            entries = get_error_log(limit=10)
+            if entries:
+                lines = ["📋 **Журнал неизвестных ошибок** (последние 10)\n"]
+                for i, e in enumerate(entries):
+                    ts = e.get("ts", "")[:16].replace("T", " ")
+                    exc_type = e.get("exc_type", "?")
+                    exc_msg = e.get("exc_msg", "")[:100]
+                    ctx = e.get("context", "")[:80]
+                    lines.append(
+                        f"*{i+1}.* `{exc_type}` | {ts} UTC\n"
+                        f"   {exc_msg}\n"
+                        f"   _{ctx}_\n"
+                    )
+                text = "\n".join(lines)
+            else:
+                text = "📋 **Журнал неизвестных ошибок**\n\n✅ Журнал пуст — все ошибки распознаны библиотекой."
+
+            buttons = [
+                [InlineKeyboardButton(text="📖 Известные ошибки", callback_data="adm_error_library")],
+                [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")],
+            ]
+        else:
+            # Список известных категорий и количество шаблонов
+            from collections import Counter
+            cat_counts = Counter(e["category"] for e in KNOWN_ERRORS)
+            cat_lines = "\n".join(
+                f"• `{cat}`: {cnt} шаблон(ов)" for cat, cnt in sorted(cat_counts.items())
+            )
+            text = (
+                f"📚 **Библиотека ошибок**\n\n"
+                f"Содержит **{len(KNOWN_ERRORS)}** известных шаблонов.\n\n"
+                f"**По категориям:**\n{cat_lines}\n\n"
+                f"Каждая ошибка содержит описание причины и пошаговое решение.\n"
+                f"При возникновении известной ошибки администратор получает подсказку автоматически."
+            )
+
+            buttons = [
+                [InlineKeyboardButton(text="📋 Неизвестные ошибки", callback_data="adm_error_library:unknown")],
+                [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")],
+            ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception:
+        logger.error(f"Error in adm_error_library: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки библиотеки ошибок")
+
+
+@router.callback_query(F.data.startswith("adm_improvement_log"))
+async def adm_improvement_log_view(callback: CallbackQuery):
+    """Просмотр журнала улучшений бота."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        stats = get_improvement_stats()
+        entries = get_recent_improvements(limit=5)
+
+        total = stats.get("total", 0)
+        by_cat = stats.get("by_category", {})
+
+        from services.improvement_log import CATEGORIES
+        cat_lines = []
+        for cat_key, cnt in sorted(by_cat.items(), key=lambda x: -x[1]):
+            label = CATEGORIES.get(cat_key, cat_key)
+            cat_lines.append(f"• {label}: {cnt}")
+        cat_text = "\n".join(cat_lines) if cat_lines else "пусто"
+
+        header = (
+            f"💡 **Журнал улучшений бота**\n\n"
+            f"Всего записей: **{total}**\n\n"
+            f"**По типам:**\n{cat_text}\n\n"
+        )
+
+        if entries:
+            header += "**Последние улучшения:**\n\n"
+            entry_texts = []
+            for i, e in enumerate(entries):
+                entry_texts.append(format_improvement_entry(e, i))
+            text = header + "\n\n".join(entry_texts)
+        else:
+            text = header + "_Журнал пока пуст. AI-рекомендации появятся после первого запуска анализа._"
+
+        # Кнопка «Записать заметку» — позволяет администратору вручную зафиксировать улучшение
+        buttons = [
+            [InlineKeyboardButton(text="🤖 Запустить AI-анализ", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="📝 Добавить заметку", callback_data="adm_add_improvement_note")],
+            [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception:
+        logger.error(f"Error in adm_improvement_log_view: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки журнала улучшений")
+
+
+@router.callback_query(F.data == "adm_add_improvement_note")
+async def adm_add_improvement_note(callback: CallbackQuery, state: FSMContext):
+    """Начало ввода заметки об улучшении администратором."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    await safe_edit_message(
+        callback.message,
+        "📝 **Добавить заметку об улучшении**\n\n"
+        "Введите текст заметки (что было улучшено, какая проблема решена).\n\n"
+        "Или нажмите /cancel для отмены.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="adm_improvement_log")]
+        ])
+    )
+    await state.set_state(AdminImprovementStates.waiting_improvement_note)
+
+
+@router.message(AdminImprovementStates.waiting_improvement_note)
+async def adm_save_improvement_note(message: Message, state: FSMContext):
+    """Сохранение заметки об улучшении от администратора."""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    text = message.text or ""
+    if not text.strip() or text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Отменено.")
+        return
+
+    log_improvement(
+        title=text[:80],
+        description=text,
+        category="admin_note",
+        author=f"admin:{message.from_user.id}",
+    )
+    await state.clear()
+    await message.answer(
+        "✅ Заметка сохранена в журнал улучшений.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💡 Журнал улучшений", callback_data="adm_improvement_log")]
+        ])
+    )
 
 
 @router.callback_query(F.data == "adm_deep_diagnostics")
@@ -3898,7 +4098,7 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                 return
 
             order.status = "payment_confirmed"
-            order.paid_at = datetime.utcnow()
+            order.paid_at = utc_now()
 
             # Начисляем комиссию менеджеру
             manager_telegram_id = None
@@ -3912,10 +4112,16 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                     manager.total_earned = (manager.total_earned or Decimal("0")) + commission
                     manager_telegram_id = manager.telegram_id
 
-            await session.commit()
-
+            # Обновляем статистику клиента (только при реальной оплате)
             client = await session.get(Client, order.client_id)
+            if client:
+                client.total_orders = (client.total_orders or 0) + 1
+                client.total_spent = (client.total_spent or Decimal("0")) + order.final_price
+
+            # Сохраняем telegram_id до commit(), чтобы не обращаться к истекшему объекту
             client_telegram_id = client.telegram_id if client else None
+
+            await session.commit()
 
             # Получаем канал для уведомления в чат менеджеров
             channel_for_notify = None
@@ -3989,6 +4195,15 @@ async def adm_reject_payment(callback: CallbackQuery, bot: Bot):
                 return
 
             order.status = "cancelled"
+
+            # Освобождаем слот, чтобы другие клиенты могли его забронировать
+            if order.slot_id:
+                slot = await session.get(Slot, order.slot_id)
+                if slot and slot.status == "reserved":
+                    slot.status = "available"
+                    slot.reserved_by = None
+                    slot.reserved_until = None
+
             await session.commit()
 
             client = await session.get(Client, order.client_id)
@@ -4040,7 +4255,7 @@ async def adm_mark_posted(callback: CallbackQuery, bot: Bot):
                 return
 
             order.status = "posted"
-            order.posted_at = datetime.utcnow()
+            order.posted_at = utc_now()
 
             # Помечаем слот как забронированный
             if order.slot_id:
@@ -4674,7 +4889,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
         scheduled_time_msk = datetime.fromisoformat(f"{date_iso}T{time_str}")
         scheduled_time_utc = scheduled_time_msk - LOCAL_TZ_OFFSET
 
-        if scheduled_time_utc < datetime.utcnow():
+        if scheduled_time_utc < utc_now():
             await callback.message.answer("❌ Выбранное время уже прошло. Выберите другое.")
             return
 

@@ -11,12 +11,12 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import select
+from sqlalchemy import select, update, or_
 
 from config import CHANNEL_CATEGORIES, ADMIN_IDS, LOYALTY_DISCOUNTS
 from database import async_session_maker, Channel, Slot, Client, Order, Manager, PromoCode
 from keyboards import get_channels_keyboard, get_dates_keyboard, get_calendar_keyboard, get_times_keyboard, get_format_keyboard
-from utils import BookingStates, channel_link
+from utils import BookingStates, channel_link, utc_now
 from services.settings import get_setting, PAYMENT_LINK_KEY
 
 
@@ -365,7 +365,7 @@ def _get_loyalty_discount(total_orders: int) -> int:
 
 async def _validate_promo(code: str) -> tuple[int, str]:
     """Валидировать промокод. Возвращает (discount_percent, error_message)."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = utc_now()
     try:
         async with async_session_maker() as session:
             result = await session.execute(
@@ -531,7 +531,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             
             slot.status = "reserved"
             slot.reserved_by = user.id
-            slot.reserved_until = datetime.utcnow() + timedelta(hours=24)
+            slot.reserved_until = utc_now() + timedelta(hours=24)
             
             # Определяем менеджера по реферальной ссылке клиента
             manager_id = None
@@ -562,21 +562,44 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             )
             session.add(order)
 
-            # Обновляем счётчик использований промокода
+            # Атомарно увеличиваем счётчик использований промокода.
+            # WHERE-условие гарантирует, что код ещё не исчерпан и не истёк:
+            # если другой клиент использовал последний «слот» одновременно,
+            # UPDATE не затронет строку и мы вернём ошибку.
             if promo_code_used:
-                promo_result = await session.execute(
-                    select(PromoCode).where(PromoCode.code == promo_code_used)
+                now_dt = utc_now()
+                promo_update_result = await session.execute(
+                    update(PromoCode)
+                    .where(
+                        PromoCode.code == promo_code_used,
+                        PromoCode.is_active.is_(True),
+                        or_(PromoCode.max_uses.is_(None), PromoCode.uses_count < PromoCode.max_uses),
+                        or_(PromoCode.expires_at.is_(None), PromoCode.expires_at > now_dt),
+                    )
+                    .values(uses_count=PromoCode.uses_count + 1)
+                    .returning(PromoCode.id, PromoCode.uses_count, PromoCode.max_uses)
                 )
-                promo = promo_result.scalar_one_or_none()
-                if promo:
-                    promo.uses_count = (promo.uses_count or 0) + 1
-                    # Автоматически деактивируем исчерпанный промокод
-                    if promo.max_uses and promo.uses_count >= promo.max_uses:
-                        promo.is_active = False
-
-            # Обновляем статистику клиента
-            client.total_orders = (client.total_orders or 0) + 1
-            client.total_spent = (client.total_spent or Decimal("0")) + final_price.quantize(Decimal("0.01"))
+                promo_row = promo_update_result.fetchone()
+                if promo_row is None:
+                    # Промокод стал недействительным между проверкой и оформлением заказа
+                    await callback.message.edit_text(
+                        "❌ Промокод больше недействителен. Пожалуйста, оформите заказ без него."
+                    )
+                    await state.clear()
+                    return
+                # Автоматически деактивируем исчерпанный промокод
+                if promo_row.max_uses and promo_row.uses_count >= promo_row.max_uses:
+                    try:
+                        await session.execute(
+                            update(PromoCode)
+                            .where(PromoCode.id == promo_row.id)
+                            .values(is_active=False)
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"Не удалось деактивировать исчерпанный промокод id={promo_row.id}",
+                            exc_info=True,
+                        )
 
             await session.commit()
             
@@ -706,7 +729,7 @@ async def receive_payment_screenshot(message: Message, state: FSMContext, bot: B
                     f"💳 **Новая оплата!**\n\nЗаказ #{order_id}\nПроверьте в админ-панели.",
                     parse_mode=ParseMode.MARKDOWN
                 )
-            except:
+            except Exception:
                 pass
     except Exception as e:
         logger.error(f"Error in receive_payment_screenshot: {traceback.format_exc()}")

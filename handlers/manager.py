@@ -503,7 +503,7 @@ async def mgr_my_sales(callback: CallbackQuery):
             manager_id = manager.id
 
             # Статистика за текущий месяц
-            today = datetime.utcnow()
+            today = utc_now()
             month_start = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
             month_result = await session.execute(
@@ -810,7 +810,15 @@ async def request_payout(callback: CallbackQuery, state: FSMContext):
             if not manager:
                 await callback.message.answer("❌ Вы не менеджер")
                 return
-            
+
+            if not manager.is_active:
+                buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+                await callback.message.edit_text(
+                    "❌ Ваш аккаунт деактивирован. Обратитесь к администратору.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                )
+                return
+
             balance = float(manager.balance or 0)
         
         if balance < 500:
@@ -838,7 +846,7 @@ async def receive_payout_amount(message: Message, state: FSMContext):
     """Получить сумму вывода"""
     try:
         amount = int(message.text.strip().replace(" ", ""))
-    except:
+    except Exception:
         await message.answer("❌ Введите число")
         return
     

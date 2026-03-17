@@ -5,16 +5,20 @@ import logging
 import re
 import asyncio
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiohttp
 from sqlalchemy import select, func
 
 from config import CLAUDE_API_KEY, CLAUDE_MODEL, AI_TRAINER_SYSTEM_PROMPT
 from database import async_session_maker, AIInsight
+from utils.helpers import utc_now
 
 
 logger = logging.getLogger(__name__)
+
+# Максимальный возраст истории диалога (неактивные сессии очищаются автоматически)
+_CONVERSATION_TTL_HOURS = 24
 
 
 class AITrainerService:
@@ -23,7 +27,35 @@ class AITrainerService:
     def __init__(self, api_key: str = CLAUDE_API_KEY):
         self.api_key = api_key
         self.base_url = "https://api.anthropic.com/v1/messages"
-        self.conversation_history: Dict[int, List[dict]] = {}
+        # Структура: {user_id: {"history": [...], "last_active": datetime}}
+        self.conversation_history: Dict[int, dict] = {}
+    
+    def _get_user_history(self, user_id: int) -> List[dict]:
+        """Получить историю диалога пользователя, создав запись при необходимости."""
+        return self.conversation_history.setdefault(
+            user_id, {"history": [], "last_active": utc_now()}
+        )["history"]
+
+    def _touch_user_history(self, user_id: int) -> None:
+        """Обновить метку активности пользователя."""
+        if user_id in self.conversation_history:
+            self.conversation_history[user_id]["last_active"] = utc_now()
+
+    def _cleanup_stale_histories(self) -> None:
+        """Удалить истории диалогов неактивных пользователей (старше TTL)."""
+        cutoff = utc_now() - timedelta(hours=_CONVERSATION_TTL_HOURS)
+        stale = []
+        for uid, data in self.conversation_history.items():
+            last_active = data.get("last_active")
+            if last_active is None:
+                logger.warning(f"AI Trainer: отсутствует last_active для user_id={uid}, запись будет очищена")
+                stale.append(uid)
+            elif last_active < cutoff:
+                stale.append(uid)
+        for uid in stale:
+            del self.conversation_history[uid]
+        if stale:
+            logger.info(f"AI Trainer: очищена история {len(stale)} неактивных пользователей")
     
     async def get_response(
         self, 
@@ -37,19 +69,23 @@ class AITrainerService:
             logger.warning("Claude API key not configured")
             return "⚠️ AI-тренер временно недоступен. Обратитесь к администратору."
         
-        # Инициализируем историю для пользователя
-        if user_id not in self.conversation_history:
-            self.conversation_history[user_id] = []
+        # Периодически очищаем устаревшие истории (без отдельного таймера)
+        self._cleanup_stale_histories()
+
+        # Получаем историю пользователя и обновляем метку активности
+        history = self._get_user_history(user_id)
+        self._touch_user_history(user_id)
         
         # Добавляем сообщение пользователя
-        self.conversation_history[user_id].append({
+        history.append({
             "role": "user",
             "content": user_message
         })
         
         # Ограничиваем историю последними 10 сообщениями
-        if len(self.conversation_history[user_id]) > 10:
-            self.conversation_history[user_id] = self.conversation_history[user_id][-10:]
+        if len(history) > 10:
+            self.conversation_history[user_id]["history"] = history[-10:]
+            history = self.conversation_history[user_id]["history"]
         
         # Получаем частые темы для контекста
         frequent_topics = await self.get_frequent_topics()
@@ -68,7 +104,7 @@ class AITrainerService:
                 "model": CLAUDE_MODEL,
                 "max_tokens": 512,
                 "system": AI_TRAINER_SYSTEM_PROMPT + f"\n\nИмя менеджера: {manager_name}" + context_addition,
-                "messages": self.conversation_history[user_id]
+                "messages": history
             }
             
             timeout = aiohttp.ClientTimeout(total=30)
@@ -83,7 +119,7 @@ class AITrainerService:
                         assistant_message = data["content"][0]["text"]
                         
                         # Сохраняем ответ в историю
-                        self.conversation_history[user_id].append({
+                        history.append({
                             "role": "assistant",
                             "content": assistant_message
                         })
@@ -174,8 +210,7 @@ class AITrainerService:
     
     def clear_history(self, user_id: int):
         """Очистить историю диалога"""
-        if user_id in self.conversation_history:
-            del self.conversation_history[user_id]
+        self.conversation_history.pop(user_id, None)
 
     async def get_post_recommendations(
         self,

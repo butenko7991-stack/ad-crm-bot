@@ -93,6 +93,18 @@ async def init_db():
         # Заполняем channel_id для записей post_analytics, у которых он не задан,
         # беря значение из связанного scheduled_post
         "UPDATE post_analytics pa SET channel_id = sp.channel_id FROM scheduled_posts sp WHERE pa.scheduled_post_id = sp.id AND pa.channel_id IS NULL",
+        # Индексы для ускорения частых запросов (планировщик, бронирование, статистика)
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status_time ON scheduled_posts(status, scheduled_time)",
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status_posted ON scheduled_posts(status, posted_at, deleted_at, message_id)",
+        "CREATE INDEX IF NOT EXISTS idx_slots_channel_status_date ON slots(channel_id, status, slot_date)",
+        "CREATE INDEX IF NOT EXISTS idx_orders_client_id ON orders(client_id)",
+        "CREATE INDEX IF NOT EXISTS idx_orders_manager_id ON orders(manager_id)",
+        "CREATE INDEX IF NOT EXISTS idx_orders_channel_status ON orders(slot_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_managers_telegram_id ON managers(telegram_id)",
+        "CREATE INDEX IF NOT EXISTS idx_clients_telegram_id ON clients(telegram_id)",
+        "CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code) WHERE is_active = TRUE",
+        "CREATE INDEX IF NOT EXISTS idx_post_analytics_channel ON post_analytics(channel_id)",
+        "CREATE INDEX IF NOT EXISTS idx_post_analytics_order ON post_analytics(order_id)",
     ]
 
     for migration in migrations:

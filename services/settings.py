@@ -36,13 +36,13 @@ async def set_setting(key: str, value: Optional[str], updated_by: Optional[int] 
             row = await session.get(BotSetting, key)
             if row:
                 row.value = value
-                row.updated_at = datetime.utcnow()
+                row.updated_at = utc_now()
                 row.updated_by = updated_by
             else:
                 session.add(BotSetting(
                     key=key,
                     value=value,
-                    updated_at=datetime.utcnow(),
+                    updated_at=utc_now(),
                     updated_by=updated_by,
                 ))
             await session.commit()

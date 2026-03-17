@@ -668,7 +668,19 @@ async def get_improvement_suggestions(metrics: dict) -> Optional[str]:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data["content"][0]["text"]
+                    suggestion_text = data["content"][0]["text"]
+                    # Сохраняем AI-рекомендацию в журнал улучшений
+                    try:
+                        from services.improvement_log import log_improvement
+                        log_improvement(
+                            title="AI-анализ бизнес-метрик",
+                            description=suggestion_text,
+                            category="ai_suggestion",
+                            author="ai",
+                        )
+                    except Exception as _log_err:
+                        logger.warning(f"Не удалось сохранить AI-рекомендацию в журнал: {_log_err}")
+                    return suggestion_text
                 else:
                     error = await resp.text()
                     logger.error(f"Claude API error (improvement suggestions): {resp.status} - {error}")
