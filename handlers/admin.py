@@ -65,10 +65,10 @@ authenticated_admins = _TimedAuthSet()
 def _md_escape(text: str) -> str:
     """Экранировать специальные символы Markdown v1 в пользовательских данных.
 
-    В Telegram Markdown v1 специальны: _ * ` [ ]
+    В Telegram Markdown v1 специальны: _ * ` [
     Каждый из них предваряется обратным слэшем.
     """
-    for ch in ("_", "*", "`", "[", "]"):
+    for ch in ("_", "*", "`", "["):
         text = text.replace(ch, "\\" + ch)
     return text
 
