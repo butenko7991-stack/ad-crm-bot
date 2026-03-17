@@ -2514,19 +2514,25 @@ async def _render_channel_analytics_page(message, channel_id: int, back_callback
         f"👁 Средний охват: **{ch['avg_reach']:,}**\n"
         f"📊 ERR: **{ch['err_percent']:.1f}%**\n"
         f"🔄 Обновлено: {updated}\n\n"
-        f"📝 Постов отслежено: **{data['posts_count']}** "
-        f"(с просмотрами: {data['posts_with_views']})\n"
-        f"👁 Суммарно просмотров: **{data['total_views']:,}**\n"
-        f"📈 Среднее просмотров/пост: **{data['avg_views']:,}**\n"
-        f"⚡ Средний ER: **{data['avg_er']}%**\n"
     )
-    if data["recent_posts"]:
-        text += "\n🕐 **Последние посты с просмотрами:**\n"
-        for p in data["recent_posts"]:
-            dt = p["recorded_at"].strftime("%d.%m %H:%M") if p["recorded_at"] else "—"
-            text += f"  #{p['id']}: 👁{p['views']:,} 👍{p['reactions']} ↩️{p['forwards']} ER:{p['er']}% ({dt})\n"
+
+    if data.get("analytics_unavailable"):
+        text += "⚠️ _Данные аналитики постов временно недоступны._\n"
     else:
-        text += "\n_Просмотры постов ещё не собраны._\n"
+        text += (
+            f"📝 Постов отслежено: **{data['posts_count']}** "
+            f"(с просмотрами: {data['posts_with_views']})\n"
+            f"👁 Суммарно просмотров: **{data['total_views']:,}**\n"
+            f"📈 Среднее просмотров/пост: **{data['avg_views']:,}**\n"
+            f"⚡ Средний ER: **{data['avg_er']}%**\n"
+        )
+        if data["recent_posts"]:
+            text += "\n🕐 **Последние посты с просмотрами:**\n"
+            for p in data["recent_posts"]:
+                dt = p["recorded_at"].strftime("%d.%m %H:%M") if p["recorded_at"] else "—"
+                text += f"  #{p['id']}: 👁{p['views']:,} 👍{p['reactions']} ↩️{p['forwards']} ER:{p['er']}% ({dt})\n"
+        else:
+            text += "\n_Просмотры постов ещё не собраны._\n"
 
     buttons = [
         [InlineKeyboardButton(
