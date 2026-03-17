@@ -20,11 +20,13 @@ from database import async_session_maker, Channel, Manager, Order, ScheduledPost
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
-from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates
 from utils.helpers import escape_md, utc_now
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
+from services.error_library import KNOWN_ERRORS, get_error_log, format_known_error
+from services.improvement_log import get_recent_improvements, get_improvement_stats, format_improvement_entry, log_improvement
 
 
 logger = logging.getLogger(__name__)
@@ -3659,6 +3661,8 @@ async def adm_diagnostics(callback: CallbackQuery):
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_diagnostics")],
             [InlineKeyboardButton(text="🔬 Глубокая диагностика", callback_data="adm_deep_diagnostics")],
             [InlineKeyboardButton(text="🤖 AI-улучшения", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="📚 Библиотека ошибок", callback_data="adm_error_library")],
+            [InlineKeyboardButton(text="💡 Журнал улучшений", callback_data="adm_improvement_log")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
         ]
 
@@ -3732,6 +3736,176 @@ async def adm_ai_improve(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in adm_ai_improve: {traceback.format_exc()}")
         await callback.message.answer("❌ Ошибка")
+
+
+@router.callback_query(F.data.startswith("adm_error_library"))
+async def adm_error_library(callback: CallbackQuery):
+    """Просмотр библиотеки известных ошибок и журнала неизвестных ошибок."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    # Определяем режим: known (известные) или unknown (неизвестные/журнал)
+    data = callback.data  # "adm_error_library" | "adm_error_library:unknown"
+    show_unknown = data.endswith(":unknown")
+
+    try:
+        if show_unknown:
+            # Журнал неизвестных ошибок (runtime)
+            entries = get_error_log(limit=10)
+            if entries:
+                lines = ["📋 **Журнал неизвестных ошибок** (последние 10)\n"]
+                for i, e in enumerate(entries):
+                    ts = e.get("ts", "")[:16].replace("T", " ")
+                    exc_type = e.get("exc_type", "?")
+                    exc_msg = e.get("exc_msg", "")[:100]
+                    ctx = e.get("context", "")[:80]
+                    lines.append(
+                        f"*{i+1}.* `{exc_type}` | {ts} UTC\n"
+                        f"   {exc_msg}\n"
+                        f"   _{ctx}_\n"
+                    )
+                text = "\n".join(lines)
+            else:
+                text = "📋 **Журнал неизвестных ошибок**\n\n✅ Журнал пуст — все ошибки распознаны библиотекой."
+
+            buttons = [
+                [InlineKeyboardButton(text="📖 Известные ошибки", callback_data="adm_error_library")],
+                [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")],
+            ]
+        else:
+            # Список известных категорий и количество шаблонов
+            from collections import Counter
+            cat_counts = Counter(e["category"] for e in KNOWN_ERRORS)
+            cat_lines = "\n".join(
+                f"• `{cat}`: {cnt} шаблон(ов)" for cat, cnt in sorted(cat_counts.items())
+            )
+            text = (
+                f"📚 **Библиотека ошибок**\n\n"
+                f"Содержит **{len(KNOWN_ERRORS)}** известных шаблонов.\n\n"
+                f"**По категориям:**\n{cat_lines}\n\n"
+                f"Каждая ошибка содержит описание причины и пошаговое решение.\n"
+                f"При возникновении известной ошибки администратор получает подсказку автоматически."
+            )
+
+            buttons = [
+                [InlineKeyboardButton(text="📋 Неизвестные ошибки", callback_data="adm_error_library:unknown")],
+                [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")],
+            ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception:
+        logger.error(f"Error in adm_error_library: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки библиотеки ошибок")
+
+
+@router.callback_query(F.data.startswith("adm_improvement_log"))
+async def adm_improvement_log_view(callback: CallbackQuery):
+    """Просмотр журнала улучшений бота."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        stats = get_improvement_stats()
+        entries = get_recent_improvements(limit=5)
+
+        total = stats.get("total", 0)
+        by_cat = stats.get("by_category", {})
+
+        from services.improvement_log import CATEGORIES
+        cat_lines = []
+        for cat_key, cnt in sorted(by_cat.items(), key=lambda x: -x[1]):
+            label = CATEGORIES.get(cat_key, cat_key)
+            cat_lines.append(f"• {label}: {cnt}")
+        cat_text = "\n".join(cat_lines) if cat_lines else "пусто"
+
+        header = (
+            f"💡 **Журнал улучшений бота**\n\n"
+            f"Всего записей: **{total}**\n\n"
+            f"**По типам:**\n{cat_text}\n\n"
+        )
+
+        if entries:
+            header += "**Последние улучшения:**\n\n"
+            entry_texts = []
+            for i, e in enumerate(entries):
+                entry_texts.append(format_improvement_entry(e, i))
+            text = header + "\n\n".join(entry_texts)
+        else:
+            text = header + "_Журнал пока пуст. AI-рекомендации появятся после первого запуска анализа._"
+
+        # Кнопка «Записать заметку» — позволяет администратору вручную зафиксировать улучшение
+        buttons = [
+            [InlineKeyboardButton(text="🤖 Запустить AI-анализ", callback_data="adm_ai_improve")],
+            [InlineKeyboardButton(text="📝 Добавить заметку", callback_data="adm_add_improvement_note")],
+            [InlineKeyboardButton(text="🔧 Диагностика", callback_data="adm_diagnostics")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_diagnostics")],
+        ]
+
+        await safe_edit_message(
+            callback.message, text,
+            InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception:
+        logger.error(f"Error in adm_improvement_log_view: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки журнала улучшений")
+
+
+@router.callback_query(F.data == "adm_add_improvement_note")
+async def adm_add_improvement_note(callback: CallbackQuery, state: FSMContext):
+    """Начало ввода заметки об улучшении администратором."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    await safe_edit_message(
+        callback.message,
+        "📝 **Добавить заметку об улучшении**\n\n"
+        "Введите текст заметки (что было улучшено, какая проблема решена).\n\n"
+        "Или нажмите /cancel для отмены.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="adm_improvement_log")]
+        ])
+    )
+    await state.set_state(AdminImprovementStates.waiting_improvement_note)
+
+
+@router.message(AdminImprovementStates.waiting_improvement_note)
+async def adm_save_improvement_note(message: Message, state: FSMContext):
+    """Сохранение заметки об улучшении от администратора."""
+    if message.from_user.id not in authenticated_admins and message.from_user.id not in ADMIN_IDS:
+        return
+
+    text = message.text or ""
+    if not text.strip() or text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Отменено.")
+        return
+
+    log_improvement(
+        title=text[:80],
+        description=text,
+        category="admin_note",
+        author=f"admin:{message.from_user.id}",
+    )
+    await state.clear()
+    await message.answer(
+        "✅ Заметка сохранена в журнал улучшений.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💡 Журнал улучшений", callback_data="adm_improvement_log")]
+        ])
+    )
 
 
 @router.callback_query(F.data == "adm_deep_diagnostics")

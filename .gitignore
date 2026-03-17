@@ -3,3 +3,7 @@ __pycache__/
 *.pyo
 =0.9.0
 utils/__pycache__/
+
+# Runtime log files (generated at runtime, not part of source)
+error_log.json
+improvement_log.json

@@ -116,6 +116,11 @@ class AdminSettingsStates(StatesGroup):
     waiting_payment_link = State()  # Ожидание ввода платёжной ссылки / реквизитов
 
 
+class AdminImprovementStates(StatesGroup):
+    """Состояния ввода заметки об улучшении"""
+    waiting_improvement_note = State()
+
+
 class ManagerRegisterStates(StatesGroup):
     """Состояния регистрации нового менеджера (Telegram)"""
     selecting_timezone = State()  # Выбор часового пояса перед созданием аккаунта
