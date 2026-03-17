@@ -572,7 +572,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
                     update(PromoCode)
                     .where(
                         PromoCode.code == promo_code_used,
-                        PromoCode.is_active == True,
+                        PromoCode.is_active.is_(True),
                         or_(PromoCode.max_uses.is_(None), PromoCode.uses_count < PromoCode.max_uses),
                         or_(PromoCode.expires_at.is_(None), PromoCode.expires_at > now_dt),
                     )
@@ -589,11 +589,17 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
                     return
                 # Автоматически деактивируем исчерпанный промокод
                 if promo_row.max_uses and promo_row.uses_count >= promo_row.max_uses:
-                    await session.execute(
-                        update(PromoCode)
-                        .where(PromoCode.id == promo_row.id)
-                        .values(is_active=False)
-                    )
+                    try:
+                        await session.execute(
+                            update(PromoCode)
+                            .where(PromoCode.id == promo_row.id)
+                            .values(is_active=False)
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"Не удалось деактивировать исчерпанный промокод id={promo_row.id}",
+                            exc_info=True,
+                        )
 
             # Обновляем статистику клиента
             client.total_orders = (client.total_orders or 0) + 1

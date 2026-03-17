@@ -43,10 +43,14 @@ class AITrainerService:
     def _cleanup_stale_histories(self) -> None:
         """Удалить истории диалогов неактивных пользователей (старше TTL)."""
         cutoff = datetime.utcnow() - timedelta(hours=_CONVERSATION_TTL_HOURS)
-        stale = [
-            uid for uid, data in self.conversation_history.items()
-            if data.get("last_active", datetime.min) < cutoff
-        ]
+        stale = []
+        for uid, data in self.conversation_history.items():
+            last_active = data.get("last_active")
+            if last_active is None:
+                logger.warning(f"AI Trainer: отсутствует last_active для user_id={uid}, запись будет очищена")
+                stale.append(uid)
+            elif last_active < cutoff:
+                stale.append(uid)
         for uid in stale:
             del self.conversation_history[uid]
         if stale:
