@@ -642,9 +642,15 @@ async def get_channels_analytics_summary() -> Optional[list]:
     """
     try:
         async with async_session_maker() as session:
-            channels = (await session.execute(
-                select(Channel).where(Channel.is_active.is_not(False)).order_by(Channel.name)
-            )).scalars().all()
+            # Получаем активные каналы; если колонка is_active ещё не добавлена — возвращаем все каналы
+            try:
+                channels = (await session.execute(
+                    select(Channel).where(Channel.is_active.is_not(False)).order_by(Channel.name)
+                )).scalars().all()
+            except (ProgrammingError, OperationalError):
+                channels = (await session.execute(
+                    select(Channel).order_by(Channel.name)
+                )).scalars().all()
 
             # Количество PostAnalytics и суммарные просмотры по каналам.
             # Запрос оборачивается в try/except: если колонка channel_id ещё не добавлена
