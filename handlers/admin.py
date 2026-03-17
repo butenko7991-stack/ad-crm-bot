@@ -30,8 +30,34 @@ from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_b
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Хранилище авторизованных админов
-authenticated_admins = set()
+# Сессии администраторов с поддержкой автоматического истечения срока действия
+_ADMIN_SESSION_TIMEOUT_HOURS = 24
+
+
+class _TimedAuthSet:
+    """Множество авторизованных админов с автоматическим истечением сессии."""
+
+    def __init__(self, timeout_hours: int = _ADMIN_SESSION_TIMEOUT_HOURS):
+        self._timeout = timedelta(hours=timeout_hours)
+        self._sessions: dict[int, datetime] = {}
+
+    def add(self, user_id: int) -> None:
+        self._sessions[user_id] = datetime.utcnow()
+
+    def discard(self, user_id: int) -> None:
+        self._sessions.pop(user_id, None)
+
+    def __contains__(self, user_id: int) -> bool:
+        ts = self._sessions.get(user_id)
+        if ts is None:
+            return False
+        if datetime.utcnow() - ts > self._timeout:
+            del self._sessions[user_id]
+            return False
+        return True
+
+
+authenticated_admins = _TimedAuthSet()
 
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -39,10 +65,10 @@ authenticated_admins = set()
 def _md_escape(text: str) -> str:
     """Экранировать специальные символы Markdown v1 в пользовательских данных.
 
-    В Telegram Markdown v1 специальны только: _ * ` [
+    В Telegram Markdown v1 специальны: _ * ` [ ]
     Каждый из них предваряется обратным слэшем.
     """
-    for ch in ("_", "*", "`", "["):
+    for ch in ("_", "*", "`", "[", "]"):
         text = text.replace(ch, "\\" + ch)
     return text
 

@@ -810,7 +810,15 @@ async def request_payout(callback: CallbackQuery, state: FSMContext):
             if not manager:
                 await callback.message.answer("❌ Вы не менеджер")
                 return
-            
+
+            if not manager.is_active:
+                buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="mgr_back")]]
+                await callback.message.edit_text(
+                    "❌ Ваш аккаунт деактивирован. Обратитесь к администратору.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                )
+                return
+
             balance = float(manager.balance or 0)
         
         if balance < 500:

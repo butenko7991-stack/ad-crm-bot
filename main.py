@@ -16,7 +16,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
-from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS
+from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, ADMIN_PASSWORD
 from database import init_db, async_session_maker
 from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
@@ -319,6 +319,13 @@ async def main():
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не установлен!")
         return
+
+    # Проверяем небезопасный пароль по умолчанию
+    if ADMIN_PASSWORD == "admin123":
+        logger.warning(
+            "⚠️  ADMIN_PASSWORD использует небезопасное значение по умолчанию 'admin123'. "
+            "Установите надёжный пароль через переменную окружения ADMIN_PASSWORD."
+        )
     
     # Инициализация бота
     bot = Bot(
