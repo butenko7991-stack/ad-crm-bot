@@ -2097,10 +2097,77 @@ async def autopost_view_posted(callback: CallbackQuery):
                 callback_data=f"pa_enter:{post_id}"
             )])
 
+        # Кнопка удаления из канала — только если пост ещё не удалён и есть message_id
+        if post.status == "posted" and post.message_id:
+            buttons.append([InlineKeyboardButton(
+                text="🗑 Удалить из канала",
+                callback_data=f"autopost_delete_from_channel:{post_id}"
+            )])
+
         buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_posted")])
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in autopost_view_posted: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка")
+
+
+@router.callback_query(F.data.startswith("autopost_delete_from_channel:"))
+async def autopost_delete_from_channel(callback: CallbackQuery, bot: Bot):
+    """Удалить опубликованный пост из канала Telegram и пометить как удалённый"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        post_id = int(callback.data.split(":")[1])
+        async with async_session_maker() as session:
+            post = await session.get(ScheduledPost, post_id)
+            if not post:
+                await callback.message.answer("❌ Пост не найден")
+                return
+
+            channel = await session.get(Channel, post.channel_id)
+
+            deleted_from_tg = False
+            if channel and post.message_id:
+                try:
+                    await bot.delete_message(
+                        chat_id=channel.telegram_id,
+                        message_id=post.message_id,
+                    )
+                    deleted_from_tg = True
+                except TelegramBadRequest as tg_err:
+                    # Сообщение уже удалено или бот не имеет прав
+                    logger.warning(
+                        f"TelegramBadRequest при удалении сообщения поста #{post_id} из канала: {tg_err}"
+                    )
+                    deleted_from_tg = False
+                except Exception:
+                    logger.warning(
+                        f"Не удалось удалить сообщение поста #{post_id} из канала",
+                        exc_info=True,
+                    )
+
+            post.deleted_at = utc_now()
+            post.status = "deleted"
+            await session.commit()
+
+        result_text = (
+            f"🗑 **Пост #{post_id} удалён**\n\n"
+            + ("✅ Сообщение удалено из канала." if deleted_from_tg
+               else "⚠️ Не удалось удалить сообщение из канала (возможно, оно уже удалено или у бота нет прав).")
+        )
+        await safe_edit_message(
+            callback.message,
+            result_text,
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ К списку постов", callback_data="autopost_posted")]
+            ]),
+        )
+    except Exception:
+        logger.error(f"Error in autopost_delete_from_channel: {traceback.format_exc()}")
         await callback.message.answer("❌ Ошибка")
 
 

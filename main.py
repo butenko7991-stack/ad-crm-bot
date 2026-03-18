@@ -142,27 +142,37 @@ async def publish_scheduled_posts(bot: Bot):
                     await session.commit()
                     continue
 
-                # Пост отправлен — фиксируем статус «опубликован» немедленно,
-                # чтобы сбой в уведомлениях не мог оставить пост в статусе «pending»
+                # Пост отправлен — фиксируем статус «опубликован» немедленно
+                # в отдельной транзакции, чтобы никакой последующий сбой
+                # (аналитика, уведомления) не мог оставить пост в статусе
+                # «pending» и не допустить повторной публикации.
                 posted_at = utc_now()
                 post.status = "posted"
                 post.posted_at = posted_at
                 post.message_id = sent.message_id
-
-                # Создаём начальную запись аналитики, если её ещё нет
-                existing_analytics = (await session.execute(
-                    select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
-                )).scalar_one_or_none()
-                if not existing_analytics:
-                    initial_analytics = PostAnalytics(
-                        scheduled_post_id=post.id,
-                        order_id=post.order_id,
-                        channel_id=post.channel_id,
-                    )
-                    session.add(initial_analytics)
-
                 await session.commit()
                 logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
+
+                # Создаём начальную запись аналитики в отдельной транзакции,
+                # чтобы её сбой не откатил уже зафиксированный статус поста.
+                try:
+                    existing_analytics = (await session.execute(
+                        select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
+                    )).scalar_one_or_none()
+                    if not existing_analytics:
+                        initial_analytics = PostAnalytics(
+                            scheduled_post_id=post.id,
+                            order_id=post.order_id,
+                            channel_id=post.channel_id,
+                        )
+                        session.add(initial_analytics)
+                        await session.commit()
+                except Exception:
+                    logger.warning(
+                        f"Не удалось создать запись аналитики для поста #{post.id} — "
+                        f"статус поста уже зафиксирован как «опубликован»",
+                        exc_info=True,
+                    )
 
                 # Уведомляем администраторов (сбои уведомлений не влияют на статус поста)
                 ch_name = channel.name
