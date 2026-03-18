@@ -1951,7 +1951,7 @@ async def autopost_pending(callback: CallbackQuery):
         async with async_session_maker() as session:
             result = await session.execute(
                 select(ScheduledPost)
-                .where(ScheduledPost.status.in_(["pending", "moderation"]))
+                .where(ScheduledPost.status.in_(["pending", "moderation", "error"]))
                 .order_by(ScheduledPost.scheduled_time.asc())
                 .limit(20)
             )
@@ -1973,7 +1973,12 @@ async def autopost_pending(callback: CallbackQuery):
                 channel = await session.get(Channel, post.channel_id)
                 ch_name = channel.name if channel else f"#{post.channel_id}"
                 sched = (post.scheduled_time + LOCAL_TZ_OFFSET).strftime("%d.%m %H:%M") if post.scheduled_time else "—"
-                status_icon = "⏳" if post.status == "pending" else "🔍"
+                if post.status == "error":
+                    status_icon = "⚠️"
+                elif post.status == "pending":
+                    status_icon = "⏳"
+                else:
+                    status_icon = "🔍"
                 text_preview = (post.content[:30] + "…") if post.content else "📎 медиа"
                 buttons.append([InlineKeyboardButton(
                     text=f"{status_icon} {ch_name} | {sched} | {text_preview}",
