@@ -14,7 +14,7 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 
 from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, ADMIN_PASSWORD
 from database import init_db, async_session_maker
@@ -33,6 +33,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Блокировка, предотвращающая повторный вход в publish_scheduled_posts
+# внутри одного процесса (дополнительная защита к max_instances=1 в планировщике).
+_publishing_lock = asyncio.Lock()
 
 async def cleanup_expired_slots():
     """Освобождаем слоты, у которых истёк срок резервации"""
@@ -56,8 +59,48 @@ async def cleanup_expired_slots():
         logger.error(f"Ошибка очистки слотов: {traceback.format_exc()}")
 
 
+async def _reset_stale_publishing_posts():
+    """Переводим «застрявшие» посты из publishing → error при старте бота.
+
+    Такие посты возникают, если предыдущий запуск завершился аварийно между
+    отправкой сообщения в Telegram и фиксацией статуса «опубликован» в БД.
+    Поскольку мы не знаем, был ли пост в итоге отправлен, мы выбираем
+    стратегию «не публиковать дважды»: помечаем такие посты как ошибочные
+    и оставляем решение о повторной публикации администратору.
+    """
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                sa_update(ScheduledPost)
+                .where(ScheduledPost.status == "publishing")
+                .values(status="error")
+                .returning(ScheduledPost.id)
+            )
+            await session.commit()
+            stale_ids = [row[0] for row in result.fetchall()]
+            if stale_ids:
+                logger.warning(
+                    f"Найдено {len(stale_ids)} постов в статусе 'publishing' "
+                    f"(ID: {stale_ids}) — переведены в 'error'. "
+                    f"Предыдущий запуск бота, вероятно, завершился в процессе "
+                    f"публикации. При необходимости перезапустите посты вручную."
+                )
+    except Exception:
+        logger.error(f"Ошибка сброса застрявших постов: {traceback.format_exc()}")
+
+
 async def publish_scheduled_posts(bot: Bot):
     """Публикуем посты, время которых наступило, и уведомляем админов"""
+    # Быстрая проверка без захвата блокировки — если уже выполняется, просто выходим
+    if _publishing_lock.locked():
+        logger.info("publish_scheduled_posts уже выполняется — пропускаем этот запуск")
+        return
+    async with _publishing_lock:
+        await _do_publish_scheduled_posts(bot)
+
+
+async def _do_publish_scheduled_posts(bot: Bot):
+    """Внутренняя реализация публикации постов (вызывается под блокировкой)."""
     try:
         async with async_session_maker() as session:
             result = await session.execute(
@@ -69,6 +112,23 @@ async def publish_scheduled_posts(bot: Bot):
             posts = result.scalars().all()
 
             for post in posts:
+                # Атомарно «захватываем» пост: меняем статус pending → publishing.
+                # Если другой процесс или предыдущий запуск уже изменил статус,
+                # RETURNING вернёт пустой результат — пропускаем этот пост.
+                claim = await session.execute(
+                    sa_update(ScheduledPost)
+                    .where(
+                        ScheduledPost.id == post.id,
+                        ScheduledPost.status == "pending",
+                    )
+                    .values(status="publishing")
+                    .returning(ScheduledPost.id)
+                )
+                await session.commit()
+                if claim.scalar_one_or_none() is None:
+                    logger.info(f"Пост #{post.id} уже обрабатывается другим процессом — пропускаем")
+                    continue
+
                 channel = await session.get(Channel, post.channel_id)
                 if not channel:
                     logger.warning(f"Канал #{post.channel_id} не найден для поста #{post.id}")
@@ -142,27 +202,38 @@ async def publish_scheduled_posts(bot: Bot):
                     await session.commit()
                     continue
 
-                # Пост отправлен — фиксируем статус «опубликован» немедленно,
-                # чтобы сбой в уведомлениях не мог оставить пост в статусе «pending»
+                # Пост отправлен — фиксируем статус «опубликован» немедленно.
+                # Пост был атомарно захвачен в «publishing» перед отправкой,
+                # поэтому повторная публикация другим экземпляром невозможна.
                 posted_at = utc_now()
                 post.status = "posted"
                 post.posted_at = posted_at
                 post.message_id = sent.message_id
-
-                # Создаём начальную запись аналитики, если её ещё нет
-                existing_analytics = (await session.execute(
-                    select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
-                )).scalar_one_or_none()
-                if not existing_analytics:
-                    initial_analytics = PostAnalytics(
-                        scheduled_post_id=post.id,
-                        order_id=post.order_id,
-                        channel_id=post.channel_id,
-                    )
-                    session.add(initial_analytics)
-
                 await session.commit()
                 logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
+
+                # Создаём начальную запись аналитики в отдельной сессии,
+                # чтобы любой сбой при её создании не переводил основную сессию
+                # в состояние «нужен откат» и не прерывал обработку следующих
+                # постов в той же очереди.
+                try:
+                    async with async_session_maker() as analytics_session:
+                        existing_analytics = (await analytics_session.execute(
+                            select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
+                        )).scalar_one_or_none()
+                        if not existing_analytics:
+                            analytics_session.add(PostAnalytics(
+                                scheduled_post_id=post.id,
+                                order_id=post.order_id,
+                                channel_id=post.channel_id,
+                            ))
+                            await analytics_session.commit()
+                except Exception:
+                    logger.warning(
+                        f"Не удалось создать запись аналитики для поста #{post.id} — "
+                        f"статус поста уже зафиксирован как «опубликован»",
+                        exc_info=True,
+                    )
 
                 # Уведомляем администраторов (сбои уведомлений не влияют на статус поста)
                 ch_name = channel.name
@@ -210,7 +281,7 @@ async def publish_scheduled_posts(bot: Bot):
                         )
 
     except Exception:
-        logger.error(f"Ошибка в publish_scheduled_posts: {traceback.format_exc()}")
+        logger.error(f"Ошибка в _do_publish_scheduled_posts: {traceback.format_exc()}")
 
 
 async def delete_posted_posts(bot: Bot):
@@ -372,7 +443,10 @@ async def main():
     # Инициализация БД
     logger.info("Инициализация базы данных...")
     await init_db()
-    
+
+    # Сброс «застрявших» постов из предыдущего запуска
+    await _reset_stale_publishing_posts()
+
     # Планировщик задач
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -387,6 +461,7 @@ async def main():
         minutes=1,
         id="publish_scheduled_posts",
         args=[bot],
+        max_instances=1,
     )
     scheduler.add_job(
         delete_posted_posts,
