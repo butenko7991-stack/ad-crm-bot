@@ -1980,6 +1980,7 @@ async def autopost_pending(callback: CallbackQuery):
                     callback_data=f"adm_post:{post.id}"
                 )])
 
+            buttons.append([InlineKeyboardButton(text="🔄 Обновить список", callback_data="autopost_pending")])
             buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")])
             await safe_edit_message(
                 callback.message, text,

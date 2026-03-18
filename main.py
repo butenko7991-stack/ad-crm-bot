@@ -153,20 +153,22 @@ async def publish_scheduled_posts(bot: Bot):
                 await session.commit()
                 logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
 
-                # Создаём начальную запись аналитики в отдельной транзакции,
-                # чтобы её сбой не откатил уже зафиксированный статус поста.
+                # Создаём начальную запись аналитики в отдельной сессии,
+                # чтобы любой сбой при её создании не переводил основную сессию
+                # в состояние «нужен откат» и не прерывал обработку следующих
+                # постов в той же очереди.
                 try:
-                    existing_analytics = (await session.execute(
-                        select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
-                    )).scalar_one_or_none()
-                    if not existing_analytics:
-                        initial_analytics = PostAnalytics(
-                            scheduled_post_id=post.id,
-                            order_id=post.order_id,
-                            channel_id=post.channel_id,
-                        )
-                        session.add(initial_analytics)
-                        await session.commit()
+                    async with async_session_maker() as analytics_session:
+                        existing_analytics = (await analytics_session.execute(
+                            select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post.id)
+                        )).scalar_one_or_none()
+                        if not existing_analytics:
+                            analytics_session.add(PostAnalytics(
+                                scheduled_post_id=post.id,
+                                order_id=post.order_id,
+                                channel_id=post.channel_id,
+                            ))
+                            await analytics_session.commit()
                 except Exception:
                     logger.warning(
                         f"Не удалось создать запись аналитики для поста #{post.id} — "
