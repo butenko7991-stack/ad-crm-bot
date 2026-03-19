@@ -89,7 +89,7 @@ async def safe_edit_message(message, text: str, reply_markup=None, parse_mode=Pa
             pass  # Игнорируем — сообщение не изменилось
         elif any(s in err for s in ("message to edit not found", "MESSAGE_ID_INVALID",
                                     "message can't be edited", "bot was blocked",
-                                    "chat not found")):
+                                    "chat not found", "there is no text in the message to edit")):
             # Нельзя отредактировать — отправляем новым сообщением
             await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
         else:
