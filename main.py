@@ -149,7 +149,7 @@ async def _do_publish_scheduled_posts(bot: Bot):
                         parts = post.signature.split(" | ", 1)
                         sig_text = parts[0].strip()
                         sig_url = parts[1].strip()
-                        if sig_url.startswith(("http://", "https://", "tg://")):
+                        if sig_text and sig_url.startswith(("http://", "https://", "tg://")):
                             sig_html = (
                                 f'<a href="{html_module.escape(sig_url)}">'
                                 f'{html_module.escape(sig_text)}</a>'

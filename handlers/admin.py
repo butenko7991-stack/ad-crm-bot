@@ -3337,7 +3337,15 @@ async def autopost_signature_enter(message: Message, state: FSMContext):
     # Валидация формата «Текст | URL» если указан разделитель
     if " | " in signature_text:
         parts = signature_text.split(" | ", 1)
+        sig_text = parts[0].strip()
         sig_url = parts[1].strip()
+        if not sig_text:
+            await message.answer(
+                "❌ Текст подписи не может быть пустым.\n\n"
+                "Формат: `Текст | https://ссылка`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
         if not sig_url.startswith(("http://", "https://", "tg://")):
             await message.answer(
                 "❌ Неверный формат ссылки. Ссылка должна начинаться с `http://`, `https://` или `tg://`.\n\n"
