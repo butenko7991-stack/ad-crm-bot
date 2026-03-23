@@ -69,6 +69,7 @@ class ManagerPostStates(StatesGroup):
     selecting_time = State()
     selecting_format = State()
     entering_content = State()
+    entering_signature = State()
     confirming = State()
     uploading_payment = State()
 
