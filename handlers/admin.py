@@ -3250,6 +3250,7 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
     file_id = data.get("create_file_id")
     file_type = data.get("create_file_type")
     buttons: list = data.get("create_buttons", [])
+    signature = data.get("create_signature")
 
     try:
         scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
@@ -3272,6 +3273,8 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
     if buttons:
         buttons_preview = "\n".join(f"  {i+1}. [{b['text']}]({b['url']})" for i, b in enumerate(buttons))
         preview += f"\n🔗 **Кнопки ({len(buttons)}):**\n{buttons_preview}\n"
+    if signature:
+        preview += f"\n✍️ **Подпись:** {signature}\n"
 
     preview += "\nСоздать пост?"
 
@@ -3287,8 +3290,43 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.in_({"autopost_buttons_skip", "autopost_buttons_done"}), AdminCreatePostStates.entering_buttons)
 async def autopost_buttons_finish(callback: CallbackQuery, state: FSMContext):
-    """Переход к подтверждению создания поста"""
+    """Переход к шагу ввода подписи поста"""
     await callback.answer()
+    await safe_edit_message(
+        callback.message,
+        "✍️ **Подпись поста** (необязательно)\n\n"
+        "Введите текст подписи. В опубликованном посте он будет содержать "
+        "скрытую ссылку на канал.\n\n"
+        "Пример: `Реклама`",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➡️ Пропустить", callback_data="autopost_signature_skip")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
+        ]),
+    )
+    await state.set_state(AdminCreatePostStates.entering_signature)
+
+
+@router.message(AdminCreatePostStates.entering_signature)
+async def autopost_signature_enter(message: Message, state: FSMContext):
+    """Сохранение текста подписи и переход к подтверждению"""
+    signature_text = (message.text or "").strip()
+    if not signature_text:
+        await message.answer(
+            "❌ Введите текст подписи или нажмите **Пропустить**.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await state.update_data(create_signature=signature_text)
+    await _show_confirm_preview(message, state)
+    await state.set_state(AdminCreatePostStates.confirming)
+
+
+@router.callback_query(F.data == "autopost_signature_skip", AdminCreatePostStates.entering_signature)
+async def autopost_signature_skip(callback: CallbackQuery, state: FSMContext):
+    """Пропуск подписи и переход к подтверждению"""
+    await callback.answer()
+    await state.update_data(create_signature=None)
     await _show_confirm_preview(callback.message, state)
     await state.set_state(AdminCreatePostStates.confirming)
 
@@ -3315,6 +3353,7 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
                 file_id=data.get("create_file_id"),
                 file_type=data.get("create_file_type"),
                 inline_buttons=json.dumps(buttons_list, ensure_ascii=False) if buttons_list else None,
+                signature=data.get("create_signature") or None,
                 scheduled_time=scheduled_time,
                 delete_after_hours=data.get("create_delete_hours", 24),
                 status="pending",
