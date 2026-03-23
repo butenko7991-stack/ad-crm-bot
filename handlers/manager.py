@@ -1408,7 +1408,10 @@ async def mgr_post_receive_content(message: Message, state: FSMContext):
         "✍️ **Подпись поста** (необязательно)\n\n"
         f"Нажмите **Автоподпись**, чтобы добавить в пост кликабельную ссылку на канал "
         f"с текстом «{channel_name}».\n\n"
-        "Или пропустите этот шаг.",
+        "Или введите:\n"
+        "• Просто текст — подпись без ссылки\n"
+        "• `Текст | https://ссылка` — кликабельная подпись с вашей ссылкой в теле поста\n\n"
+        "Либо пропустите этот шаг.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Автоподпись", callback_data="mgr_auto_signature")],
             [InlineKeyboardButton(text="➡️ Без подписи", callback_data="mgr_signature_skip")],
@@ -1482,6 +1485,33 @@ async def mgr_post_signature_skip(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.update_data(mgr_ad_signature=None)
     await _mgr_show_confirm(callback.message, state)
+
+
+@router.message(ManagerPostStates.entering_signature)
+async def mgr_post_signature_enter(message: Message, state: FSMContext):
+    """Сохранение пользовательского текста подписи для менеджера"""
+    signature_text = (message.text or "").strip()
+    if not signature_text:
+        await message.answer(
+            "❌ Введите текст подписи или нажмите **Без подписи**.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Валидация формата «Текст | URL» если указан разделитель
+    if " | " in signature_text:
+        parts = signature_text.split(" | ", 1)
+        sig_url = parts[1].strip()
+        if not sig_url.startswith(("http://", "https://", "tg://")):
+            await message.answer(
+                "❌ Неверный формат ссылки. Ссылка должна начинаться с `http://`, `https://` или `tg://`.\n\n"
+                "Формат: `Текст | https://ссылка`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+    await state.update_data(mgr_ad_signature=signature_text)
+    await _mgr_show_confirm(message, state)
 
 
 @router.callback_query(F.data == "mgr_post_confirm", ManagerPostStates.confirming)

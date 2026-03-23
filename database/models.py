@@ -203,7 +203,7 @@ class ScheduledPost(Base):
     scheduled_time = Column(DateTime, nullable=False)
     delete_after_hours = Column(Integer, default=24)
     
-    signature = Column(String(255))  # Текст подписи со скрытой ссылкой на канал
+    signature = Column(String(512))  # Текст подписи; формат «Текст | URL» для кликабельной ссылки в теле поста
 
     status = Column(String(20), default="pending")
     payment_screenshot = Column(String(500))

@@ -3299,7 +3299,10 @@ async def autopost_buttons_finish(callback: CallbackQuery, state: FSMContext):
         "✍️ **Подпись поста** (необязательно)\n\n"
         f"Нажмите **Автоподпись**, чтобы добавить кликабельную ссылку на канал "
         f"с текстом «{channel_name}».\n\n"
-        "Или введите собственный текст подписи вручную, либо пропустите шаг.",
+        "Или введите:\n"
+        "• Просто текст — подпись без ссылки\n"
+        "• `Текст | https://ссылка` — кликабельная подпись с вашей ссылкой в теле поста\n\n"
+        "Либо пропустите шаг.",
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Автоподпись", callback_data="autopost_auto_signature")],
             [InlineKeyboardButton(text="➡️ Пропустить", callback_data="autopost_signature_skip")],
@@ -3330,6 +3333,18 @@ async def autopost_signature_enter(message: Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN,
         )
         return
+
+    # Валидация формата «Текст | URL» если указан разделитель
+    if " | " in signature_text:
+        parts = signature_text.split(" | ", 1)
+        sig_url = parts[1].strip()
+        if not sig_url.startswith(("http://", "https://", "tg://")):
+            await message.answer(
+                "❌ Неверный формат ссылки. Ссылка должна начинаться с `http://`, `https://` или `tg://`.\n\n"
+                "Формат: `Текст | https://ссылка`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
 
     await state.update_data(create_signature=signature_text)
     await _show_confirm_preview(message, state)
