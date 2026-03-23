@@ -1402,11 +1402,31 @@ async def mgr_post_receive_content(message: Message, state: FSMContext):
         mgr_ad_file_type=file_type
     )
 
+    await message.answer(
+        "✍️ **Подпись поста** (необязательно)\n\n"
+        "Введите текст подписи. В опубликованном посте он будет содержать "
+        "скрытую ссылку на канал.\n\n"
+        "Пример: `Реклама`",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➡️ Пропустить", callback_data="mgr_signature_skip")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    await state.set_state(ManagerPostStates.entering_signature)
+
+
+async def _mgr_show_confirm(message: Message, state: FSMContext) -> None:
+    """Показать сводку поста и запросить подтверждение отправки на модерацию."""
     data = await state.get_data()
     channel_name = data.get("mgr_channel_name", "Канал")
     format_type = data.get("mgr_format_type", "1/24")
     price = data.get("mgr_price", 0)
     selected_date = data.get("mgr_selected_date", "")
+    content_text = data.get("mgr_ad_content", "")
+    file_id = data.get("mgr_ad_file_id")
+    file_type = data.get("mgr_ad_file_type")
+    signature = data.get("mgr_ad_signature")
 
     format_labels = {
         "1/24": "1/24 (24 часа)",
@@ -1426,6 +1446,8 @@ async def mgr_post_receive_content(message: Message, state: FSMContext):
         text += f"📝 Текст:\n{content_text[:300]}{'...' if len(content_text) > 300 else ''}\n\n"
     if file_id:
         text += f"📎 Медиафайл: {file_type}\n\n"
+    if signature:
+        text += f"✍️ Подпись: {signature}\n\n"
     text += "Отправить пост на модерацию администратору?"
 
     await message.answer(
@@ -1439,6 +1461,28 @@ async def mgr_post_receive_content(message: Message, state: FSMContext):
         parse_mode=ParseMode.MARKDOWN
     )
     await state.set_state(ManagerPostStates.confirming)
+
+
+@router.message(ManagerPostStates.entering_signature)
+async def mgr_post_receive_signature(message: Message, state: FSMContext):
+    """Сохранение текста подписи и переход к подтверждению"""
+    signature_text = (message.text or "").strip()
+    if not signature_text:
+        await message.answer(
+            "❌ Введите текст подписи или нажмите **Пропустить**.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    await state.update_data(mgr_ad_signature=signature_text)
+    await _mgr_show_confirm(message, state)
+
+
+@router.callback_query(F.data == "mgr_signature_skip", ManagerPostStates.entering_signature)
+async def mgr_post_signature_skip(callback: CallbackQuery, state: FSMContext):
+    """Пропуск подписи и переход к подтверждению"""
+    await callback.answer()
+    await state.update_data(mgr_ad_signature=None)
+    await _mgr_show_confirm(callback.message, state)
 
 
 @router.callback_query(F.data == "mgr_post_confirm", ManagerPostStates.confirming)
@@ -1514,6 +1558,7 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
                 content=data.get("mgr_ad_content", ""),
                 file_id=data.get("mgr_ad_file_id"),
                 file_type=data.get("mgr_ad_file_type"),
+                signature=data.get("mgr_ad_signature") or None,
                 scheduled_time=scheduled_time,
                 delete_after_hours=FORMAT_DELETE_HOURS.get(
                     data.get("mgr_format_type", "1/24"), 24
