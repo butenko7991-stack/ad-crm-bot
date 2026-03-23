@@ -1402,13 +1402,16 @@ async def mgr_post_receive_content(message: Message, state: FSMContext):
         mgr_ad_file_type=file_type
     )
 
+    data = await state.get_data()
+    channel_name = data.get("mgr_channel_name", "Канал")
     await message.answer(
         "✍️ **Подпись поста** (необязательно)\n\n"
-        "Введите текст подписи. В опубликованном посте он будет содержать "
-        "скрытую ссылку на канал.\n\n"
-        "Пример: `Реклама`",
+        f"Нажмите **Автоподпись**, чтобы добавить в пост кликабельную ссылку на канал "
+        f"с текстом «{channel_name}».\n\n"
+        "Или пропустите этот шаг.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➡️ Пропустить", callback_data="mgr_signature_skip")],
+            [InlineKeyboardButton(text="✅ Автоподпись", callback_data="mgr_auto_signature")],
+            [InlineKeyboardButton(text="➡️ Без подписи", callback_data="mgr_signature_skip")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")],
         ]),
         parse_mode=ParseMode.MARKDOWN,
@@ -1463,18 +1466,14 @@ async def _mgr_show_confirm(message: Message, state: FSMContext) -> None:
     await state.set_state(ManagerPostStates.confirming)
 
 
-@router.message(ManagerPostStates.entering_signature)
-async def mgr_post_receive_signature(message: Message, state: FSMContext):
-    """Сохранение текста подписи и переход к подтверждению"""
-    signature_text = (message.text or "").strip()
-    if not signature_text:
-        await message.answer(
-            "❌ Введите текст подписи или нажмите **Пропустить**.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-    await state.update_data(mgr_ad_signature=signature_text)
-    await _mgr_show_confirm(message, state)
+@router.callback_query(F.data == "mgr_auto_signature", ManagerPostStates.entering_signature)
+async def mgr_post_auto_signature(callback: CallbackQuery, state: FSMContext):
+    """Установка автоподписи (название канала) и переход к подтверждению"""
+    await callback.answer()
+    data = await state.get_data()
+    channel_name = data.get("mgr_channel_name", "Реклама")
+    await state.update_data(mgr_ad_signature=channel_name)
+    await _mgr_show_confirm(callback.message, state)
 
 
 @router.callback_query(F.data == "mgr_signature_skip", ManagerPostStates.entering_signature)

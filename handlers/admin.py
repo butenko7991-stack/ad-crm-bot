@@ -3292,18 +3292,32 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
 async def autopost_buttons_finish(callback: CallbackQuery, state: FSMContext):
     """Переход к шагу ввода подписи поста"""
     await callback.answer()
+    data = await state.get_data()
+    channel_name = data.get("create_channel_name", "Канал")
     await safe_edit_message(
         callback.message,
         "✍️ **Подпись поста** (необязательно)\n\n"
-        "Введите текст подписи. В опубликованном посте он будет содержать "
-        "скрытую ссылку на канал.\n\n"
-        "Пример: `Реклама`",
+        f"Нажмите **Автоподпись**, чтобы добавить кликабельную ссылку на канал "
+        f"с текстом «{channel_name}».\n\n"
+        "Или введите собственный текст подписи вручную, либо пропустите шаг.",
         InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Автоподпись", callback_data="autopost_auto_signature")],
             [InlineKeyboardButton(text="➡️ Пропустить", callback_data="autopost_signature_skip")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
         ]),
     )
     await state.set_state(AdminCreatePostStates.entering_signature)
+
+
+@router.callback_query(F.data == "autopost_auto_signature", AdminCreatePostStates.entering_signature)
+async def autopost_auto_signature(callback: CallbackQuery, state: FSMContext):
+    """Установка автоподписи (название канала) и переход к подтверждению"""
+    await callback.answer()
+    data = await state.get_data()
+    channel_name = data.get("create_channel_name", "Реклама")
+    await state.update_data(create_signature=channel_name)
+    await _show_confirm_preview(callback.message, state)
+    await state.set_state(AdminCreatePostStates.confirming)
 
 
 @router.message(AdminCreatePostStates.entering_signature)
