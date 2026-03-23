@@ -3,6 +3,7 @@ CRM Bot для продажи рекламы в Telegram-каналах и се�
 Точка входа
 """
 import asyncio
+import html as html_module
 import json
 import logging
 import traceback
@@ -137,7 +138,26 @@ async def _do_publish_scheduled_posts(bot: Bot):
                     continue
 
                 channel_tg_id = channel.telegram_id
-                caption = post.content or None
+
+                # Строим текст/подпись поста с учётом подписи со скрытой ссылкой
+                post_parse_mode = None
+                if post.signature:
+                    channel_username = channel.username if channel.username else None
+                    channel_url = f"https://t.me/{channel_username}" if channel_username else None
+                    # Экранируем основной контент для HTML-режима
+                    escaped_content = html_module.escape(post.content or "")
+                    if channel_url:
+                        sig_html = (
+                            f'<a href="{html_module.escape(channel_url)}">'
+                            f'{html_module.escape(post.signature)}</a>'
+                        )
+                    else:
+                        sig_html = html_module.escape(post.signature)
+                    post_text = f"{escaped_content}\n\n{sig_html}" if escaped_content else sig_html
+                    post_parse_mode = "HTML"
+                else:
+                    post_text = post.content or ""
+                caption = post_text or None
 
                 # Build inline keyboard from saved buttons (if any)
                 post_markup = None
@@ -164,7 +184,7 @@ async def _do_publish_scheduled_posts(bot: Bot):
                             chat_id=channel_tg_id,
                             photo=post.file_id,
                             caption=caption,
-                            parse_mode=None,
+                            parse_mode=post_parse_mode,
                             reply_markup=post_markup,
                         )
                     elif post.file_id and post.file_type == "video":
@@ -172,7 +192,7 @@ async def _do_publish_scheduled_posts(bot: Bot):
                             chat_id=channel_tg_id,
                             video=post.file_id,
                             caption=caption,
-                            parse_mode=None,
+                            parse_mode=post_parse_mode,
                             reply_markup=post_markup,
                         )
                     elif post.file_id and post.file_type == "document":
@@ -180,14 +200,14 @@ async def _do_publish_scheduled_posts(bot: Bot):
                             chat_id=channel_tg_id,
                             document=post.file_id,
                             caption=caption,
-                            parse_mode=None,
+                            parse_mode=post_parse_mode,
                             reply_markup=post_markup,
                         )
                     else:
                         sent = await bot.send_message(
                             chat_id=channel_tg_id,
-                            text=post.content or "",
-                            parse_mode=None,
+                            text=post_text,
+                            parse_mode=post_parse_mode,
                             reply_markup=post_markup,
                         )
                 except Exception:
