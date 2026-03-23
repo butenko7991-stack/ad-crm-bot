@@ -142,17 +142,30 @@ async def _do_publish_scheduled_posts(bot: Bot):
                 # Строим текст/подпись поста с учётом подписи со скрытой ссылкой
                 post_parse_mode = None
                 if post.signature:
-                    channel_username = channel.username if channel.username else None
-                    channel_url = f"https://t.me/{channel_username}" if channel_username else None
                     # Экранируем основной контент для HTML-режима
                     escaped_content = html_module.escape(post.content or "")
-                    if channel_url:
-                        sig_html = (
-                            f'<a href="{html_module.escape(channel_url)}">'
-                            f'{html_module.escape(post.signature)}</a>'
-                        )
+                    # Формат «Текст | URL» — кликабельная подпись с произвольной ссылкой
+                    if " | " in post.signature:
+                        parts = post.signature.split(" | ", 1)
+                        sig_text = parts[0].strip()
+                        sig_url = parts[1].strip()
+                        if sig_text and sig_url.startswith(("http://", "https://", "tg://")):
+                            sig_html = (
+                                f'<a href="{html_module.escape(sig_url)}">'
+                                f'{html_module.escape(sig_text)}</a>'
+                            )
+                        else:
+                            sig_html = html_module.escape(post.signature)
                     else:
-                        sig_html = html_module.escape(post.signature)
+                        channel_username = channel.username if channel.username else None
+                        channel_url = f"https://t.me/{channel_username}" if channel_username else None
+                        if channel_url:
+                            sig_html = (
+                                f'<a href="{html_module.escape(channel_url)}">'
+                                f'{html_module.escape(post.signature)}</a>'
+                            )
+                        else:
+                            sig_html = html_module.escape(post.signature)
                     post_text = f"{escaped_content}\n\n{sig_html}" if escaped_content else sig_html
                     post_parse_mode = "HTML"
                 else:

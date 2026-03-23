@@ -1370,6 +1370,21 @@ async def mgr_post_select_format(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ManagerPostStates.entering_content)
 
 
+def _mgr_signature_keyboard(has_signature: bool) -> InlineKeyboardMarkup:
+    """Клавиатура шага подписи для менеджера (с галочкой если выбрана автоподпись)."""
+    if has_signature:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Автоподпись", callback_data="mgr_auto_signature")],
+            [InlineKeyboardButton(text="➡️ Продолжить", callback_data="mgr_signature_continue")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")],
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Автоподпись", callback_data="mgr_auto_signature")],
+        [InlineKeyboardButton(text="➡️ Без подписи", callback_data="mgr_signature_skip")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")],
+    ])
+
+
 @router.message(ManagerPostStates.entering_content)
 async def mgr_post_receive_content(message: Message, state: FSMContext):
     """Получение рекламного контента от менеджера"""
@@ -1404,16 +1419,16 @@ async def mgr_post_receive_content(message: Message, state: FSMContext):
 
     data = await state.get_data()
     channel_name = data.get("mgr_channel_name", "Канал")
+    await state.update_data(mgr_ad_signature=None)
     await message.answer(
         "✍️ **Подпись поста** (необязательно)\n\n"
         f"Нажмите **Автоподпись**, чтобы добавить в пост кликабельную ссылку на канал "
         f"с текстом «{channel_name}».\n\n"
-        "Или пропустите этот шаг.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Автоподпись", callback_data="mgr_auto_signature")],
-            [InlineKeyboardButton(text="➡️ Без подписи", callback_data="mgr_signature_skip")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")],
-        ]),
+        "Или введите:\n"
+        "• Просто текст — подпись без ссылки\n"
+        "• `Текст | https://ссылка` — кликабельная подпись с вашей ссылкой в теле поста\n\n"
+        "Либо пропустите этот шаг.",
+        reply_markup=_mgr_signature_keyboard(has_signature=False),
         parse_mode=ParseMode.MARKDOWN,
     )
     await state.set_state(ManagerPostStates.entering_signature)
@@ -1468,11 +1483,22 @@ async def _mgr_show_confirm(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "mgr_auto_signature", ManagerPostStates.entering_signature)
 async def mgr_post_auto_signature(callback: CallbackQuery, state: FSMContext):
-    """Установка автоподписи (название канала) и переход к подтверждению"""
+    """Переключение автоподписи (вкл/выкл) с обновлением кнопки"""
     await callback.answer()
     data = await state.get_data()
-    channel_name = data.get("mgr_channel_name", "Реклама")
-    await state.update_data(mgr_ad_signature=channel_name)
+    if data.get("mgr_ad_signature") is None:
+        channel_name = data.get("mgr_channel_name", "Реклама")
+        await state.update_data(mgr_ad_signature=channel_name)
+        await callback.message.edit_reply_markup(reply_markup=_mgr_signature_keyboard(has_signature=True))
+    else:
+        await state.update_data(mgr_ad_signature=None)
+        await callback.message.edit_reply_markup(reply_markup=_mgr_signature_keyboard(has_signature=False))
+
+
+@router.callback_query(F.data == "mgr_signature_continue", ManagerPostStates.entering_signature)
+async def mgr_post_signature_continue(callback: CallbackQuery, state: FSMContext):
+    """Продолжение с сохранённой автоподписью"""
+    await callback.answer()
     await _mgr_show_confirm(callback.message, state)
 
 
@@ -1482,6 +1508,41 @@ async def mgr_post_signature_skip(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.update_data(mgr_ad_signature=None)
     await _mgr_show_confirm(callback.message, state)
+
+
+@router.message(ManagerPostStates.entering_signature)
+async def mgr_post_signature_enter(message: Message, state: FSMContext):
+    """Сохранение пользовательского текста подписи для менеджера"""
+    signature_text = (message.text or "").strip()
+    if not signature_text:
+        await message.answer(
+            "❌ Введите текст подписи или нажмите **Без подписи**.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Валидация формата «Текст | URL» если указан разделитель
+    if " | " in signature_text:
+        parts = signature_text.split(" | ", 1)
+        sig_text = parts[0].strip()
+        sig_url = parts[1].strip()
+        if not sig_text:
+            await message.answer(
+                "❌ Текст подписи не может быть пустым.\n\n"
+                "Формат: `Текст | https://ссылка`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        if not sig_url.startswith(("http://", "https://", "tg://")):
+            await message.answer(
+                "❌ Неверный формат ссылки. Ссылка должна начинаться с `http://`, `https://` или `tg://`.\n\n"
+                "Формат: `Текст | https://ссылка`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+    await state.update_data(mgr_ad_signature=signature_text)
+    await _mgr_show_confirm(message, state)
 
 
 @router.callback_query(F.data == "mgr_post_confirm", ManagerPostStates.confirming)

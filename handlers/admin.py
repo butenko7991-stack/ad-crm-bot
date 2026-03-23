@@ -3288,34 +3288,60 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
     await safe_edit_message(message, preview, markup)
 
 
+def _admin_signature_keyboard(has_signature: bool) -> InlineKeyboardMarkup:
+    """Клавиатура шага подписи для администратора (с галочкой если выбрана автоподпись)."""
+    if has_signature:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Автоподпись", callback_data="autopost_auto_signature")],
+            [InlineKeyboardButton(text="➡️ Продолжить", callback_data="autopost_signature_continue")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Автоподпись", callback_data="autopost_auto_signature")],
+        [InlineKeyboardButton(text="➡️ Пропустить", callback_data="autopost_signature_skip")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
+    ])
+
+
 @router.callback_query(F.data.in_({"autopost_buttons_skip", "autopost_buttons_done"}), AdminCreatePostStates.entering_buttons)
 async def autopost_buttons_finish(callback: CallbackQuery, state: FSMContext):
     """Переход к шагу ввода подписи поста"""
     await callback.answer()
     data = await state.get_data()
     channel_name = data.get("create_channel_name", "Канал")
+    await state.update_data(create_signature=None)
     await safe_edit_message(
         callback.message,
         "✍️ **Подпись поста** (необязательно)\n\n"
         f"Нажмите **Автоподпись**, чтобы добавить кликабельную ссылку на канал "
         f"с текстом «{channel_name}».\n\n"
-        "Или введите собственный текст подписи вручную, либо пропустите шаг.",
-        InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Автоподпись", callback_data="autopost_auto_signature")],
-            [InlineKeyboardButton(text="➡️ Пропустить", callback_data="autopost_signature_skip")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting")],
-        ]),
+        "Или введите:\n"
+        "• Просто текст — подпись без ссылки\n"
+        "• `Текст | https://ссылка` — кликабельная подпись с вашей ссылкой в теле поста\n\n"
+        "Либо пропустите шаг.",
+        _admin_signature_keyboard(has_signature=False),
     )
     await state.set_state(AdminCreatePostStates.entering_signature)
 
 
 @router.callback_query(F.data == "autopost_auto_signature", AdminCreatePostStates.entering_signature)
 async def autopost_auto_signature(callback: CallbackQuery, state: FSMContext):
-    """Установка автоподписи (название канала) и переход к подтверждению"""
+    """Переключение автоподписи (вкл/выкл) с обновлением кнопки"""
     await callback.answer()
     data = await state.get_data()
-    channel_name = data.get("create_channel_name", "Реклама")
-    await state.update_data(create_signature=channel_name)
+    if data.get("create_signature") is None:
+        channel_name = data.get("create_channel_name", "Реклама")
+        await state.update_data(create_signature=channel_name)
+        await callback.message.edit_reply_markup(reply_markup=_admin_signature_keyboard(has_signature=True))
+    else:
+        await state.update_data(create_signature=None)
+        await callback.message.edit_reply_markup(reply_markup=_admin_signature_keyboard(has_signature=False))
+
+
+@router.callback_query(F.data == "autopost_signature_continue", AdminCreatePostStates.entering_signature)
+async def autopost_signature_continue(callback: CallbackQuery, state: FSMContext):
+    """Продолжение с сохранённой автоподписью"""
+    await callback.answer()
     await _show_confirm_preview(callback.message, state)
     await state.set_state(AdminCreatePostStates.confirming)
 
@@ -3330,6 +3356,26 @@ async def autopost_signature_enter(message: Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN,
         )
         return
+
+    # Валидация формата «Текст | URL» если указан разделитель
+    if " | " in signature_text:
+        parts = signature_text.split(" | ", 1)
+        sig_text = parts[0].strip()
+        sig_url = parts[1].strip()
+        if not sig_text:
+            await message.answer(
+                "❌ Текст подписи не может быть пустым.\n\n"
+                "Формат: `Текст | https://ссылка`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        if not sig_url.startswith(("http://", "https://", "tg://")):
+            await message.answer(
+                "❌ Неверный формат ссылки. Ссылка должна начинаться с `http://`, `https://` или `tg://`.\n\n"
+                "Формат: `Текст | https://ссылка`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
 
     await state.update_data(create_signature=signature_text)
     await _show_confirm_preview(message, state)
