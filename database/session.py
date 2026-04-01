@@ -106,6 +106,8 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code) WHERE is_active = TRUE",
         "CREATE INDEX IF NOT EXISTS idx_post_analytics_channel ON post_analytics(channel_id)",
         "CREATE INDEX IF NOT EXISTS idx_post_analytics_order ON post_analytics(order_id)",
+        # Индекс для снимков просмотров
+        "CREATE INDEX IF NOT EXISTS idx_post_view_snapshots_post ON post_view_snapshots(scheduled_post_id, recorded_at)",
     ]
 
     for migration in migrations:

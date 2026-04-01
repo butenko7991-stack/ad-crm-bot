@@ -16,7 +16,7 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, func
 
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL
-from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PromoCode
+from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PostViewSnapshot, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
@@ -2218,7 +2218,7 @@ async def autopost_analytics(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("pa_view:"))
 async def pa_view(callback: CallbackQuery):
-    """Просмотр записи аналитики поста"""
+    """Просмотр записи аналитики поста с динамикой просмотров"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
@@ -2233,9 +2233,24 @@ async def pa_view(callback: CallbackQuery):
                 await callback.message.answer("❌ Запись не найдена")
                 return
             channel = await session.get(Channel, analytics.channel_id)
+            scheduled_post = (
+                await session.get(ScheduledPost, analytics.scheduled_post_id)
+                if analytics.scheduled_post_id else None
+            )
             scheduled_post_id = analytics.scheduled_post_id
 
+            # Загружаем снимки динамики просмотров
+            snapshots = []
+            if analytics.scheduled_post_id:
+                snapshots = (await session.execute(
+                    select(PostViewSnapshot)
+                    .where(PostViewSnapshot.scheduled_post_id == analytics.scheduled_post_id)
+                    .order_by(PostViewSnapshot.recorded_at.asc())
+                )).scalars().all()
+
         ch_name = channel.name if channel else "—"
+        subscribers = (channel.subscribers or 0) if channel else 0
+        posted_at = scheduled_post.posted_at if scheduled_post else None
         recorded = analytics.recorded_at.strftime("%d.%m.%Y %H:%M") if analytics.recorded_at else "—"
         views = analytics.views or 0
         reactions = analytics.reactions or 0
@@ -2245,17 +2260,92 @@ async def pa_view(callback: CallbackQuery):
         total_engage = reactions + forwards + saves + comments
         er = round(total_engage / views * 100, 2) if views > 0 else 0
 
+        # Шапка
+        posted_str = posted_at.strftime("%d.%m.%Y %H:%M") if posted_at else recorded
         text = (
             f"📊 **Аналитика поста #{analytics_id}**\n\n"
             f"📢 Канал: {ch_name}\n"
-            f"📅 Записано: {recorded}\n\n"
-            f"👁 Просмотры: **{views:,}**\n"
-            f"👍 Реакции: **{reactions:,}**\n"
+        )
+        if subscribers:
+            text += f"👥 Подписчиков: **{subscribers:,}**\n"
+        text += f"📅 Опубликован: {posted_str}\n\n"
+
+        # Текущие метрики
+        text += (
+            f"👁 Текущие просмотры: **{views:,}**\n"
+        )
+
+        # 24-часовые просмотры из снимков
+        views_24h = None
+        views_1h = None
+        if snapshots and posted_at:
+            cutoff_24h = posted_at + timedelta(hours=24)
+            cutoff_1h = posted_at + timedelta(hours=1)
+            snaps_24h = [s for s in snapshots if s.recorded_at <= cutoff_24h]
+            snaps_1h = [s for s in snapshots if s.recorded_at <= cutoff_1h]
+            if snaps_24h:
+                views_24h = snaps_24h[-1].views
+            if snaps_1h:
+                views_1h = snaps_1h[-1].views
+
+        if views_24h is not None:
+            text += f"📊 Просмотры за 24ч: **{views_24h:,}**\n"
+        else:
+            text += "📊 Просмотры за 24ч: н/д\n"
+
+        # ERR 24ч
+        if views_24h:
+            er24 = round(total_engage / views_24h * 100, 2) if views_24h > 0 else 0
+            text += f"❗ ERR 24ч: **{er24}%**\n"
+        else:
+            text += "❗ ERR 24ч: н/д\n"
+
+        text += (
+            f"\n👍 Реакции: **{reactions:,}**\n"
             f"↩️ Пересылки: **{forwards:,}**\n"
             f"🔖 Сохранения: **{saves:,}**\n"
             f"💬 Комментарии: **{comments:,}**\n"
             f"📈 Engagement Rate: **{er}%**\n"
         )
+
+        # Динамика просмотров — текстовый мини-график
+        if snapshots and posted_at and len(snapshots) >= 2:
+            max_views = max(s.views for s in snapshots) or 1
+            bar_width = 10
+
+            def views_bar(v):
+                filled = round(v / max_views * bar_width)
+                return "▓" * filled + "░" * (bar_width - filled)
+
+            # Показываем опорные точки: 1ч, 3ч, 6ч, 12ч, 24ч и "сейчас"
+            milestones = [1, 3, 6, 12, 24]
+            milestone_lines = []
+            for hours in milestones:
+                cutoff = posted_at + timedelta(hours=hours)
+                relevant = [s for s in snapshots if s.recorded_at <= cutoff]
+                if relevant:
+                    v = relevant[-1].views
+                    milestone_lines.append(f"  +{hours}ч: {v:,} {views_bar(v)}")
+            # Текущее значение
+            milestone_lines.append(f"  Сейчас: {views:,} {views_bar(views)}")
+
+            if milestone_lines:
+                text += "\n📉 **Динамика просмотров:**\n"
+                text += "\n".join(milestone_lines) + "\n"
+
+        # Первые часы после публикации
+        if snapshots and posted_at:
+            first_hours_lines = []
+            for hours in [1, 3, 6, 12, 24]:
+                cutoff = posted_at + timedelta(hours=hours)
+                relevant = [s for s in snapshots if s.recorded_at <= cutoff]
+                if relevant:
+                    v = relevant[-1].views
+                    first_hours_lines.append(f"  {hours}ч: {v:,} просмотров")
+            if first_hours_lines:
+                text += "\n⏰ **Первые часы после публикации:**\n"
+                text += "\n".join(first_hours_lines) + "\n"
+
         if analytics.ai_recommendation:
             text += f"\n🤖 **AI-рекомендация:**\n{analytics.ai_recommendation}\n"
 
@@ -2270,6 +2360,7 @@ async def pa_view(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in pa_view: {traceback.format_exc()}")
         await callback.message.answer("❌ Ошибка")
+
 
 
 @router.callback_query(F.data.startswith("pa_enter:"))
