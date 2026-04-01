@@ -1,7 +1,7 @@
 """
 Модели базы данных
 """
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timezone
 from decimal import Decimal
 from typing import Optional, List
 
@@ -265,6 +265,19 @@ class PostAnalytics(Base):
     # Временные метки
     recorded_at = Column(DateTime, default=datetime.utcnow)
     recorded_by = Column(BigInteger)  # Admin who entered metrics
+
+
+class PostViewSnapshot(Base):
+    """Снимки просмотров рекламного поста для построения динамики"""
+    __tablename__ = "post_view_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    scheduled_post_id = Column(Integer, ForeignKey("scheduled_posts.id"), nullable=False)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    views = Column(Integer, default=0)
+    reactions = Column(Integer, default=0)
+    forwards = Column(Integer, default=0)
+    recorded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class PromoCode(Base):

@@ -8,7 +8,7 @@
  - Пересчитывать avg_reach и ERR на основе накопленных PostAnalytics
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from aiogram import Bot
@@ -16,7 +16,7 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from sqlalchemy import select, func
 
 from database import async_session_maker, Channel, PostAnalytics
-from database.models import ScheduledPost
+from database.models import ScheduledPost, PostViewSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +230,28 @@ async def record_post_views(
                     recorded_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 )
                 session.add(analytics)
+
+            # Сохраняем снимок просмотров для построения динамики.
+            # Ограничиваем частоту: не чаще одного снимка в 30 минут на пост.
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            throttle_after = now_utc - timedelta(minutes=30)
+            last_snapshot = (await session.execute(
+                select(PostViewSnapshot)
+                .where(PostViewSnapshot.scheduled_post_id == post.id)
+                .order_by(PostViewSnapshot.recorded_at.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+
+            if last_snapshot is None or last_snapshot.recorded_at < throttle_after:
+                snapshot = PostViewSnapshot(
+                    scheduled_post_id=post.id,
+                    channel_id=channel_row.id,
+                    views=views,
+                    reactions=reactions,
+                    forwards=forwards,
+                    recorded_at=now_utc,
+                )
+                session.add(snapshot)
 
             await session.commit()
             logger.debug(
