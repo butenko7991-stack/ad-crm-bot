@@ -26,6 +26,10 @@ except ValueError:
 # Установите переменную окружения MANAGER_GROUP_CHAT_ID (отрицательный ID для групп, например -1001234567890)
 MANAGER_GROUP_CHAT_ID: Optional[int] = int(os.getenv("MANAGER_GROUP_CHAT_ID", "0")) or None
 
+# Чат Max для кросспостинга — ID чата/канала в сети Max, куда дублируются посты из Telegram
+# Установите переменную окружения MAX_CROSSPOST_CHAT_ID (например, числовой ID чата или канала)
+MAX_CROSSPOST_CHAT_ID: Optional[int] = int(os.getenv("MAX_CROSSPOST_CHAT_ID", "0")) or None
+
 # ==================== ЧАСОВОЙ ПОЯС ====================
 
 # Смещение локального времени относительно UTC (в часах).

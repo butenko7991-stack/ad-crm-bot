@@ -210,7 +210,12 @@ class ScheduledPost(Base):
     message_id = Column(BigInteger)
     posted_at = Column(DateTime)
     deleted_at = Column(DateTime)
-    
+
+    # Кросспостинг в сеть Max
+    crosspost_to_max = Column(Boolean, default=False)
+    max_post_id = Column(String(100))  # ID сообщения в Max после кросспостинга
+    max_posted_at = Column(DateTime)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by = Column(BigInteger)
 
