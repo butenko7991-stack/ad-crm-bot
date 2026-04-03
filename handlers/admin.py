@@ -3885,7 +3885,7 @@ async def adm_max_settings(callback: CallbackQuery):
 
     crosspost_status = "🟢 Включён" if crosspost_on else "🔴 Выключен"
     limit_str = "без ограничений" if crosspost_limit == 0 else str(crosspost_limit)
-    chat_str = f"`{crosspost_chat_id}`" if crosspost_chat_id else "🔴 Не задан"
+    chat_str = f"🟢 `{crosspost_chat_id}`" if crosspost_chat_id else "🔴 Не задан"
 
     text = (
         f"{bot_status}\n\n"

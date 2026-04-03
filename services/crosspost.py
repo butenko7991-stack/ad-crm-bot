@@ -62,7 +62,11 @@ async def get_max_crosspost_chat_id() -> Optional[int]:
 
 
 async def get_daily_crosspost_count() -> int:
-    """Подсчитать количество кросспостов, выполненных сегодня (UTC)."""
+    """Подсчитать количество кросспостов, выполненных сегодня (UTC).
+
+    Граница суток определяется по UTC: с 00:00:00 до 23:59:59 текущей UTC-даты.
+    Все временны́е метки в БД хранятся в UTC, поэтому подсчёт корректен.
+    """
     today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start.replace(hour=23, minute=59, second=59, microsecond=999999)
     try:
@@ -128,7 +132,10 @@ async def crosspost_post_to_max(post: ScheduledPost, max_bot) -> bool:
 
     try:
         sent = await max_bot.send_message(chat_id=chat_id, text=text)
-        post.max_post_id = str(getattr(sent, "message_id", None) or getattr(sent, "id", None) or "ok")
+        raw_id = getattr(sent, "message_id", None) or getattr(sent, "id", None)
+        if raw_id is None:
+            logger.warning(f"Пост #{post.id}: Max API не вернул ID сообщения — запись без ID")
+        post.max_post_id = str(raw_id) if raw_id is not None else "unknown"
         post.max_posted_at = utc_now()
         logger.info(f"Пост #{post.id} скопирован в Max (chat_id={chat_id})")
         return True

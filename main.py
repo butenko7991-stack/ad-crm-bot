@@ -248,7 +248,10 @@ async def _do_publish_scheduled_posts(bot: Bot):
                 post.posted_at = posted_at
                 post.message_id = sent.message_id
 
-                # Кросспостинг в Max (если включён для этого поста)
+                # Кросспостинг в Max (если включён для этого поста).
+                # Примечание: _max_bot_instance проверяется на наличие, но не на
+                # работоспособность соединения. При сбое Max-бота ошибка будет
+                # поймана блоком except ниже и залогирована без прерывания основного потока.
                 if post.crosspost_to_max and _max_bot_instance is not None:
                     try:
                         await crosspost_post_to_max(post, _max_bot_instance)
