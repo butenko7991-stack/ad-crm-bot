@@ -109,6 +109,11 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_post_analytics_order ON post_analytics(order_id)",
         # Индекс для снимков просмотров
         "CREATE INDEX IF NOT EXISTS idx_post_view_snapshots_post ON post_view_snapshots(scheduled_post_id, recorded_at)",
+        # Кросспостинг в сеть Max
+        "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS crosspost_to_max BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS max_post_id VARCHAR(100)",
+        "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS max_posted_at TIMESTAMP",
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_posts_max_posted ON scheduled_posts(crosspost_to_max, max_posted_at)",
     ]
 
     for migration in migrations:

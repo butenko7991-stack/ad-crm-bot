@@ -23,6 +23,7 @@ from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
 from services.channel_collector import refresh_all_channels
 from services.settings import get_manager_group_chat_id
+from services.crosspost import crosspost_post_to_max
 from services.error_library import lookup_error, record_unknown_error
 from utils.helpers import format_channel_stats_for_group, utc_now
 
@@ -37,6 +38,10 @@ logger = logging.getLogger(__name__)
 # Блокировка, предотвращающая повторный вход в publish_scheduled_posts
 # внутри одного процесса (дополнительная защита к max_instances=1 в планировщике).
 _publishing_lock = asyncio.Lock()
+
+# Глобальный экземпляр Max-бота (устанавливается в run_max_bot() при старте).
+# Используется для кросспостинга постов из Telegram в Max.
+_max_bot_instance = None
 
 async def cleanup_expired_slots():
     """Освобождаем слоты, у которых истёк срок резервации"""
@@ -242,6 +247,18 @@ async def _do_publish_scheduled_posts(bot: Bot):
                 post.status = "posted"
                 post.posted_at = posted_at
                 post.message_id = sent.message_id
+
+                # Кросспостинг в Max (если включён для этого поста)
+                if post.crosspost_to_max and _max_bot_instance is not None:
+                    try:
+                        await crosspost_post_to_max(post, _max_bot_instance)
+                    except Exception:
+                        logger.warning(
+                            f"Ошибка кросспостинга поста #{post.id} в Max — "
+                            f"Telegram-пост уже опубликован",
+                            exc_info=True,
+                        )
+
                 await session.commit()
                 logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
 
@@ -422,6 +439,8 @@ async def global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
 
 async def run_max_bot():
     """Запускает бота в сети Max (если MAX_BOT_TOKEN задан)."""
+    global _max_bot_instance
+
     if not MAX_BOT_TOKEN:
         logger.info("MAX_BOT_TOKEN не задан — бот в сети Max не запускается")
         return
@@ -434,6 +453,7 @@ async def run_max_bot():
         return
 
     max_bot = MaxBot(MAX_BOT_TOKEN)
+    _max_bot_instance = max_bot
     max_dp = setup_max_dispatcher()
 
     logger.info("🚀 Max-бот запускается...")
@@ -441,6 +461,8 @@ async def run_max_bot():
         await max_dp.start_polling(max_bot)
     except Exception:
         logger.error(f"Ошибка Max-бота: {traceback.format_exc()}")
+    finally:
+        _max_bot_instance = None
 
 
 async def main():

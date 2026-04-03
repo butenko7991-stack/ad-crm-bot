@@ -10,12 +10,16 @@ from datetime import datetime
 from typing import Optional
 
 from database import async_session_maker, BotSetting
+from utils.helpers import utc_now
 
 logger = logging.getLogger(__name__)
 
 # ─── Ключи настроек ───────────────────────────────────────────────────────────
 MANAGER_GROUP_CHAT_ID_KEY = "manager_group_chat_id"
 PAYMENT_LINK_KEY = "payment_link"
+CROSSPOST_ENABLED_KEY = "crosspost_enabled"
+CROSSPOST_DAILY_LIMIT_KEY = "crosspost_daily_limit"
+MAX_CROSSPOST_CHAT_ID_KEY = "max_crosspost_chat_id"
 
 
 async def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:

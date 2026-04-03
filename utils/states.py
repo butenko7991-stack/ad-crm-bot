@@ -118,6 +118,12 @@ class AdminSettingsStates(StatesGroup):
     waiting_payment_link = State()  # Ожидание ввода платёжной ссылки / реквизитов
 
 
+class AdminCrosspostSettingsStates(StatesGroup):
+    """Состояния настройки кросспостинга в сеть Max"""
+    waiting_chat_id = State()      # Ожидание ввода ID чата Max
+    waiting_daily_limit = State()  # Ожидание ввода дневного лимита
+
+
 class AdminImprovementStates(StatesGroup):
     """Состояния ввода заметки об улучшении"""
     waiting_improvement_note = State()

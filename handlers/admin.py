@@ -20,9 +20,10 @@ from database import async_session_maker, Channel, Manager, Order, ScheduledPost
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
-from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates
+from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates, AdminCrosspostSettingsStates
 from utils.helpers import escape_md, utc_now
-from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY
+from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY, CROSSPOST_ENABLED_KEY, CROSSPOST_DAILY_LIMIT_KEY, MAX_CROSSPOST_CHAT_ID_KEY
+from services.crosspost import is_crosspost_enabled, get_crosspost_daily_limit, get_daily_crosspost_count, get_max_crosspost_chat_id
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
 from services.error_library import KNOWN_ERRORS, get_error_log, format_known_error
@@ -3342,6 +3343,7 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
     file_type = data.get("create_file_type")
     buttons: list = data.get("create_buttons", [])
     signature = data.get("create_signature")
+    crosspost = data.get("create_crosspost", False)
 
     try:
         scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
@@ -3367,9 +3369,18 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
     if signature:
         preview += f"\n✍️ **Подпись:** {signature}\n"
 
+    crosspost_label = "✅ Да" if crosspost else "❌ Нет"
+    preview += f"\n🔵 Кросспост в Max: **{crosspost_label}**\n"
+
     preview += "\nСоздать пост?"
 
     markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=f"🔵 Кросспост в Max: {crosspost_label}",
+                callback_data="autopost_toggle_crosspost",
+            ),
+        ],
         [
             InlineKeyboardButton(text="✅ Создать", callback_data="autopost_create_confirm"),
             InlineKeyboardButton(text="❌ Отмена", callback_data="adm_autoposting"),
@@ -3377,6 +3388,16 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
     ])
 
     await safe_edit_message(message, preview, markup)
+
+
+@router.callback_query(F.data == "autopost_toggle_crosspost", AdminCreatePostStates.confirming)
+async def autopost_toggle_crosspost(callback: CallbackQuery, state: FSMContext):
+    """Переключить флаг кросспостинга в Max для создаваемого поста."""
+    await callback.answer()
+    data = await state.get_data()
+    current = data.get("create_crosspost", False)
+    await state.update_data(create_crosspost=not current)
+    await _show_confirm_preview(callback.message, state)
 
 
 def _admin_signature_keyboard(has_signature: bool) -> InlineKeyboardMarkup:
@@ -3508,6 +3529,7 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
                 scheduled_time=scheduled_time,
                 delete_after_hours=data.get("create_delete_hours", 24),
                 status="pending",
+                crosspost_to_max=bool(data.get("create_crosspost", False)),
                 created_by=callback.from_user.id
             )
             session.add(post)
@@ -3832,17 +3854,17 @@ async def on_bot_added_to_group(event: ChatMemberUpdated, bot: Bot):
 
 @router.callback_query(F.data == "adm_max_settings")
 async def adm_max_settings(callback: CallbackQuery):
-    """Информация о подключении Max Bot"""
+    """Информация о подключении Max Bot и настройки кросспостинга"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
         await callback.answer("🔐 Требуется авторизация", show_alert=True)
         return
-    
+
     await callback.answer()
-    
+
     if MAX_BOT_TOKEN:
-        status_text = "🟢 **Max Bot подключён**\n\nБот в сети Max активен и принимает пользователей."
+        bot_status = "🟢 **Max Bot подключён**\n\nБот в сети Max активен и принимает пользователей."
     else:
-        status_text = (
+        bot_status = (
             "🔴 **Max Bot не подключён**\n\n"
             "Для подключения бота в сеть Max:\n"
             "1. Перейдите на **dev.max.ru** и создайте бота\n"
@@ -3855,12 +3877,149 @@ async def adm_max_settings(callback: CallbackQuery):
             "• Бронировать рекламные слоты\n"
             "• Управлять своим профилем менеджера"
         )
-    
+
+    crosspost_on = await is_crosspost_enabled()
+    crosspost_limit = await get_crosspost_daily_limit()
+    crosspost_chat_id = await get_max_crosspost_chat_id()
+    daily_count = await get_daily_crosspost_count()
+
+    crosspost_status = "🟢 Включён" if crosspost_on else "🔴 Выключен"
+    limit_str = "без ограничений" if crosspost_limit == 0 else str(crosspost_limit)
+    chat_str = f"`{crosspost_chat_id}`" if crosspost_chat_id else "🔴 Не задан"
+
+    text = (
+        f"{bot_status}\n\n"
+        f"──────────────────\n"
+        f"🔁 **Кросспостинг Telegram → Max**\n\n"
+        f"Статус: {crosspost_status}\n"
+        f"ID чата Max: {chat_str}\n"
+        f"Лимит в день: {limit_str}\n"
+        f"Опубликовано сегодня: {daily_count}"
+    )
+
+    toggle_label = "🔴 Выключить кросспост" if crosspost_on else "🟢 Включить кросспост"
     await safe_edit_message(
-        callback.message, status_text,
+        callback.message, text,
         InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")]
+            [InlineKeyboardButton(text=toggle_label, callback_data="adm_crosspost_toggle")],
+            [InlineKeyboardButton(text="🆔 Изменить ID чата Max", callback_data="adm_crosspost_chat_input")],
+            [InlineKeyboardButton(text="📊 Изменить лимит постов/день", callback_data="adm_crosspost_limit_input")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")],
         ])
+    )
+
+
+@router.callback_query(F.data == "adm_crosspost_toggle")
+async def adm_crosspost_toggle(callback: CallbackQuery):
+    """Включить/выключить кросспостинг."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    current = await is_crosspost_enabled()
+    new_val = "false" if current else "true"
+    await set_setting(CROSSPOST_ENABLED_KEY, new_val, updated_by=callback.from_user.id)
+    # Обновить экран
+    await adm_max_settings(callback)
+
+
+@router.callback_query(F.data == "adm_crosspost_chat_input")
+async def adm_crosspost_chat_input(callback: CallbackQuery, state: FSMContext):
+    """Запросить ID чата Max для кросспостинга."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    await safe_edit_message(
+        callback.message,
+        "🆔 **Введите ID чата Max для кросспостинга**\n\n"
+        "Это числовой идентификатор чата или канала в сети Max, куда бот будет "
+        "дублировать посты после публикации в Telegram.\n\n"
+        "Пример: `123456789`",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_max_settings")]
+        ])
+    )
+    await state.set_state(AdminCrosspostSettingsStates.waiting_chat_id)
+
+
+@router.message(AdminCrosspostSettingsStates.waiting_chat_id)
+async def adm_crosspost_chat_receive(message: Message, state: FSMContext):
+    """Сохранить ID чата Max."""
+    raw = (message.text or "").strip()
+    try:
+        chat_id = int(raw)
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат. Введите числовой ID чата, например `123456789`.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await set_setting(MAX_CROSSPOST_CHAT_ID_KEY, str(chat_id), updated_by=message.from_user.id)
+    await state.clear()
+
+    await message.answer(
+        f"✅ **ID чата Max обновлён!**\n\nID: `{chat_id}`\n\n"
+        f"Теперь посты с включённым кросспостингом будут дублироваться в этот чат.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ К настройкам Max", callback_data="adm_max_settings")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.callback_query(F.data == "adm_crosspost_limit_input")
+async def adm_crosspost_limit_input(callback: CallbackQuery, state: FSMContext):
+    """Запросить дневной лимит кросспостов."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+    current_limit = await get_crosspost_daily_limit()
+    current_str = "без ограничений" if current_limit == 0 else str(current_limit)
+
+    await safe_edit_message(
+        callback.message,
+        f"📊 **Лимит кросспостов в день**\n\n"
+        f"Текущее значение: **{current_str}**\n\n"
+        f"Введите максимальное количество постов, которые можно скопировать в Max за сутки.\n"
+        f"Введите **0** для снятия ограничений.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_max_settings")]
+        ])
+    )
+    await state.set_state(AdminCrosspostSettingsStates.waiting_daily_limit)
+
+
+@router.message(AdminCrosspostSettingsStates.waiting_daily_limit)
+async def adm_crosspost_limit_receive(message: Message, state: FSMContext):
+    """Сохранить дневной лимит кросспостов."""
+    raw = (message.text or "").strip()
+    try:
+        limit = int(raw)
+        if limit < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат. Введите целое число ≥ 0 (например `10` или `0` для снятия лимита).",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await set_setting(CROSSPOST_DAILY_LIMIT_KEY, str(limit), updated_by=message.from_user.id)
+    await state.clear()
+
+    limit_str = "без ограничений" if limit == 0 else f"{limit} постов/день"
+    await message.answer(
+        f"✅ **Лимит кросспостов обновлён!**\n\nНовый лимит: **{limit_str}**",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ К настройкам Max", callback_data="adm_max_settings")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
     )
 
 

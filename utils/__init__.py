@@ -13,7 +13,7 @@ from utils.states import (
     AdminCPMStates, AdminAutopostingStates, ManagerPostStates,
     AdminCreatePostStates, AdminPromoStates, AdminSlotStates,
     AdminManagerStates, AdminSettingsStates, AdminImprovementStates,
-    ManagerRegisterStates, ManagerSettingsStates,
+    ManagerRegisterStates, ManagerSettingsStates, AdminCrosspostSettingsStates,
 )
 
 __all__ = [
@@ -26,5 +26,5 @@ __all__ = [
     "AdminCPMStates", "AdminAutopostingStates", "ManagerPostStates",
     "AdminCreatePostStates", "AdminPromoStates", "AdminSlotStates",
     "AdminManagerStates", "AdminSettingsStates", "AdminImprovementStates",
-    "ManagerRegisterStates", "ManagerSettingsStates",
+    "ManagerRegisterStates", "ManagerSettingsStates", "AdminCrosspostSettingsStates",
 ]
