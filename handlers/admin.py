@@ -19,7 +19,7 @@ from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABL
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PostViewSnapshot, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, format_daily_schedule, AdminSettingsStates, channel_link
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, format_daily_schedule, format_slot_booking, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates, AdminCrosspostSettingsStates
 from utils.helpers import escape_md, utc_now
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY, CROSSPOST_ENABLED_KEY, CROSSPOST_DAILY_LIMIT_KEY, MAX_CROSSPOST_CHAT_ID_KEY
@@ -4574,13 +4574,24 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
             # Сохраняем telegram_id до commit(), чтобы не обращаться к истекшему объекту
             client_telegram_id = client.telegram_id if client else None
 
+            # Сохраняем данные для уведомления о занятом слоте
+            manager_first_name = None
+            if order.manager_id:
+                _mgr = await session.get(Manager, order.manager_id)
+                if _mgr:
+                    manager_first_name = _mgr.first_name
+            booking_price = float(order.final_price) if order.final_price else None
+            booking_payment = order.payment_method
+
             await session.commit()
 
             # Получаем канал для уведомления в чат менеджеров
             channel_for_notify = None
+            slot_time_for_notify = None
             if order.slot_id:
                 slot = await session.get(Slot, order.slot_id)
                 if slot:
+                    slot_time_for_notify = slot.slot_time
                     channel_for_notify = await session.get(Channel, slot.channel_id)
 
         # Начисляем XP менеджеру через gamification
@@ -4618,6 +4629,27 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
         # Отправляем статистику канала в чат менеджеров
         if channel_for_notify:
             await _notify_manager_group(bot, channel_for_notify, order_id)
+
+        # Уведомляем менеджеров о занятом слоте
+        if channel_for_notify:
+            mgr_chat_id = await get_manager_group_chat_id()
+            if mgr_chat_id:
+                try:
+                    booking_text = format_slot_booking(
+                        channel_name=channel_for_notify.name or "Канал",
+                        channel_category=getattr(channel_for_notify, "category", None),
+                        slot_time=slot_time_for_notify,
+                        price=booking_price,
+                        payment_method=booking_payment,
+                        manager_name=manager_first_name,
+                    )
+                    await bot.send_message(mgr_chat_id, booking_text, parse_mode=None)
+                except Exception:
+                    logger.warning(
+                        f"Не удалось отправить уведомление о занятом слоте в чат менеджеров "
+                        f"(order_id={order_id})",
+                        exc_info=True,
+                    )
 
         await safe_edit_message(
             callback.message,
@@ -5394,6 +5426,22 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
             scheduled_time = post.scheduled_time
             channel = await session.get(Channel, post.channel_id)
             channel_name = channel.name if channel else "—"
+            channel_category = getattr(channel, "category", None) if channel else None
+
+            # Данные для уведомления о занятом слоте
+            booking_price = None
+            booking_payment = None
+            booking_manager_name = None
+            if post.order_id:
+                order = await session.get(Order, post.order_id)
+                if order:
+                    booking_price = float(order.final_price) if order.final_price else None
+                    booking_payment = order.payment_method
+                    if order.manager_id:
+                        _mgr = await session.get(Manager, order.manager_id)
+                        if _mgr:
+                            booking_manager_name = _mgr.first_name
+
             await session.commit()
 
         await callback.answer("✅ Пост одобрен и поставлен в очередь!", show_alert=True)
@@ -5426,6 +5474,28 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
                 )
             except Exception:
                 logger.warning(f"Could not notify creator {creator_id} about approved post #{post_id}", exc_info=True)
+
+        # Уведомляем менеджеров о согласованной рекламе и занятом слоте
+        if channel:
+            mgr_chat_id = await get_manager_group_chat_id()
+            if mgr_chat_id:
+                try:
+                    local_time = (scheduled_time + LOCAL_TZ_OFFSET) if scheduled_time else None
+                    booking_text = format_slot_booking(
+                        channel_name=channel_name,
+                        channel_category=channel_category,
+                        slot_time=local_time,
+                        price=booking_price,
+                        payment_method=booking_payment,
+                        manager_name=booking_manager_name,
+                    )
+                    await bot.send_message(mgr_chat_id, booking_text, parse_mode=None)
+                except Exception:
+                    logger.warning(
+                        f"Не удалось отправить уведомление о согласовании рекламы в чат менеджеров "
+                        f"(post_id={post_id})",
+                        exc_info=True,
+                    )
     except Exception as e:
         logger.error(f"Error in adm_approve_post: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)

@@ -292,3 +292,45 @@ def format_daily_schedule(posts_data: list, target_date) -> str:
         lines.append("Комментарий:")
 
     return "\n".join(lines)
+
+
+def format_slot_booking(
+    channel_name: str,
+    channel_category: Optional[str],
+    slot_time,
+    price: Optional[float],
+    payment_method: Optional[str],
+    manager_name: Optional[str],
+) -> str:
+    """Форматировать уведомление о занятом слоте для чата менеджеров.
+
+    Формат:
+        🧠 Название канала
+        🔅10:10 бронь 55р пдп (Даня)
+        -
+        -
+        Комментарий:
+    """
+    ch_emoji = _category_emoji(channel_category)
+
+    time_str = slot_time.strftime("%H:%M") if slot_time else "--:--"
+    price_str = f"{int(price)}р" if price else ""
+    payment = payment_method or ""
+    manager_part = f" ({manager_name})" if manager_name else ""
+
+    booking_parts = [time_str, "бронь"]
+    if price_str:
+        booking_parts.append(price_str)
+    if payment:
+        booking_parts.append(payment)
+
+    booking_line = "🔅" + " ".join(booking_parts) + manager_part
+
+    lines = [
+        f"{ch_emoji} {channel_name}",
+        booking_line,
+        "-",
+        "-",
+        "Комментарий:",
+    ]
+    return "\n".join(lines)
