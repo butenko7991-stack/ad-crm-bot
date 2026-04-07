@@ -24,13 +24,23 @@ _WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 # ==================== ГЛАВНЫЕ МЕНЮ ====================
 
+def get_role_selection_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора роли при первом запуске"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Закупщик", callback_data="set_role:buyer")],
+        [InlineKeyboardButton(text="✍️ Контенщик", callback_data="set_role:content")],
+        [InlineKeyboardButton(text="💼 Менеджер по продажам", callback_data="set_role:manager")],
+    ])
+
+
 def get_main_menu(
-    is_admin: bool = False, 
+    is_admin: bool = False,
     is_authenticated_admin: bool = False,
-    is_manager: bool = False
+    is_manager: bool = False,
+    manager_role: str = None,
 ) -> ReplyKeyboardMarkup:
     """Главное меню в зависимости от роли"""
-    
+
     if is_authenticated_admin:
         # Авторизованный админ
         buttons = [
@@ -39,8 +49,22 @@ def get_main_menu(
             [KeyboardButton(text="📝 Модерация"), KeyboardButton(text="🏆 Лидерборд")],
             [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="🚪 Выйти")]
         ]
+    elif is_manager and manager_role == "buyer":
+        # Закупщик — разделы, связанные с закупом рекламы
+        buttons = [
+            [KeyboardButton(text="📢 Каталог каналов"), KeyboardButton(text="📊 Аналитика каналов")],
+            [KeyboardButton(text="📦 Мои заказы"), KeyboardButton(text="💰 Баланс")],
+            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🔄 Сменить роль")],
+        ]
+    elif is_manager and manager_role == "content":
+        # Контенщик — разделы, связанные с постингом
+        buttons = [
+            [KeyboardButton(text="📅 Мои посты"), KeyboardButton(text="✍️ Подать пост")],
+            [KeyboardButton(text="📈 Аналитика постов"), KeyboardButton(text="🤖 Автопостинг")],
+            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🔄 Сменить роль")],
+        ]
     elif is_manager:
-        # Менеджер
+        # Менеджер по продажам (роль 'manager' или без роли)
         buttons = [
             [KeyboardButton(text="📚 Обучение"), KeyboardButton(text="💼 Продажи")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💰 Баланс")],
@@ -59,7 +83,7 @@ def get_main_menu(
             [KeyboardButton(text="📦 Мои заказы")],
             [KeyboardButton(text="💼 Стать менеджером")]
         ]
-    
+
     return ReplyKeyboardMarkup(
         keyboard=buttons,
         resize_keyboard=True
