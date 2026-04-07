@@ -548,6 +548,7 @@ def get_autoposting_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🤖 AI-рекомендации", callback_data="autopost_ai_recommend"),
         ],
         [InlineKeyboardButton(text="📈 Аналитика каналов", callback_data="autopost_channel_analytics")],
+        [InlineKeyboardButton(text="👁 Охваты за сутки", callback_data="daily_reach_report")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
     ])
 

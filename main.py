@@ -17,7 +17,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select, update as sa_update
 
-from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, ADMIN_PASSWORD
+from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, ADMIN_PASSWORD, LOCAL_TZ_OFFSET
 from database import init_db, async_session_maker
 from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
@@ -380,6 +380,39 @@ async def delete_posted_posts(bot: Bot):
         logger.error(f"Ошибка в delete_posted_posts: {traceback.format_exc()}")
 
 
+async def send_daily_reach_report(bot: Bot):
+    """Ежедневный отчёт об охватах рекламных постов за последние 24 часа.
+
+    Отправляется всем администраторам и в чат менеджеров (если настроен).
+    """
+    try:
+        from services.metrics import get_daily_reach_report, format_daily_reach_report_text
+
+        data = await get_daily_reach_report()
+        if data is None:
+            return
+
+        date_str = utc_now().strftime("%d.%m.%Y")
+        text = format_daily_reach_report_text(data, date_str, bold="*")
+
+        mgr_chat_id = await get_manager_group_chat_id()
+        if mgr_chat_id:
+            try:
+                await bot.send_message(mgr_chat_id, text, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                logger.warning("Не удалось отправить отчёт об охватах в чат менеджеров", exc_info=True)
+
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, text, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                logger.warning(f"Не удалось отправить отчёт об охватах админу {admin_id}", exc_info=True)
+
+        logger.info(f"Отчёт об охватах за сутки отправлен: {data['count']} постов")
+    except Exception:
+        logger.error(f"Ошибка send_daily_reach_report: {traceback.format_exc()}")
+
+
 async def global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
     """
     Глобальный обработчик ошибок aiogram 3.x.
@@ -533,6 +566,16 @@ async def main():
         trigger="interval",
         hours=6,
         id="refresh_all_channels",
+        args=[bot],
+    )
+    # Ежедневный отчёт об охватах: в 9:00 по местному времени (LOCAL_TZ_OFFSET)
+    report_hour_utc = (9 - int(LOCAL_TZ_OFFSET.total_seconds() // 3600)) % 24
+    scheduler.add_job(
+        send_daily_reach_report,
+        trigger="cron",
+        hour=report_hour_utc,
+        minute=0,
+        id="daily_reach_report",
         args=[bot],
     )
     scheduler.start()

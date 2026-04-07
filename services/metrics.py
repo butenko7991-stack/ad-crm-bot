@@ -9,6 +9,7 @@ from sqlalchemy import select, func, case
 from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from database import async_session_maker, Channel, Manager, Order, Client, PostAnalytics
+from database.models import ScheduledPost, PostViewSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -691,3 +692,152 @@ async def get_channels_analytics_summary() -> Optional[list]:
     except Exception as e:
         logger.error(f"get_channels_analytics_summary error: {e}", exc_info=True)
         return None
+
+
+async def get_daily_reach_report() -> Optional[dict]:
+    """
+    Отчёт об охватах рекламных постов за последние 24 часа.
+
+    Для каждого поста, опубликованного за последние 24 часа, возвращает:
+    канал, подписчиков, текущие просмотры, просмотры за 24ч, ERR 24ч.
+
+    Возвращает словарь с ключами:
+      posts, count, total_views, total_views_24h, avg_err24
+    """
+    try:
+        now = _utcnow()
+        since_24h = now - timedelta(hours=24)
+
+        async with async_session_maker() as session:
+            rows = (await session.execute(
+                select(
+                    ScheduledPost.id,
+                    ScheduledPost.posted_at,
+                    ScheduledPost.channel_id,
+                    PostAnalytics.views,
+                    PostAnalytics.reactions,
+                    PostAnalytics.forwards,
+                    PostAnalytics.saves,
+                    PostAnalytics.comments,
+                    Channel.name.label("channel_name"),
+                    Channel.subscribers,
+                )
+                .join(PostAnalytics, PostAnalytics.scheduled_post_id == ScheduledPost.id, isouter=True)
+                .join(Channel, Channel.id == ScheduledPost.channel_id, isouter=True)
+                .where(
+                    ScheduledPost.posted_at >= since_24h,
+                    ScheduledPost.status.in_(["posted", "deleted"]),
+                )
+                .order_by(ScheduledPost.posted_at.desc())
+            )).all()
+
+            if not rows:
+                return {"posts": [], "count": 0, "total_views": 0, "total_views_24h": 0, "avg_err24": 0.0}
+
+            post_ids = [r.id for r in rows]
+
+            snapshots_all = (await session.execute(
+                select(PostViewSnapshot)
+                .where(PostViewSnapshot.scheduled_post_id.in_(post_ids))
+                .order_by(PostViewSnapshot.recorded_at.asc())
+            )).scalars().all()
+
+        # Группируем снимки по scheduled_post_id
+        snapshots_by_post: dict = {}
+        for s in snapshots_all:
+            snapshots_by_post.setdefault(s.scheduled_post_id, []).append(s)
+
+        results = []
+        total_views = 0
+        total_views_24h = 0
+        err24_sum = 0.0
+        err24_count = 0
+
+        for r in rows:
+            views = r.views or 0
+            reactions = r.reactions or 0
+            forwards = r.forwards or 0
+            saves = r.saves or 0
+            comments = r.comments or 0
+            total_engage = reactions + forwards + saves + comments
+
+            # Просмотры за 24 часа из снимков
+            post_snaps = snapshots_by_post.get(r.id, [])
+            views_24h = views  # fallback: текущие просмотры
+            if post_snaps and r.posted_at:
+                cutoff_24h = r.posted_at + timedelta(hours=24)
+                snaps_24h = [s for s in post_snaps if s.recorded_at <= cutoff_24h]
+                if snaps_24h:
+                    views_24h = snaps_24h[-1].views
+
+            err24 = round(total_engage / views_24h * 100, 1) if views_24h > 0 else 0.0
+
+            total_views += views
+            total_views_24h += views_24h
+            if views_24h > 0:
+                err24_sum += err24
+                err24_count += 1
+
+            results.append({
+                "post_id": r.id,
+                "channel_name": r.channel_name or "—",
+                "subscribers": r.subscribers or 0,
+                "views": views,
+                "views_24h": views_24h,
+                "err24": err24,
+                "posted_at": r.posted_at,
+            })
+
+        avg_err24 = round(err24_sum / err24_count, 1) if err24_count > 0 else 0.0
+
+        return {
+            "posts": results,
+            "count": len(results),
+            "total_views": total_views,
+            "total_views_24h": total_views_24h,
+            "avg_err24": avg_err24,
+        }
+    except Exception as e:
+        logger.error(f"get_daily_reach_report error: {e}", exc_info=True)
+        return None
+
+
+def format_daily_reach_report_text(data: dict, date_str: str, bold: str = "**") -> str:
+    """
+    Форматирует текст отчёта об охватах за сутки.
+
+    Параметры:
+      data     — результат get_daily_reach_report()
+      date_str — строка даты для заголовка
+      bold     — маркер жирного текста (``**`` для Markdown v1/v2, ``*`` для MarkdownV1)
+
+    ERR 24ч рассчитывается как (все реакции+пересылки+сохранения+комментарии) /
+    просмотры за первые 24 часа × 100 %.  Текущие данные реакций используются в
+    качестве приближения, поскольку бот не хранит отдельные метрики вовлечённости
+    в разрезе временных окон.
+    """
+    b = bold
+    posts = data.get("posts", [])
+
+    text = f"👁 {b}Охваты рекламных постов за сутки{b} ({date_str})\n\n"
+
+    if not posts:
+        text += "_За последние 24 часа рекламных постов не публиковалось._"
+        return text
+
+    text += (
+        f"📝 Постов: {b}{data['count']}{b}\n"
+        f"👁 Текущие просмотры (итого): {b}{data['total_views']:,}{b}\n"
+        f"📈 Просмотры за 24ч (итого): {b}{data['total_views_24h']:,}{b}\n"
+        f"❗ Средний ERR 24ч: {b}{data['avg_err24']}%{b}\n\n"
+    )
+    for p in posts:
+        posted_str = p["posted_at"].strftime("%d.%m %H:%M") if p["posted_at"] else "—"
+        channel = p["channel_name"].replace("*", "\\*").replace("_", "\\_")
+        text += (
+            f"📢 {channel}\n"
+            f"   📅 {posted_str} | 👥 {p['subscribers']:,} подп.\n"
+            f"   👁 Сейчас: {b}{p['views']:,}{b} | 24ч: {b}{p['views_24h']:,}{b}"
+            f" | ERR: {b}{p['err24']}%{b}\n\n"
+        )
+    return text

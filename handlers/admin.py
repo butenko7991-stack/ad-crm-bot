@@ -2363,8 +2363,39 @@ async def pa_view(callback: CallbackQuery):
         await callback.message.answer("❌ Ошибка")
 
 
+@router.callback_query(F.data == "daily_reach_report")
+async def daily_reach_report_handler(callback: CallbackQuery):
+    """Отчёт об охватах рекламных постов за последние 24 часа"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
 
-@router.callback_query(F.data.startswith("pa_enter:"))
+    await callback.answer()
+
+    try:
+        from services.metrics import get_daily_reach_report, format_daily_reach_report_text
+        from datetime import datetime, timezone
+
+        data = await get_daily_reach_report()
+        if data is None:
+            await callback.message.answer("❌ Ошибка при загрузке данных")
+            return
+
+        date_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+        text = format_daily_reach_report_text(data, date_str, bold="**")
+
+        await safe_edit_message(
+            callback.message,
+            text,
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_autoposting")]
+            ]),
+        )
+    except Exception:
+        logger.error(f"Error in daily_reach_report_handler: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка")
+
+
 async def pa_enter_start(callback: CallbackQuery, state: FSMContext):
     """Начало ввода метрик поста"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
