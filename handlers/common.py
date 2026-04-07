@@ -570,7 +570,7 @@ async def btn_buyer_analytics(message: Message):
         from database import Channel
         async with async_session_maker() as session:
             result = await session.execute(
-                select(Channel).where(Channel.is_active == True).order_by(Channel.subscribers.desc()).limit(20)
+                select(Channel).where(Channel.is_active).order_by(Channel.subscribers.desc()).limit(20)
             )
             channels = result.scalars().all()
 
@@ -652,7 +652,8 @@ async def btn_content_post_analytics(message: Message):
     await message.answer(
         "📈 **Аналитика постов**\n\nПросматривайте статистику своих размещений:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Открыть аналитику", callback_data="adm_stats")],
+            [InlineKeyboardButton(text="📊 Мои посты", callback_data="mgr_my_posts")],
+            [InlineKeyboardButton(text="📈 Статистика размещений", callback_data="mgr_post_analytics")],
         ]),
         parse_mode=ParseMode.MARKDOWN
     )
