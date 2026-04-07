@@ -69,8 +69,8 @@ async def send_update_broadcast(bot: Bot) -> None:
                 sent += 1
             except Exception:
                 failed += 1
-            # Небольшая задержка, чтобы не превышать лимиты Telegram
-            await asyncio.sleep(0.05)
+            # Небольшая задержка, чтобы не превышать лимиты Telegram (~10 msg/sec)
+            await asyncio.sleep(0.1)
 
         logger.info(
             f"Рассылка обновления v{UPDATE_VERSION} завершена: "

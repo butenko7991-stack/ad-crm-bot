@@ -124,6 +124,11 @@ async def cmd_start(message: Message, state: FSMContext):
 async def welcome_start_callback(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки «Начать» на приветственном экране."""
     await callback.answer()
+    # Убираем кнопку из приветственного сообщения, чтобы не было дублирования
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await callback.message.answer(
         "🎯 **Главное меню**\n\nВыберите действие:",
         reply_markup=get_main_menu(is_admin=False, is_manager=False),
