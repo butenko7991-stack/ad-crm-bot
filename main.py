@@ -386,34 +386,14 @@ async def send_daily_reach_report(bot: Bot):
     Отправляется всем администраторам и в чат менеджеров (если настроен).
     """
     try:
-        from services.metrics import get_daily_reach_report
+        from services.metrics import get_daily_reach_report, format_daily_reach_report_text
 
         data = await get_daily_reach_report()
         if data is None:
             return
 
         date_str = utc_now().strftime("%d.%m.%Y")
-        posts = data["posts"]
-
-        text = f"📊 *Охваты рекламных постов за сутки* ({date_str})\n\n"
-
-        if not posts:
-            text += "_За последние 24 часа рекламных постов не публиковалось._"
-        else:
-            text += (
-                f"📝 Постов: *{data['count']}*\n"
-                f"👁 Текущие просмотры (итого): *{data['total_views']:,}*\n"
-                f"📈 Просмотры за 24ч (итого): *{data['total_views_24h']:,}*\n"
-                f"❗ Средний ERR 24ч: *{data['avg_err24']}%*\n"
-            )
-            text += "\n"
-            for p in posts:
-                posted_str = p["posted_at"].strftime("%d.%m %H:%M") if p["posted_at"] else "—"
-                text += (
-                    f"📢 *{p['channel_name']}*\n"
-                    f"   📅 {posted_str} | 👥 {p['subscribers']:,} подп.\n"
-                    f"   👁 Сейчас: *{p['views']:,}* | 24ч: *{p['views_24h']:,}* | ERR: *{p['err24']}%*\n\n"
-                )
+        text = format_daily_reach_report_text(data, date_str, bold="*")
 
         mgr_chat_id = await get_manager_group_chat_id()
         if mgr_chat_id:
@@ -589,11 +569,11 @@ async def main():
         args=[bot],
     )
     # Ежедневный отчёт об охватах: в 9:00 по местному времени (LOCAL_TZ_OFFSET)
-    _report_hour_utc = (9 - int(LOCAL_TZ_OFFSET.total_seconds() // 3600)) % 24
+    report_hour_utc = (9 - int(LOCAL_TZ_OFFSET.total_seconds() // 3600)) % 24
     scheduler.add_job(
         send_daily_reach_report,
         trigger="cron",
-        hour=_report_hour_utc,
+        hour=report_hour_utc,
         minute=0,
         id="daily_reach_report",
         args=[bot],

@@ -2373,35 +2373,16 @@ async def daily_reach_report_handler(callback: CallbackQuery):
     await callback.answer()
 
     try:
-        from services.metrics import get_daily_reach_report
+        from services.metrics import get_daily_reach_report, format_daily_reach_report_text
+        from datetime import datetime, timezone
 
         data = await get_daily_reach_report()
         if data is None:
             await callback.message.answer("❌ Ошибка при загрузке данных")
             return
 
-        from datetime import datetime, timezone
         date_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
-        posts = data["posts"]
-
-        text = f"👁 **Охваты рекламных постов за сутки** ({date_str})\n\n"
-
-        if not posts:
-            text += "_За последние 24 часа рекламных постов не публиковалось._"
-        else:
-            text += (
-                f"📝 Постов: **{data['count']}**\n"
-                f"👁 Текущие просмотры (итого): **{data['total_views']:,}**\n"
-                f"📈 Просмотры за 24ч (итого): **{data['total_views_24h']:,}**\n"
-                f"❗ Средний ERR 24ч: **{data['avg_err24']}%**\n\n"
-            )
-            for p in posts:
-                posted_str = p["posted_at"].strftime("%d.%m %H:%M") if p["posted_at"] else "—"
-                text += (
-                    f"📢 {_md_escape(p['channel_name'])}\n"
-                    f"   📅 {posted_str} | 👥 {p['subscribers']:,} подп.\n"
-                    f"   👁 Сейчас: **{p['views']:,}** | 24ч: **{p['views_24h']:,}** | ERR: **{p['err24']}%**\n\n"
-                )
+        text = format_daily_reach_report_text(data, date_str, bold="**")
 
         await safe_edit_message(
             callback.message,
@@ -2413,7 +2394,6 @@ async def daily_reach_report_handler(callback: CallbackQuery):
     except Exception:
         logger.error(f"Error in daily_reach_report_handler: {traceback.format_exc()}")
         await callback.message.answer("❌ Ошибка")
-
 
 
 async def pa_enter_start(callback: CallbackQuery, state: FSMContext):

@@ -800,3 +800,44 @@ async def get_daily_reach_report() -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_daily_reach_report error: {e}", exc_info=True)
         return None
+
+
+def format_daily_reach_report_text(data: dict, date_str: str, bold: str = "**") -> str:
+    """
+    Форматирует текст отчёта об охватах за сутки.
+
+    Параметры:
+      data     — результат get_daily_reach_report()
+      date_str — строка даты для заголовка
+      bold     — маркер жирного текста (``**`` для Markdown v1/v2, ``*`` для MarkdownV1)
+
+    ERR 24ч рассчитывается как (все реакции+пересылки+сохранения+комментарии) /
+    просмотры за первые 24 часа × 100 %.  Текущие данные реакций используются в
+    качестве приближения, поскольку бот не хранит отдельные метрики вовлечённости
+    в разрезе временных окон.
+    """
+    b = bold
+    posts = data.get("posts", [])
+
+    text = f"👁 {b}Охваты рекламных постов за сутки{b} ({date_str})\n\n"
+
+    if not posts:
+        text += "_За последние 24 часа рекламных постов не публиковалось._"
+        return text
+
+    text += (
+        f"📝 Постов: {b}{data['count']}{b}\n"
+        f"👁 Текущие просмотры (итого): {b}{data['total_views']:,}{b}\n"
+        f"📈 Просмотры за 24ч (итого): {b}{data['total_views_24h']:,}{b}\n"
+        f"❗ Средний ERR 24ч: {b}{data['avg_err24']}%{b}\n\n"
+    )
+    for p in posts:
+        posted_str = p["posted_at"].strftime("%d.%m %H:%M") if p["posted_at"] else "—"
+        channel = p["channel_name"].replace("*", "\\*").replace("_", "\\_")
+        text += (
+            f"📢 {channel}\n"
+            f"   📅 {posted_str} | 👥 {p['subscribers']:,} подп.\n"
+            f"   👁 Сейчас: {b}{p['views']:,}{b} | 24ч: {b}{p['views_24h']:,}{b}"
+            f" | ERR: {b}{p['err24']}%{b}\n\n"
+        )
+    return text
