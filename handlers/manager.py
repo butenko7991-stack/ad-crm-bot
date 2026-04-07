@@ -169,12 +169,13 @@ async def manager_register_tz_selected(callback: CallbackQuery, state: FSMContex
             f"🎉 **Добро пожаловать в команду!**\n\n"
             f"Вы успешно зарегистрированы как менеджер.\n"
             f"🌍 Ваш часовой пояс: **{tz_label}**\n\n"
-            f"**Что дальше:**\n"
-            f"📚 Пройдите обучение — /training\n"
-            f"💼 Начните продавать — /sales\n"
-            f"💰 Получайте комиссию 10-25%\n\n"
-            f"Нажмите /manager для входа в кабинет.",
+            f"Пожалуйста, выберите свою роль — это определит, какие разделы бота вы будете видеть:",
             parse_mode=ParseMode.MARKDOWN
+        )
+        from keyboards import get_role_selection_keyboard
+        await callback.message.answer(
+            "👇 Выберите роль:",
+            reply_markup=get_role_selection_keyboard(),
         )
     except Exception as e:
         logger.error(f"Error in manager_register_tz_selected: {traceback.format_exc()}")

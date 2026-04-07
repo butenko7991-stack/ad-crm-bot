@@ -133,6 +133,9 @@ class Manager(Base):
     
     # Личный часовой пояс менеджера (смещение от UTC в часах, например 3 = UTC+3)
     timezone_offset = Column(Integer, default=3)
+
+    # Роль в команде: 'buyer' — закупщик, 'content' — контенщик, 'manager' — менеджер по продажам
+    role = Column(String(20), nullable=True)
     
     orders = relationship("Order", back_populates="manager")
     payouts = relationship("ManagerPayout", back_populates="manager")

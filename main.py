@@ -25,7 +25,7 @@ from services.channel_collector import refresh_all_channels
 from services.settings import get_manager_group_chat_id
 from services.crosspost import crosspost_post_to_max
 from services.error_library import lookup_error, record_unknown_error
-from utils.helpers import format_channel_stats_for_group, utc_now
+from utils.helpers import format_channel_stats_for_group, format_daily_schedule, utc_now
 
 
 # Настройка логирования
@@ -413,6 +413,67 @@ async def send_daily_reach_report(bot: Bot):
         logger.error(f"Ошибка send_daily_reach_report: {traceback.format_exc()}")
 
 
+async def send_daily_schedule(bot: Bot):
+    """Утреннее расписание публикаций на сегодня — отправляется в чат менеджеров.
+
+    Формат:
+        📅 6 апреля (Понедельник)
+
+        🧘 Название канала
+        🔅10:10 бронь 55р пдп (Даня)
+        -
+        -
+        Комментарий:
+    """
+    try:
+        mgr_chat_id = await get_manager_group_chat_id()
+        if not mgr_chat_id:
+            return
+
+        # Текущая дата в локальном часовом поясе
+        today = (utc_now() + LOCAL_TZ_OFFSET).date()
+
+        from sqlalchemy import func as sa_func
+        async with async_session_maker() as session:
+            from database.models import ScheduledPost as SP, Channel, Order, Manager
+
+            result = await session.execute(
+                select(SP)
+                .where(
+                    sa_func.date(SP.scheduled_time) == today,
+                    SP.status.in_(["pending", "publishing"]),
+                )
+                .order_by(SP.scheduled_time)
+            )
+            posts = result.scalars().all()
+
+            posts_data = []
+            for post in posts:
+                channel = await session.get(Channel, post.channel_id)
+                order = None
+                manager = None
+                if post.order_id:
+                    order = await session.get(Order, post.order_id)
+                    if order and order.manager_id:
+                        manager = await session.get(Manager, order.manager_id)
+
+                posts_data.append({
+                    "channel_name": channel.name if channel else "Канал",
+                    "channel_category": channel.category if channel else None,
+                    "scheduled_time": post.scheduled_time + LOCAL_TZ_OFFSET,
+                    "price": float(order.final_price) if order else None,
+                    "payment_method": order.payment_method if order else None,
+                    "manager_name": manager.first_name if manager else None,
+                    "status": post.status,
+                })
+
+        text = format_daily_schedule(posts_data, today)
+        await bot.send_message(mgr_chat_id, text, parse_mode=None)
+        logger.info(f"Расписание на {today} отправлено в чат менеджеров ({len(posts_data)} постов)")
+    except Exception:
+        logger.error(f"Ошибка send_daily_schedule: {traceback.format_exc()}")
+
+
 async def global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
     """
     Глобальный обработчик ошибок aiogram 3.x.
@@ -576,6 +637,16 @@ async def main():
         hour=report_hour_utc,
         minute=0,
         id="daily_reach_report",
+        args=[bot],
+    )
+    # Утреннее расписание публикаций на день: в 8:00 по местному времени
+    schedule_hour_utc = (8 - int(LOCAL_TZ_OFFSET.total_seconds() // 3600)) % 24
+    scheduler.add_job(
+        send_daily_schedule,
+        trigger="cron",
+        hour=schedule_hour_utc,
+        minute=0,
+        id="daily_schedule",
         args=[bot],
     )
     scheduler.start()

@@ -16,7 +16,7 @@ from config import ADMIN_IDS, MANAGER_LEVELS
 from database import async_session_maker, Manager, Client, Channel, Order
 from keyboards import (
     get_main_menu, get_admin_panel_menu, get_manager_cabinet_menu, 
-    get_channels_keyboard, get_training_menu
+    get_channels_keyboard, get_training_menu, get_role_selection_keyboard
 )
 from handlers.admin import authenticated_admins
 from handlers.manager import _build_manager_cabinet_text
@@ -75,13 +75,23 @@ async def cmd_start(message: Message, state: FSMContext):
             await session.commit()
     
     if manager:
+        # Если роль ещё не выбрана — предложить выбор
+        if not manager.role:
+            await message.answer(
+                f"👋 **С возвращением, {manager.first_name}!**\n\n"
+                "Пожалуйста, выберите свою роль — это определит, какие разделы бота вы будете видеть:",
+                reply_markup=get_role_selection_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
         level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
         await message.answer(
             f"👋 **С возвращением, {manager.first_name}!**\n\n"
             f"{level_info['emoji']} Уровень: {level_info['name']}\n"
             f"💰 Баланс: **{float(manager.balance):,.0f}₽**\n"
             f"📦 Продаж: {manager.total_sales}",
-            reply_markup=get_main_menu(is_admin=is_admin, is_manager=True),
+            reply_markup=get_main_menu(is_admin=is_admin, is_manager=True, manager_role=manager.role),
             parse_mode=ParseMode.MARKDOWN
         )
     elif is_admin:
@@ -488,3 +498,183 @@ async def btn_templates(message: Message):
     except Exception as e:
         logger.error(f"Error in btn_templates: {traceback.format_exc()}")
         await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+
+
+# ==================== ВЫБОР РОЛИ ====================
+
+_ROLE_LABELS = {
+    "buyer": "🛒 Закупщик",
+    "content": "✍️ Контенщик",
+    "manager": "💼 Менеджер по продажам",
+}
+
+
+@router.callback_query(F.data.startswith("set_role:"))
+async def cb_set_role(callback: CallbackQuery):
+    """Сохраняем выбранную роль и показываем соответствующее меню"""
+    role = callback.data.split(":")[1]
+    user_id = callback.from_user.id
+    is_admin = user_id in ADMIN_IDS
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == user_id)
+        )
+        manager = result.scalar_one_or_none()
+
+        if not manager:
+            await callback.answer("❌ Вы не зарегистрированы как менеджер", show_alert=True)
+            return
+
+        manager.role = role
+        await session.commit()
+
+    role_label = _ROLE_LABELS.get(role, role)
+    await callback.message.edit_text(
+        f"✅ Роль выбрана: **{role_label}**\n\nТеперь в главном меню отображаются разделы для вашей роли.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await callback.message.answer(
+        "👇 Главное меню:",
+        reply_markup=get_main_menu(is_admin=is_admin, is_manager=True, manager_role=role),
+    )
+    await callback.answer()
+
+
+@router.message(F.text == "🔄 Сменить роль")
+async def btn_change_role(message: Message):
+    """Кнопка смены роли"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+
+    if not manager:
+        await message.answer("❌ Вы не менеджер")
+        return
+
+    await message.answer(
+        "🔄 **Смена роли**\n\nВыберите новую роль:",
+        reply_markup=get_role_selection_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+# ==================== КНОПКИ ЗАКУПЩИКА ====================
+
+@router.message(F.text == "📊 Аналитика каналов")
+async def btn_buyer_analytics(message: Message):
+    """Аналитика каналов для закупщика"""
+    try:
+        from database import Channel
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(Channel).where(Channel.is_active).order_by(Channel.subscribers.desc()).limit(20)
+            )
+            channels = result.scalars().all()
+
+        if not channels:
+            await message.answer("😔 Каналов пока нет")
+            return
+
+        text = "📊 **Аналитика каналов:**\n\n"
+        for ch in channels:
+            prices = ch.prices or {}
+            price_124 = prices.get("1/24", 0)
+            text += (
+                f"📢 **{ch.name}**\n"
+                f"   👥 {ch.subscribers:,} подписчиков\n"
+                f"   👁 Охват 24ч: {ch.avg_reach_24h:,}\n"
+                f"   💰 От {price_124:,}₽\n\n"
+            )
+
+        await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in btn_buyer_analytics: {traceback.format_exc()}")
+        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+
+
+# ==================== КНОПКИ КОНТЕНЩИКА ====================
+
+@router.message(F.text == "📅 Мои посты")
+async def btn_content_my_posts(message: Message):
+    """Посты контенщика"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+
+    if not manager:
+        await message.answer("❌ Вы не зарегистрированы в системе")
+        return
+
+    # Переиспользуем существующий callback mgr_my_posts
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    await message.answer(
+        "📅 **Мои посты**\n\nЗдесь отображаются ваши запланированные и опубликованные посты.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Список постов", callback_data="mgr_my_posts")],
+            [InlineKeyboardButton(text="✍️ Подать новый пост", callback_data="mgr_submit_post")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.message(F.text == "✍️ Подать пост")
+async def btn_content_submit_post(message: Message):
+    """Подача поста контенщиком"""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+
+    if not manager:
+        await message.answer("❌ Вы не зарегистрированы в системе")
+        return
+
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    await message.answer(
+        "✍️ **Подача поста на публикацию**\n\nНажмите кнопку, чтобы начать создание поста:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Создать пост", callback_data="mgr_submit_post")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.message(F.text == "📈 Аналитика постов")
+async def btn_content_post_analytics(message: Message):
+    """Аналитика постов для контенщика"""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    await message.answer(
+        "📈 **Аналитика постов**\n\nПросматривайте статистику своих размещений:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Мои посты", callback_data="mgr_my_posts")],
+            [InlineKeyboardButton(text="📈 Статистика размещений", callback_data="mgr_post_analytics")],
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.message(F.text == "🤖 Автопостинг")
+async def btn_content_autoposting(message: Message):
+    """Автопостинг для контенщика"""
+    from keyboards import get_autoposting_menu
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+
+    if not manager:
+        await message.answer("❌ Вы не зарегистрированы в системе")
+        return
+
+    await message.answer(
+        "🤖 **Автопостинг**\n\nУправление запланированными постами:",
+        reply_markup=get_autoposting_menu(),
+        parse_mode=ParseMode.MARKDOWN
+    )

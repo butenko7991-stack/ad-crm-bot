@@ -189,3 +189,148 @@ def format_channel_stats_for_group(channel, order_id: Optional[int] = None) -> s
         text += f"\n\n💼 Заказ #{order_id}"
 
     return text
+
+
+# Русские названия дней недели (именительный падеж)
+_WEEKDAY_RU = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+
+# Русские названия месяцев (родительный падеж)
+_MONTH_RU_GEN = [
+    "", "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+
+
+def _category_emoji(category: Optional[str]) -> str:
+    """Вернуть эмодзи категории канала (первый символ из имени категории, если есть)."""
+    from config import CHANNEL_CATEGORIES
+    if not category:
+        return "📢"
+    cat = CHANNEL_CATEGORIES.get(category)
+    if not cat:
+        return "📢"
+    name = cat.get("name", "")
+    # Имя вида "🧠 Психология и отношения" — берём первый символ
+    stripped = name.strip()
+    if stripped:
+        first = stripped[0]
+        cp = ord(first)
+        # Проверяем по основным диапазонам Unicode emoji
+        is_emoji = (
+            0x2600 <= cp <= 0x27BF       # Misc Symbols & Dingbats
+            or 0x1F300 <= cp <= 0x1FAFF  # Emoticons, Transport, Misc Symbols, Supplemental
+            or 0x2300 <= cp <= 0x23FF    # Misc Technical
+            or 0x2B00 <= cp <= 0x2BFF    # Misc Symbols and Arrows
+        )
+        if is_emoji:
+            return first
+    return "📢"
+
+
+def format_daily_schedule(posts_data: list, target_date) -> str:
+    """Форматировать расписание публикаций на день для чата менеджеров.
+
+    Args:
+        posts_data: список словарей с ключами:
+            - channel_name (str)
+            - channel_category (str | None)
+            - scheduled_time (datetime)
+            - price (float | None)
+            - payment_method (str | None)
+            - manager_name (str | None)
+            - status (str)  — статус ScheduledPost
+        target_date: объект date для заголовка
+
+    Формат вывода:
+        📅 6 апреля (Понедельник)
+
+        🧘 Название канала
+        🔅10:10 бронь 55р пдп (Даня)
+        -
+        -
+        Комментарий:
+    """
+    day = target_date.day
+    month = _MONTH_RU_GEN[target_date.month]
+    weekday = _WEEKDAY_RU[target_date.weekday()]
+
+    lines = [f"📅 {day} {month} ({weekday})"]
+
+    if not posts_data:
+        lines.append("\n_(нет запланированных публикаций)_")
+        return "\n".join(lines)
+
+    for entry in posts_data:
+        channel_name = entry.get("channel_name") or "Канал"
+        category = entry.get("channel_category")
+        ch_emoji = _category_emoji(category)
+
+        scheduled_dt = entry.get("scheduled_time")
+        time_str = scheduled_dt.strftime("%H:%M") if scheduled_dt else "--:--"
+
+        price = entry.get("price")
+        price_str = f"{int(price)}р" if price else ""
+
+        payment = entry.get("payment_method") or ""
+
+        manager_name = entry.get("manager_name") or ""
+        manager_part = f" ({manager_name})" if manager_name else ""
+
+        # Собираем строку бронирования
+        booking_parts = [time_str, "бронь"]
+        if price_str:
+            booking_parts.append(price_str)
+        if payment:
+            booking_parts.append(payment)
+
+        booking_line = "🔅" + " ".join(booking_parts) + manager_part
+
+        lines.append(f"\n{ch_emoji} {channel_name}")
+        lines.append(booking_line)
+        lines.append("-")
+        lines.append("-")
+        lines.append("Комментарий:")
+
+    return "\n".join(lines)
+
+
+def format_slot_booking(
+    channel_name: str,
+    channel_category: Optional[str],
+    slot_time,
+    price: Optional[float],
+    payment_method: Optional[str],
+    manager_name: Optional[str],
+) -> str:
+    """Форматировать уведомление о занятом слоте для чата менеджеров.
+
+    Формат:
+        🧠 Название канала
+        🔅10:10 бронь 55р пдп (Даня)
+        -
+        -
+        Комментарий:
+    """
+    ch_emoji = _category_emoji(channel_category)
+
+    time_str = slot_time.strftime("%H:%M") if slot_time else "--:--"
+    price_str = f"{int(price)}р" if price else ""
+    payment = payment_method or ""
+    manager_part = f" ({manager_name})" if manager_name else ""
+
+    booking_parts = [time_str, "бронь"]
+    if price_str:
+        booking_parts.append(price_str)
+    if payment:
+        booking_parts.append(payment)
+
+    booking_line = "🔅" + " ".join(booking_parts) + manager_part
+
+    lines = [
+        f"{ch_emoji} {channel_name}",
+        booking_line,
+        "-",
+        "-",
+        "Комментарий:",
+    ]
+    return "\n".join(lines)
