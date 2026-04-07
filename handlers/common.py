@@ -103,15 +103,37 @@ async def cmd_start(message: Message, state: FSMContext):
         )
     else:
         await message.answer(
-            "👋 **Добро пожаловать!**\n\n"
-            "Здесь вы можете забронировать рекламу в наших Telegram-каналах.\n\n"
-            "📢 Выберите канал из каталога\n"
-            "📅 Забронируйте дату и время\n"
-            "💰 Оплатите размещение\n"
-            "✅ Получите результат!",
-            reply_markup=get_main_menu(is_admin=False, is_manager=False),
+            "👋 **Добро пожаловать в рекламную CRM!** 🎉\n\n"
+            "Мы помогаем размещать рекламу в Telegram-каналах быстро, удобно и прозрачно.\n\n"
+            "🔥 **Что вы можете делать здесь:**\n"
+            "📢 Просматривать каталог каналов с аналитикой\n"
+            "📅 Бронировать дату и время размещения\n"
+            "💰 Оплачивать и отслеживать свои заказы\n"
+            "✅ Получать подтверждение после публикации\n\n"
+            "Нажмите кнопку ниже, чтобы начать! 👇",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Начать", callback_data="welcome_start")]
+            ]),
             parse_mode=ParseMode.MARKDOWN
         )
+
+
+# ==================== ПРИВЕТСТВЕННАЯ КНОПКА СТАРТ ====================
+
+@router.callback_query(F.data == "welcome_start")
+async def welcome_start_callback(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки «Начать» на приветственном экране."""
+    await callback.answer()
+    # Убираем кнопку из приветственного сообщения, чтобы не было дублирования
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.message.answer(
+        "🎯 **Главное меню**\n\nВыберите действие:",
+        reply_markup=get_main_menu(is_admin=False, is_manager=False),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 
 # ==================== КОМАНДЫ ====================

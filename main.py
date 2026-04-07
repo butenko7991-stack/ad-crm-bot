@@ -21,6 +21,7 @@ from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, ADMIN_PASSWORD, LOCAL_TZ
 from database import init_db, async_session_maker
 from database.models import Slot, ScheduledPost, Channel, PostAnalytics
 from handlers import setup_routers
+from services.broadcast import send_update_broadcast
 from services.channel_collector import refresh_all_channels
 from services.settings import get_manager_group_chat_id
 from services.crosspost import crosspost_post_to_max
@@ -661,6 +662,9 @@ async def main():
             await bot.send_message(admin_id, "✅ Бот запущен!")
         except Exception as e:
             logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+
+    # Рассылаем сообщение об обновлении всем пользователям (если версия изменилась)
+    await send_update_broadcast(bot)
     
     try:
         # Запускаем Telegram-бот и Max-бот параллельно
