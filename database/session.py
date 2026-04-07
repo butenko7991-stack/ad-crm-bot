@@ -89,6 +89,7 @@ async def init_db():
         "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL",
         "ALTER TABLE post_analytics ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMP DEFAULT NOW()",
         "ALTER TABLE managers ADD COLUMN IF NOT EXISTS timezone_offset INTEGER DEFAULT 3",
+        "ALTER TABLE managers ADD COLUMN IF NOT EXISTS role VARCHAR(20)",
         "ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
         "UPDATE channels SET is_active = TRUE WHERE is_active IS NULL",
         "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS signature VARCHAR(255)",
