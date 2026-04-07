@@ -19,7 +19,7 @@ from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABL
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PostViewSnapshot, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
 from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
-from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, AdminSettingsStates, channel_link
+from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, format_daily_schedule, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates, AdminCrosspostSettingsStates
 from utils.helpers import escape_md, utc_now
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY, CROSSPOST_ENABLED_KEY, CROSSPOST_DAILY_LIMIT_KEY, MAX_CROSSPOST_CHAT_ID_KEY
@@ -6045,3 +6045,66 @@ async def adm_promo_deactivate(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error deactivating promo: {traceback.format_exc()}")
         await callback.answer("❌ Ошибка", show_alert=True)
+
+
+# ==================== РАСПИСАНИЕ ДНЯ ====================
+
+@router.callback_query(F.data == "adm_send_daily_schedule")
+async def adm_send_daily_schedule(callback: CallbackQuery, bot: Bot):
+    """Отправить расписание публикаций на сегодня в чат менеджеров (ручной запуск)."""
+    await callback.answer()
+
+    mgr_chat_id = await get_manager_group_chat_id()
+    if not mgr_chat_id:
+        await callback.message.answer(
+            "❌ Чат менеджеров не настроен. Укажите MANAGER_GROUP_CHAT_ID в настройках.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    today = (utc_now() + LOCAL_TZ_OFFSET).date()
+
+    try:
+        from sqlalchemy import func as sa_func
+
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost)
+                .where(
+                    sa_func.date(ScheduledPost.scheduled_time) == today,
+                    ScheduledPost.status.in_(["pending", "publishing"]),
+                )
+                .order_by(ScheduledPost.scheduled_time)
+            )
+            posts = result.scalars().all()
+
+            posts_data = []
+            for post in posts:
+                channel = await session.get(Channel, post.channel_id)
+                order = None
+                manager = None
+                if post.order_id:
+                    order = await session.get(Order, post.order_id)
+                    if order and order.manager_id:
+                        manager = await session.get(Manager, order.manager_id)
+
+                posts_data.append({
+                    "channel_name": channel.name if channel else "Канал",
+                    "channel_category": channel.category if channel else None,
+                    "scheduled_time": post.scheduled_time + LOCAL_TZ_OFFSET,
+                    "price": float(order.final_price) if order else None,
+                    "payment_method": order.payment_method if order else None,
+                    "manager_name": manager.first_name if manager else None,
+                    "status": post.status,
+                })
+
+        text = format_daily_schedule(posts_data, today)
+        await bot.send_message(mgr_chat_id, text, parse_mode=None)
+        await callback.message.answer(
+            f"✅ Расписание на сегодня ({today.strftime('%d.%m.%Y')}) "
+            f"отправлено в чат менеджеров ({len(posts_data)} постов).",
+        )
+        logger.info(f"Расписание на {today} отправлено вручную ({len(posts_data)} постов)")
+    except Exception as e:
+        logger.error(f"Error in adm_send_daily_schedule: {traceback.format_exc()}")
+        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)

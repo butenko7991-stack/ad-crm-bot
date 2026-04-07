@@ -119,6 +119,7 @@ def get_admin_panel_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🎟 Промокоды", callback_data="adm_promo"),
+            InlineKeyboardButton(text="📅 Расписание дня", callback_data="adm_send_daily_schedule"),
         ],
     ])
 
