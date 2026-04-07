@@ -213,9 +213,16 @@ def _category_emoji(category: Optional[str]) -> str:
     # Имя вида "🧠 Психология и отношения" — берём первый символ
     stripped = name.strip()
     if stripped:
-        # emoji занимают > 1 байта, берём первый «символ» (codepoint)
         first = stripped[0]
-        if ord(first) > 127:
+        cp = ord(first)
+        # Проверяем по основным диапазонам Unicode emoji
+        is_emoji = (
+            0x2600 <= cp <= 0x27BF       # Misc Symbols & Dingbats
+            or 0x1F300 <= cp <= 0x1FAFF  # Emoticons, Transport, Misc Symbols, Supplemental
+            or 0x2300 <= cp <= 0x23FF    # Misc Technical
+            or 0x2B00 <= cp <= 0x2BFF    # Misc Symbols and Arrows
+        )
+        if is_emoji:
             return first
     return "📢"
 
