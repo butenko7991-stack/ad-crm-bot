@@ -418,7 +418,7 @@ async def _show_order_confirmation(msg_or_callback, state: FSMContext):
     text += "\n"
 
     if content_text:
-        text += f"📝 Текст:\n{content_text[:500]}{'...' if len(content_text) > 500 else ''}\n\n"
+        text += f"📝 Текст:\n{content_text[:700]}{'...' if len(content_text) > 700 else ''}\n\n"
     if file_type:
         text += f"📎 Медиа: {file_type}\n\n"
 
