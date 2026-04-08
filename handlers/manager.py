@@ -1462,7 +1462,7 @@ async def _mgr_show_confirm(message: Message, state: FSMContext) -> None:
         f"💰 Цена: **{price:,}₽**\n\n"
     )
     if content_text:
-        text += f"📝 Текст:\n{content_text[:300]}{'...' if len(content_text) > 300 else ''}\n\n"
+        text += f"📝 Текст:\n{content_text[:500]}{'...' if len(content_text) > 500 else ''}\n\n"
     if file_id:
         text += f"📎 Медиафайл: {file_type}\n\n"
     if signature:

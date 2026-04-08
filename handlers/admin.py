@@ -2081,7 +2081,7 @@ async def autopost_view_posted(callback: CallbackQuery):
             f"📅 Опубликован: {posted}\n"
         )
         if post.content:
-            text += f"\n📝 Текст:\n{post.content[:300]}{'…' if len(post.content) > 300 else ''}\n"
+            text += f"\n📝 Текст:\n{post.content[:500]}{'…' if len(post.content) > 500 else ''}\n"
 
         buttons = []
         if existing:
@@ -3391,7 +3391,7 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
         f"🗑 Удалить: **{delete_str}**\n"
     )
     if content_text:
-        preview += f"\n📝 Текст:\n{content_text[:400]}{'...' if len(content_text) > 400 else ''}\n"
+        preview += f"\n📝 Текст:\n{content_text[:500]}{'...' if len(content_text) > 500 else ''}\n"
     if file_id:
         preview += f"\n📎 Медиафайл: {file_type}\n"
     if buttons:
@@ -4514,7 +4514,7 @@ async def adm_view_order(callback: CallbackQuery):
         text += f"📊 Статус: {status_text}\n"
 
         if order.ad_content:
-            text += f"\n📝 Текст:\n{order.ad_content[:300]}{'...' if len(order.ad_content) > 300 else ''}\n"
+            text += f"\n📝 Текст:\n{order.ad_content[:500]}{'...' if len(order.ad_content) > 500 else ''}\n"
 
         buttons = []
         if order.status == "payment_uploaded":
@@ -5066,7 +5066,7 @@ async def adm_view_post(callback: CallbackQuery):
         )
 
         if post.content:
-            text += f"📝 Текст:\n{post.content[:400]}{'...' if len(post.content) > 400 else ''}\n"
+            text += f"📝 Текст:\n{post.content[:500]}{'...' if len(post.content) > 500 else ''}\n"
 
         markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
