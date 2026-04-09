@@ -6362,7 +6362,7 @@ async def content_plan_day(callback: CallbackQuery):
         manager = mgr_result.scalar_one_or_none()
 
     if not is_admin and not manager:
-        await callback.answer("�� Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
