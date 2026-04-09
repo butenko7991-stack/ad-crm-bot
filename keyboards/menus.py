@@ -661,7 +661,15 @@ def get_content_plan_week_keyboard(
         today_marker = " 🔹" if d == today else ""
 
         if count > 0:
-            text = f"{day_label} {d.strftime('%d.%m')}{today_marker} — {count} пост{'ов' if count >= 5 else ('а' if 2 <= count <= 4 else '')}"
+            n = count % 10
+            n100 = count % 100
+            if n == 1 and n100 != 11:
+                suffix = ""
+            elif 2 <= n <= 4 and n100 not in (12, 13, 14):
+                suffix = "а"
+            else:
+                suffix = "ов"
+            text = f"{day_label} {d.strftime('%d.%m')}{today_marker} — {count} пост{suffix}"
             buttons.append([InlineKeyboardButton(
                 text=text,
                 callback_data=f"content_plan_day:{d.isoformat()}"
