@@ -32,10 +32,9 @@ from max_bot.keyboards import (
     get_training_markup,
     get_become_manager_markup,
     get_payout_markup,
-    get_back_markup,
     get_admin_login_markup,
-    get_confirm_markup,
 )
+from utils.constants import MSG_AUTH_REQUIRED, MSG_NOT_MANAGER, MSG_CHANNEL_NOT_FOUND
 
 
 logger = logging.getLogger(__name__)
@@ -285,7 +284,7 @@ def setup_max_dispatcher() -> Dispatcher:
             async with async_session_maker() as session:
                 channel = await session.get(Channel, channel_id)
                 if not channel:
-                    await event.answer(new_text="❌ Канал не найден")
+                    await event.answer(new_text=MSG_CHANNEL_NOT_FOUND)
                     return
             prices = channel.prices or {}
             text = (
@@ -457,7 +456,7 @@ def setup_max_dispatcher() -> Dispatcher:
             )
             manager = result.scalar_one_or_none()
         if not manager:
-            await event.answer(new_text="❌ Вы не менеджер")
+            await event.answer(new_text=MSG_NOT_MANAGER)
             return
         level_info = MANAGER_LEVELS.get(manager.level, MANAGER_LEVELS[1])
         text = (
@@ -485,7 +484,7 @@ def setup_max_dispatcher() -> Dispatcher:
                 )
                 manager = result.scalar_one_or_none()
             if not manager:
-                await event.answer(new_text="❌ Вы не менеджер")
+                await event.answer(new_text=MSG_NOT_MANAGER)
                 return
             balance = float(manager.balance or 0)
             total_earned = float(manager.total_earned or 0)
@@ -559,7 +558,7 @@ def setup_max_dispatcher() -> Dispatcher:
             )
             manager = result.scalar_one_or_none()
         if not manager:
-            await event.answer(new_text="❌ Вы не менеджер")
+            await event.answer(new_text=MSG_NOT_MANAGER)
             return
         text = (
             "📋 Шаблоны для продаж\n\n"
@@ -589,7 +588,7 @@ def setup_max_dispatcher() -> Dispatcher:
                 )
                 manager = result.scalar_one_or_none()
                 if not manager:
-                    await event.answer(new_text="❌ Вы не менеджер")
+                    await event.answer(new_text=MSG_NOT_MANAGER)
                     return
                 result = await session.execute(
                     select(Channel).where(Channel.is_active == True)

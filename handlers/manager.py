@@ -18,6 +18,7 @@ from database import async_session_maker, Manager, Order, Client, Channel, Manag
 from keyboards import get_manager_cabinet_menu, get_payout_keyboard, get_training_menu, get_calendar_keyboard, get_timezone_keyboard
 from utils import ManagerStates, ManagerPostStates, ManagerRegisterStates, ManagerSettingsStates, channel_link
 from utils.helpers import escape_md
+from utils.constants import MSG_AUTH_REQUIRED, MSG_NOT_MANAGER, MSG_CHANNEL_NOT_FOUND, FMT_DATETIME
 from services import gamification_service
 from services.settings import get_setting, PAYMENT_LINK_KEY
 
@@ -198,7 +199,7 @@ async def mgr_settings(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
 
         if not manager:
-            await callback.message.edit_text("❌ Вы не менеджер")
+            await callback.message.edit_text(MSG_NOT_MANAGER)
             return
 
         tz_offset = manager.timezone_offset if manager.timezone_offset is not None else 3
@@ -231,7 +232,7 @@ async def mgr_change_timezone(callback: CallbackQuery, state: FSMContext):
             manager = result.scalar_one_or_none()
 
         if not manager:
-            await callback.message.edit_text("❌ Вы не менеджер")
+            await callback.message.edit_text(MSG_NOT_MANAGER)
             return
 
         current_offset = manager.timezone_offset if manager.timezone_offset is not None else 3
@@ -263,7 +264,7 @@ async def mgr_settings_tz_selected(callback: CallbackQuery, state: FSMContext):
 
             if not manager:
                 await state.clear()
-                await callback.message.edit_text("❌ Вы не менеджер")
+                await callback.message.edit_text(MSG_NOT_MANAGER)
                 return
 
             manager.timezone_offset = tz_offset
@@ -298,7 +299,7 @@ async def mgr_back(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.edit_text("❌ Вы не менеджер")
+                await callback.message.edit_text(MSG_NOT_MANAGER)
                 return
         
         await callback.message.edit_text(
@@ -329,14 +330,14 @@ async def analyze_channel_for_manager(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
             
             # Получаем канал
             channel = await session.get(Channel, channel_id)
             
             if not channel:
-                await callback.message.answer("❌ Канал не найден")
+                await callback.message.answer(MSG_CHANNEL_NOT_FOUND)
                 return
             
             # Формируем карточку канала
@@ -395,7 +396,7 @@ async def back_to_sales(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
             
             result = await session.execute(
@@ -493,7 +494,7 @@ async def mgr_my_sales(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
             
             # Общие данные
@@ -596,7 +597,7 @@ async def mgr_my_clients(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
             
             # Получаем количество клиентов (тех, кто пришёл по реф-ссылке)
@@ -775,7 +776,7 @@ async def copy_ref_link(callback: CallbackQuery, bot: Bot):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
             
             manager_id = manager.id
@@ -809,7 +810,7 @@ async def request_payout(callback: CallbackQuery, state: FSMContext):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
 
             if not manager.is_active:
@@ -964,7 +965,7 @@ async def payout_history(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
             
             payouts_result = await session.execute(
@@ -1024,7 +1025,7 @@ async def mgr_my_posts(callback: CallbackQuery):
             )
             manager = manager_result.scalar_one_or_none()
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
 
             posts_data = []
@@ -1085,7 +1086,7 @@ async def mgr_submit_post_start(callback: CallbackQuery, state: FSMContext):
             )
             manager = result.scalar_one_or_none()
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
 
             channels_result = await session.execute(
@@ -1136,12 +1137,12 @@ async def mgr_submit_post_channel(callback: CallbackQuery, state: FSMContext):
             )
             manager = result.scalar_one_or_none()
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
 
             channel = await session.get(Channel, channel_id)
             if not channel:
-                await callback.message.answer("❌ Канал не найден")
+                await callback.message.answer(MSG_CHANNEL_NOT_FOUND)
                 return
 
             slots_result = await session.execute(
@@ -1652,7 +1653,7 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
             )
             manager = result.scalar_one_or_none()
             if not manager:
-                await message.answer("❌ Вы не менеджер")
+                await message.answer(MSG_NOT_MANAGER)
                 await state.clear()
                 return
 
@@ -1702,7 +1703,7 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
         if is_owner:
             await message.answer(
                 f"✅ **Пост #{post_id} поставлен в очередь!**\n\n"
-                f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
+                f"📅 Время публикации: **{scheduled_local.strftime(FMT_DATETIME)} {mgr_tz_label}**\n\n"
                 f"Пост будет автоматически опубликован в указанное время.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="➕ Ещё пост для этого канала", callback_data=f"mgr_submit_post:{channel_id}")],
@@ -1713,7 +1714,7 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
         else:
             await message.answer(
                 f"✅ **Скриншот получен! Пост #{post_id} отправлен на модерацию.**\n\n"
-                f"📅 Время публикации: **{scheduled_local.strftime('%d.%m.%Y %H:%M')} {mgr_tz_label}**\n\n"
+                f"📅 Время публикации: **{scheduled_local.strftime(FMT_DATETIME)} {mgr_tz_label}**\n\n"
                 f"Администратор проверит оплату и рассмотрит пост в ближайшее время.\n"
                 f"После одобрения пост будет автоматически опубликован в указанное время.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1732,7 +1733,7 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
                         f"📝 **Новый пост на модерацию #{post_id}**\n\n"
                         f"От менеджера: {message.from_user.first_name or message.from_user.username}\n"
                         f"📢 Канал: {channel_name_notify}\n"
-                        f"📅 Запланирован: {scheduled_admin.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}\n\n"
+                        f"📅 Запланирован: {scheduled_admin.strftime(FMT_DATETIME)} {LOCAL_TZ_LABEL}\n\n"
                         f"💳 Скриншот оплаты прикреплён."
                     )
                     moderation_markup = InlineKeyboardMarkup(inline_keyboard=[

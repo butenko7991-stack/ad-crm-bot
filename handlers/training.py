@@ -15,6 +15,7 @@ from config import DEFAULT_LESSONS
 from database import async_session_maker, Manager
 from keyboards import get_training_menu, get_ai_feedback_keyboard
 from utils import ManagerStates
+from utils.constants import MSG_NOT_MANAGER
 from services import ai_trainer_service
 
 
@@ -260,7 +261,7 @@ async def training_progress(callback: CallbackQuery):
             manager = result.scalar_one_or_none()
             
             if not manager:
-                await callback.message.answer("❌ Вы не менеджер")
+                await callback.message.answer(MSG_NOT_MANAGER)
                 return
             
             first_name = manager.first_name or "Менеджер"

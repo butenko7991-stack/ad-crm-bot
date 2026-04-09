@@ -17,6 +17,7 @@ from config import CHANNEL_CATEGORIES, ADMIN_IDS, LOYALTY_DISCOUNTS
 from database import async_session_maker, Channel, Slot, Client, Order, Manager, PromoCode
 from keyboards import get_channels_keyboard, get_dates_keyboard, get_calendar_keyboard, get_times_keyboard, get_format_keyboard
 from utils import BookingStates, channel_link, utc_now
+from utils.constants import MSG_CHANNEL_NOT_FOUND
 from services.settings import get_setting, PAYMENT_LINK_KEY
 
 
@@ -73,7 +74,7 @@ async def select_channel(callback: CallbackQuery, state: FSMContext):
             channel = await session.get(Channel, channel_id)
             
             if not channel:
-                await callback.message.edit_text("❌ Канал не найден")
+                await callback.message.edit_text(MSG_CHANNEL_NOT_FOUND)
                 return
             
             # Получаем слоты
@@ -227,7 +228,7 @@ async def select_date(callback: CallbackQuery, state: FSMContext):
         
         await callback.message.edit_text(
             f"📅 **{selected_date.strftime('%d.%m.%Y')}**\n\nВыберите время:",
-            reply_markup=get_times_keyboard(slots, prices),
+            reply_markup=get_times_keyboard(slots),
             parse_mode=ParseMode.MARKDOWN
         )
         await state.set_state(BookingStates.selecting_time)

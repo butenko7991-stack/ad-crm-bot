@@ -22,6 +22,7 @@ from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, g
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, format_daily_schedule, format_slot_booking, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates, AdminCrosspostSettingsStates
 from utils.helpers import escape_md, utc_now
+from utils.constants import MSG_AUTH_REQUIRED, FMT_DATETIME
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY, CROSSPOST_ENABLED_KEY, CROSSPOST_DAILY_LIMIT_KEY, MAX_CROSSPOST_CHAT_ID_KEY
 from services.crosspost import is_crosspost_enabled, get_crosspost_daily_limit, get_daily_crosspost_count, get_max_crosspost_chat_id
 from services.ai_trainer import ai_trainer_service
@@ -217,7 +218,7 @@ async def adm_back(callback: CallbackQuery, state: FSMContext):
 async def adm_channels(callback: CallbackQuery):
     """Список каналов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -254,7 +255,7 @@ async def adm_channels(callback: CallbackQuery):
 async def adm_channel_settings(callback: CallbackQuery):
     """Настройки канала"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -283,7 +284,7 @@ async def adm_channel_settings(callback: CallbackQuery):
 async def adm_channel_prices(callback: CallbackQuery, state: FSMContext):
     """Изменить цены канала"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -337,7 +338,7 @@ async def adm_channel_prices(callback: CallbackQuery, state: FSMContext):
 async def set_price_start(callback: CallbackQuery, state: FSMContext):
     """Начать ввод цены"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -415,7 +416,7 @@ async def receive_new_price(message: Message, state: FSMContext):
 async def auto_calculate_prices(callback: CallbackQuery):
     """Авторасчёт цен по CPM"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer("📊 Рассчитываю...")
@@ -480,7 +481,7 @@ async def auto_calculate_prices(callback: CallbackQuery):
 async def set_channel_cpm_start(callback: CallbackQuery, state: FSMContext):
     """Начать ручной ввод CPM для конкретного канала"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -563,7 +564,7 @@ async def receive_channel_cpm(message: Message, state: FSMContext):
 async def adm_set_channel_link_start(callback: CallbackQuery, state: FSMContext):
     """Начать редактирование username/ссылки канала"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -659,7 +660,7 @@ async def receive_channel_username(message: Message, state: FSMContext):
 async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
     """Обновить статистику канала напрямую через Bot API (без сторонних сервисов)"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     channel_id = int(callback.data.split(":")[1])
@@ -735,7 +736,7 @@ async def adm_update_channel_stats(callback: CallbackQuery, bot: Bot):
 async def adm_toggle_channel(callback: CallbackQuery):
     """Включить/выключить канал"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     channel_id = int(callback.data.split(":")[1])
@@ -763,7 +764,7 @@ async def adm_toggle_channel(callback: CallbackQuery):
 async def adm_channel_slots(callback: CallbackQuery):
     """Просмотр слотов канала"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -817,7 +818,7 @@ async def adm_channel_slots(callback: CallbackQuery):
 async def adm_slots_gen_start(callback: CallbackQuery, state: FSMContext):
     """Начало генерации слотов — запрос параметров"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -948,7 +949,7 @@ async def adm_slots_gen_create(message: Message, state: FSMContext):
 async def adm_slots_clear(callback: CallbackQuery):
     """Удалить все предстоящие доступные слоты канала"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -986,7 +987,7 @@ async def adm_slots_clear(callback: CallbackQuery):
 async def adm_delete_channel(callback: CallbackQuery):
     """Удалить канал"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -1008,7 +1009,7 @@ async def adm_delete_channel(callback: CallbackQuery):
 async def adm_delete_channel_confirm(callback: CallbackQuery):
     """Подтвердить удаление"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     channel_id = int(callback.data.split(":")[1])
@@ -1055,7 +1056,7 @@ async def adm_delete_channel_confirm(callback: CallbackQuery):
 async def adm_add_channel(callback: CallbackQuery, state: FSMContext):
     """Добавить канал"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -1169,7 +1170,7 @@ async def select_channel_category(callback: CallbackQuery, state: FSMContext):
 async def adm_managers(callback: CallbackQuery):
     """Список менеджеров"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -1215,7 +1216,7 @@ async def adm_managers(callback: CallbackQuery):
 async def adm_payments(callback: CallbackQuery):
     """Оплаты на проверке"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -1251,7 +1252,7 @@ async def adm_payments(callback: CallbackQuery):
 async def adm_moderation(callback: CallbackQuery):
     """Посты на модерации"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -1398,7 +1399,7 @@ async def _build_crm_stats_text() -> str:
 async def adm_stats(callback: CallbackQuery):
     """Сводная статистика + навигация по метрикам"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -1423,7 +1424,7 @@ _METRICS_BACK = InlineKeyboardMarkup(inline_keyboard=[
 async def metrics_sales(callback: CallbackQuery):
     """Метрики продаж с переключением периода"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     period = callback.data.split(":")[1]
@@ -1472,7 +1473,7 @@ async def metrics_sales(callback: CallbackQuery):
 async def metrics_channels(callback: CallbackQuery):
     """Метрики каналов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -1520,7 +1521,7 @@ async def metrics_channels(callback: CallbackQuery):
 async def metrics_managers(callback: CallbackQuery):
     """Метрики менеджеров"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -1570,7 +1571,7 @@ async def metrics_managers(callback: CallbackQuery):
 async def metrics_clients(callback: CallbackQuery):
     """Метрики клиентов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -1617,7 +1618,7 @@ async def metrics_clients(callback: CallbackQuery):
 async def metrics_formats(callback: CallbackQuery):
     """Метрики по форматам размещения"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -1665,7 +1666,7 @@ async def metrics_formats(callback: CallbackQuery):
 async def metrics_posts(callback: CallbackQuery):
     """Метрики аналитики постов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -1716,7 +1717,7 @@ async def metrics_posts(callback: CallbackQuery):
 async def adm_competitions(callback: CallbackQuery):
     """Соревнования"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     
     await callback.answer()
@@ -1753,7 +1754,7 @@ async def adm_competitions(callback: CallbackQuery):
 async def adm_cpm(callback: CallbackQuery):
     """CPM по тематикам — страница 0"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     await callback.answer()
     await _show_cpm_page(callback, page=0)
@@ -1763,7 +1764,7 @@ async def adm_cpm(callback: CallbackQuery):
 async def adm_cpm_page(callback: CallbackQuery):
     """Пагинация списка CPM"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     await callback.answer()
     page = int(callback.data.split(":")[1])
@@ -1810,7 +1811,7 @@ async def adm_cpm_info(callback: CallbackQuery):
 async def adm_cpm_edit_start(callback: CallbackQuery, state: FSMContext):
     """Начать ручной ввод CPM для тематики"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -1908,7 +1909,7 @@ async def adm_cpm_receive_value(message: Message, state: FSMContext):
 async def adm_autoposting(callback: CallbackQuery, state: FSMContext):
     """Раздел Автопостинг"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await state.clear()
@@ -1943,7 +1944,7 @@ async def adm_autoposting(callback: CallbackQuery, state: FSMContext):
 async def autopost_pending(callback: CallbackQuery):
     """Список запланированных постов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2001,7 +2002,7 @@ async def autopost_pending(callback: CallbackQuery):
 async def autopost_posted(callback: CallbackQuery):
     """Список опубликованных постов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2053,7 +2054,7 @@ async def autopost_posted(callback: CallbackQuery):
 async def autopost_view_posted(callback: CallbackQuery):
     """Просмотр опубликованного поста с возможностью добавить аналитику"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2074,7 +2075,7 @@ async def autopost_view_posted(callback: CallbackQuery):
                 select(PostAnalytics).where(PostAnalytics.scheduled_post_id == post_id)
             )).scalar_one_or_none()
 
-        posted = post.posted_at.strftime("%d.%m.%Y %H:%M") if post.posted_at else "—"
+        posted = post.posted_at.strftime(FMT_DATETIME) if post.posted_at else "—"
         text = (
             f"✅ **Пост #{post_id}**\n\n"
             f"📢 Канал: {ch_name}\n"
@@ -2122,7 +2123,7 @@ async def autopost_view_posted(callback: CallbackQuery):
 async def autopost_delete_from_channel(callback: CallbackQuery, bot: Bot):
     """Удалить опубликованный пост из канала Telegram и пометить как удалённый"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2184,7 +2185,7 @@ async def autopost_delete_from_channel(callback: CallbackQuery, bot: Bot):
 async def autopost_analytics(callback: CallbackQuery):
     """Список аналитики рекламных постов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2221,7 +2222,7 @@ async def autopost_analytics(callback: CallbackQuery):
 async def pa_view(callback: CallbackQuery):
     """Просмотр записи аналитики поста с динамикой просмотров"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2252,7 +2253,7 @@ async def pa_view(callback: CallbackQuery):
         ch_name = channel.name if channel else "—"
         subscribers = (channel.subscribers or 0) if channel else 0
         posted_at = scheduled_post.posted_at if scheduled_post else None
-        recorded = analytics.recorded_at.strftime("%d.%m.%Y %H:%M") if analytics.recorded_at else "—"
+        recorded = analytics.recorded_at.strftime(FMT_DATETIME) if analytics.recorded_at else "—"
         views = analytics.views or 0
         reactions = analytics.reactions or 0
         forwards = analytics.forwards or 0
@@ -2262,7 +2263,7 @@ async def pa_view(callback: CallbackQuery):
         er = round(total_engage / views * 100, 2) if views > 0 else 0
 
         # Шапка
-        posted_str = posted_at.strftime("%d.%m.%Y %H:%M") if posted_at else recorded
+        posted_str = posted_at.strftime(FMT_DATETIME) if posted_at else recorded
         text = (
             f"📊 **Аналитика поста #{analytics_id}**\n\n"
             f"📢 Канал: {ch_name}\n"
@@ -2367,7 +2368,7 @@ async def pa_view(callback: CallbackQuery):
 async def daily_reach_report_handler(callback: CallbackQuery):
     """Отчёт об охватах рекламных постов за последние 24 часа"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2399,7 +2400,7 @@ async def daily_reach_report_handler(callback: CallbackQuery):
 async def pa_enter_start(callback: CallbackQuery, state: FSMContext):
     """Начало ввода метрик поста"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2593,7 +2594,7 @@ async def pa_receive_comments(message: Message, state: FSMContext):
 async def pa_ai_recommend(callback: CallbackQuery):
     """Получить AI-рекомендацию по аналитике поста"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer("🤖 Генерирую рекомендацию…")
@@ -2664,7 +2665,7 @@ async def pa_ai_recommend(callback: CallbackQuery):
 async def autopost_ai_recommend_overview(callback: CallbackQuery):
     """Обзор AI-рекомендаций по всем постам с аналитикой"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2736,7 +2737,7 @@ async def _render_channel_analytics_page(message, channel_id: int, back_callback
         return False
 
     ch = data["channel"]
-    updated = ch["analytics_updated"].strftime("%d.%m.%Y %H:%M") if ch["analytics_updated"] else "—"
+    updated = ch["analytics_updated"].strftime(FMT_DATETIME) if ch["analytics_updated"] else "—"
 
     # Use escaped name in heading (avoids "can't parse entities" when mixing bold with markdown links)
     ch_name_safe = _md_escape(ch["name"])
@@ -2790,7 +2791,7 @@ async def _render_channel_analytics_page(message, channel_id: int, back_callback
 async def autopost_channel_analytics(callback: CallbackQuery):
     """Список каналов с краткой аналитикой"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2845,7 +2846,7 @@ async def autopost_channel_analytics(callback: CallbackQuery):
 async def ch_analytics_detail(callback: CallbackQuery):
     """Детальная аналитика одного канала"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2867,7 +2868,7 @@ async def ch_analytics_detail(callback: CallbackQuery):
 async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
     """Обновить статистику канала и вернуть страницу аналитики"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer("🔄 Обновляю данные…")
@@ -2902,7 +2903,7 @@ async def ch_analytics_refresh(callback: CallbackQuery, bot: Bot):
 async def autopost_create_start(callback: CallbackQuery, state: FSMContext):
     """Шаг 1 — выбор канала для нового поста"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2948,7 +2949,7 @@ async def autopost_create_start(callback: CallbackQuery, state: FSMContext):
 async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
     """Шаг 2 — выбор даты публикации через календарь"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -2983,7 +2984,7 @@ async def autopost_create_channel(callback: CallbackQuery, state: FSMContext):
 async def autopost_cal_nav(callback: CallbackQuery, state: FSMContext):
     """Навигация по месяцам в календаре"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3010,7 +3011,7 @@ async def autopost_cal_nav(callback: CallbackQuery, state: FSMContext):
 async def autopost_cal_date(callback: CallbackQuery, state: FSMContext):
     """Дата выбрана — показываем выбор времени"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3041,7 +3042,7 @@ async def autopost_cal_date(callback: CallbackQuery, state: FSMContext):
 async def autopost_cal_back(callback: CallbackQuery, state: FSMContext):
     """Возврат из выбора времени обратно к календарю"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3074,7 +3075,7 @@ async def autopost_cal_back(callback: CallbackQuery, state: FSMContext):
 async def autopost_publish_now(callback: CallbackQuery, state: FSMContext):
     """Опубликовать пост немедленно — пропускаем выбор даты/времени"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3111,7 +3112,7 @@ async def autopost_publish_now(callback: CallbackQuery, state: FSMContext):
 async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
     """Время выбрано кнопкой — переходим к выбору часов удаления"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3136,7 +3137,7 @@ async def autopost_select_time(callback: CallbackQuery, state: FSMContext):
 
         await safe_edit_message(
             callback.message,
-            f"✅ Дата и время: **{scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}**\n\n"
+            f"✅ Дата и время: **{scheduled_time_msk.strftime(FMT_DATETIME)} {LOCAL_TZ_LABEL}**\n\n"
             f"📢 Канал: **{channel_name}**\n\n"
             f"Шаг 3/4 — Через сколько часов удалить пост?",
             InlineKeyboardMarkup(inline_keyboard=[
@@ -3186,7 +3187,7 @@ async def autopost_enter_time_text(message: Message, state: FSMContext):
     channel_name = data.get("create_channel_name", "—")
 
     await message.answer(
-        f"✅ Дата и время: **{scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}**\n\n"
+        f"✅ Дата и время: **{scheduled_time_msk.strftime(FMT_DATETIME)} {LOCAL_TZ_LABEL}**\n\n"
         f"📢 Канал: **{channel_name}**\n\n"
         f"Шаг 3/4 — Через сколько часов удалить пост?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -3206,7 +3207,7 @@ async def autopost_enter_time_text(message: Message, state: FSMContext):
 async def autopost_create_delete_hours_btn(callback: CallbackQuery, state: FSMContext):
     """Шаг 3 (кнопкой) — выбрано время удаления"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3378,7 +3379,7 @@ async def _show_confirm_preview(message: Message, state: FSMContext):
 
     try:
         scheduled_dt = datetime.fromisoformat(scheduled_time_iso)
-        sched_str = (scheduled_dt + LOCAL_TZ_OFFSET).strftime("%d.%m.%Y %H:%M") + f" {LOCAL_TZ_LABEL}"
+        sched_str = (scheduled_dt + LOCAL_TZ_OFFSET).strftime(FMT_DATETIME) + f" {LOCAL_TZ_LABEL}"
     except Exception:
         sched_str = scheduled_time_iso
 
@@ -3538,7 +3539,7 @@ async def autopost_signature_skip(callback: CallbackQuery, state: FSMContext):
 async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
     """Финальное сохранение поста в БД"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3577,7 +3578,7 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
             callback.message,
             f"✅ **Пост #{post_id} создан!**\n\n"
             f"📢 Канал: **{channel_name}**\n"
-            f"📅 Публикация: **{(scheduled_time + LOCAL_TZ_OFFSET).strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}**\n"
+            f"📅 Публикация: **{(scheduled_time + LOCAL_TZ_OFFSET).strftime(FMT_DATETIME)} {LOCAL_TZ_LABEL}**\n"
             f"🗑 Удаление: **{delete_str}**\n\n"
             f"Пост поставлен в очередь автопостинга.",
             InlineKeyboardMarkup(inline_keyboard=[
@@ -3598,7 +3599,7 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
 async def adm_settings(callback: CallbackQuery):
     """Настройки бота"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3637,7 +3638,7 @@ async def adm_settings(callback: CallbackQuery):
 async def adm_manager_chat_settings(callback: CallbackQuery):
     """Информация о чате менеджеров и кнопка для изменения."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3677,7 +3678,7 @@ async def adm_manager_chat_settings(callback: CallbackQuery):
 async def adm_manager_chat_input(callback: CallbackQuery, state: FSMContext):
     """Запросить новый ID чата менеджеров."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3725,7 +3726,7 @@ async def adm_manager_chat_receive(message: Message, state: FSMContext):
 async def adm_manager_chat_clear(callback: CallbackQuery):
     """Сбросить ID чата менеджеров."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3746,7 +3747,7 @@ async def adm_manager_chat_clear(callback: CallbackQuery):
 async def adm_payment_settings(callback: CallbackQuery):
     """Настройки платёжных реквизитов."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3792,7 +3793,7 @@ async def adm_payment_settings(callback: CallbackQuery):
 async def adm_payment_link_input(callback: CallbackQuery, state: FSMContext):
     """Запросить новые платёжные реквизиты."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3839,7 +3840,7 @@ async def adm_payment_link_receive(message: Message, state: FSMContext):
 async def adm_payment_link_clear(callback: CallbackQuery):
     """Сбросить платёжные реквизиты."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3887,7 +3888,7 @@ async def on_bot_added_to_group(event: ChatMemberUpdated, bot: Bot):
 async def adm_max_settings(callback: CallbackQuery):
     """Информация о подключении Max Bot и настройки кросспостинга"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3944,7 +3945,7 @@ async def adm_max_settings(callback: CallbackQuery):
 async def adm_crosspost_toggle(callback: CallbackQuery):
     """Включить/выключить кросспостинг."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -3959,7 +3960,7 @@ async def adm_crosspost_toggle(callback: CallbackQuery):
 async def adm_crosspost_chat_input(callback: CallbackQuery, state: FSMContext):
     """Запросить ID чата Max для кросспостинга."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4006,7 +4007,7 @@ async def adm_crosspost_chat_receive(message: Message, state: FSMContext):
 async def adm_crosspost_limit_input(callback: CallbackQuery, state: FSMContext):
     """Запросить дневной лимит кросспостов."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4060,7 +4061,7 @@ async def adm_crosspost_limit_receive(message: Message, state: FSMContext):
 async def adm_diagnostics(callback: CallbackQuery):
     """Самодиагностика бота — проверка всех компонентов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4108,7 +4109,7 @@ async def adm_diagnostics(callback: CallbackQuery):
         else:
             text += "\n⚠️ Не удалось проверить очередь.\n"
 
-        text += f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC"
+        text += f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime(FMT_DATETIME)} UTC"
 
         buttons = [
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_diagnostics")],
@@ -4132,7 +4133,7 @@ async def adm_diagnostics(callback: CallbackQuery):
 async def adm_ai_improve(callback: CallbackQuery):
     """AI-анализ метрик бота и рекомендации по улучшению"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4195,7 +4196,7 @@ async def adm_ai_improve(callback: CallbackQuery):
 async def adm_error_library(callback: CallbackQuery):
     """Просмотр библиотеки известных ошибок и журнала неизвестных ошибок."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4263,7 +4264,7 @@ async def adm_error_library(callback: CallbackQuery):
 async def adm_improvement_log_view(callback: CallbackQuery):
     """Просмотр журнала улучшений бота."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4318,7 +4319,7 @@ async def adm_improvement_log_view(callback: CallbackQuery):
 async def adm_add_improvement_note(callback: CallbackQuery, state: FSMContext):
     """Начало ввода заметки об улучшении администратором."""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4365,7 +4366,7 @@ async def adm_save_improvement_note(message: Message, state: FSMContext):
 async def adm_deep_diagnostics(callback: CallbackQuery):
     """Углублённая диагностика всех разделов и кнопок бота"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4424,7 +4425,7 @@ async def adm_deep_diagnostics(callback: CallbackQuery):
         for sect, (icon, msg) in report["sections"].items():
             lines.append(f"{icon} {_md_escape(sect)}: {_md_escape(msg)}")
 
-        lines.append(f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC")
+        lines.append(f"\n🕐 Проверено: {datetime.now(timezone.utc).strftime(FMT_DATETIME)} UTC")
 
         text = "\n".join(lines)
 
@@ -4460,7 +4461,7 @@ async def adm_deep_diagnostics(callback: CallbackQuery):
 async def adm_view_order(callback: CallbackQuery):
     """Просмотр заказа и подтверждение оплаты"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4538,7 +4539,7 @@ async def adm_view_order(callback: CallbackQuery):
 async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
     """Подтвердить оплату заказа"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -4680,7 +4681,7 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
 async def adm_reject_payment(callback: CallbackQuery, bot: Bot):
     """Отклонить оплату заказа"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -4736,7 +4737,7 @@ async def adm_reject_payment(callback: CallbackQuery, bot: Bot):
 async def adm_mark_posted(callback: CallbackQuery, bot: Bot):
     """Отметить заказ как опубликованный"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -4797,7 +4798,7 @@ async def adm_mark_posted(callback: CallbackQuery, bot: Bot):
 async def adm_view_manager(callback: CallbackQuery):
     """Просмотр и управление менеджером"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -4861,7 +4862,7 @@ async def adm_view_manager(callback: CallbackQuery):
 async def adm_promote_manager(callback: CallbackQuery):
     """Повысить уровень менеджера"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -4889,7 +4890,7 @@ async def adm_promote_manager(callback: CallbackQuery):
 async def adm_demote_manager(callback: CallbackQuery):
     """Понизить уровень менеджера"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -4917,7 +4918,7 @@ async def adm_demote_manager(callback: CallbackQuery):
 async def adm_toggle_manager(callback: CallbackQuery):
     """Активировать/деактивировать менеджера"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -4944,7 +4945,7 @@ async def adm_toggle_manager(callback: CallbackQuery):
 async def adm_mgr_set_commission_start(callback: CallbackQuery, state: FSMContext):
     """Начать ввод комиссии для менеджера"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5030,7 +5031,7 @@ async def adm_mgr_set_commission_receive(message: Message, state: FSMContext):
 async def adm_view_post(callback: CallbackQuery):
     """Просмотр поста на модерации"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5047,7 +5048,7 @@ async def adm_view_post(callback: CallbackQuery):
             channel = await session.get(Channel, post.channel_id)
 
         channel_name = channel.name if channel else "—"
-        scheduled_time = (post.scheduled_time + LOCAL_TZ_OFFSET).strftime("%d.%m.%Y %H:%M") + f" {LOCAL_TZ_LABEL}" if post.scheduled_time else "—"
+        scheduled_time = (post.scheduled_time + LOCAL_TZ_OFFSET).strftime(FMT_DATETIME) + f" {LOCAL_TZ_LABEL}" if post.scheduled_time else "—"
 
         if post.status == "moderation":
             title = f"📄 **Пост #{post_id} на модерации**"
@@ -5133,7 +5134,7 @@ async def adm_view_post(callback: CallbackQuery):
 async def adm_post_delete(callback: CallbackQuery, state: FSMContext):
     """Удалить запланированный пост (отмена)"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5165,7 +5166,7 @@ async def adm_post_delete(callback: CallbackQuery, state: FSMContext):
 async def adm_post_edit_content_start(callback: CallbackQuery, state: FSMContext):
     """Начать редактирование контента запланированного поста"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5248,7 +5249,7 @@ async def adm_post_edit_content_receive(message: Message, state: FSMContext):
 async def adm_post_edit_time_start(callback: CallbackQuery, state: FSMContext):
     """Начать редактирование времени публикации — показываем календарь"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5278,7 +5279,7 @@ async def adm_post_edit_time_start(callback: CallbackQuery, state: FSMContext):
 async def edit_post_cal_nav(callback: CallbackQuery, state: FSMContext):
     """Навигация по месяцам в календаре редактирования"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5308,7 +5309,7 @@ async def edit_post_cal_nav(callback: CallbackQuery, state: FSMContext):
 async def edit_post_cal_date(callback: CallbackQuery, state: FSMContext):
     """Дата выбрана — показываем выбор времени"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5338,7 +5339,7 @@ async def edit_post_cal_date(callback: CallbackQuery, state: FSMContext):
 async def edit_post_cal_back(callback: CallbackQuery, state: FSMContext):
     """Вернуться из выбора времени обратно к календарю"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5374,7 +5375,7 @@ async def edit_post_cal_back(callback: CallbackQuery, state: FSMContext):
 async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
     """Время выбрано — сохраняем новое расписание в БД"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5407,7 +5408,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(
             callback.message,
             f"✅ **Время публикации поста #{post_id} обновлено!**\n\n"
-            f"📅 Новое время: **{scheduled_time_msk.strftime('%d.%m.%Y %H:%M')} {LOCAL_TZ_LABEL}**",
+            f"📅 Новое время: **{scheduled_time_msk.strftime(FMT_DATETIME)} {LOCAL_TZ_LABEL}**",
             InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ К посту", callback_data=f"adm_post:{post_id}")],
                 [InlineKeyboardButton(text="◀️ К списку постов", callback_data="autopost_pending")],
@@ -5422,7 +5423,7 @@ async def edit_post_select_time(callback: CallbackQuery, state: FSMContext):
 async def adm_approve_post(callback: CallbackQuery, bot: Bot):
     """Одобрить пост"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -5497,7 +5498,7 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
         if creator_id:
             try:
                 scheduled_str = (
-                    (scheduled_time + LOCAL_TZ_OFFSET).strftime("%d.%m.%Y %H:%M") + f" {LOCAL_TZ_LABEL}"
+                    (scheduled_time + LOCAL_TZ_OFFSET).strftime(FMT_DATETIME) + f" {LOCAL_TZ_LABEL}"
                     if scheduled_time else "—"
                 )
                 await bot.send_message(
@@ -5541,7 +5542,7 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
 async def adm_reject_post(callback: CallbackQuery, bot: Bot):
     """Отклонить пост"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     try:
@@ -5595,7 +5596,7 @@ async def adm_reject_post(callback: CallbackQuery, bot: Bot):
 async def adm_create_competition_start(callback: CallbackQuery, state: FSMContext):
     """Начать создание соревнования"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5711,7 +5712,7 @@ async def adm_competition_prize_pool(message: Message, state: FSMContext):
 async def adm_competition_metric(callback: CallbackQuery, state: FSMContext):
     """Выбрать метрику и создать соревнование"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -5961,7 +5962,7 @@ async def btn_adm_logout(message: Message):
 async def adm_promo_list(callback: CallbackQuery):
     """Список промокодов"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     await callback.answer()
 
@@ -6007,7 +6008,7 @@ async def adm_promo_list(callback: CallbackQuery):
 async def adm_promo_create_start(callback: CallbackQuery, state: FSMContext):
     """Начало создания промокода"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
     await callback.answer()
     await safe_edit_message(
@@ -6130,7 +6131,7 @@ async def adm_promo_receive_max_uses(message: Message, state: FSMContext):
 async def adm_promo_deactivate(callback: CallbackQuery):
     """Деактивировать промокод"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     promo_id = int(callback.data.split(":")[1])
@@ -6245,7 +6246,7 @@ async def _build_content_plan_week(session, week_monday: date_type):
 async def adm_content_plan(callback: CallbackQuery):
     """Раздел Контент план — текущая неделя"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -6290,7 +6291,7 @@ async def content_plan_week(callback: CallbackQuery):
         manager = mgr_result.scalar_one_or_none()
 
     if not is_admin and not manager:
-        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()
@@ -6361,7 +6362,7 @@ async def content_plan_day(callback: CallbackQuery):
         manager = mgr_result.scalar_one_or_none()
 
     if not is_admin and not manager:
-        await callback.answer("�� Требуется авторизация", show_alert=True)
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
         return
 
     await callback.answer()

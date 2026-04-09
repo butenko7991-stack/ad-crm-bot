@@ -39,6 +39,11 @@ class GamificationService:
             old_level = manager.level
             manager.experience_points += xp
             
+            log_msg = f"Manager {manager_id} +{xp} XP"
+            if reason:
+                log_msg += f" ({reason})"
+            logger.debug(log_msg)
+            
             # Проверяем повышение уровня
             new_level = self._calculate_level(manager.experience_points)
             level_up = new_level > old_level
