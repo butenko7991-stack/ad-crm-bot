@@ -700,3 +700,133 @@ async def btn_content_autoposting(message: Message):
         reply_markup=get_autoposting_menu(),
         parse_mode=ParseMode.MARKDOWN
     )
+
+
+# ==================== КОНТЕНТ ПЛАН (КНОПКА) ====================
+
+@router.message(F.text == "📋 Контент план")
+async def btn_content_plan(message: Message):
+    """Контент план для контенщика и закупщика"""
+    from datetime import date, timedelta
+    from keyboards import get_content_plan_week_keyboard
+    from sqlalchemy import func as sa_func
+    from database.models import ScheduledPost
+    from config import LOCAL_TZ_OFFSET
+    from utils.helpers import utc_now
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == message.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+
+    if not manager:
+        await message.answer("❌ Вы не зарегистрированы в системе")
+        return
+
+    today = (utc_now() + LOCAL_TZ_OFFSET).date()
+    week_monday = today - timedelta(days=today.weekday())
+    week_sunday = week_monday + timedelta(days=6)
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost)
+                .where(
+                    ScheduledPost.created_by == message.from_user.id,
+                    ScheduledPost.status.in_(["pending", "moderation", "error"]),
+                    sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) >= week_monday,
+                    sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) <= week_sunday,
+                )
+                .order_by(ScheduledPost.scheduled_time.asc())
+            )
+            posts = result.scalars().all()
+
+        counts: dict = {}
+        for post in posts:
+            d = (post.scheduled_time + LOCAL_TZ_OFFSET).date()
+            counts[d] = counts.get(d, 0) + 1
+
+        total = sum(counts.values())
+        text = (
+            "📋 **Контент план**\n\n"
+            f"Ваших запланированных постов на неделю: **{total}**\n\n"
+            "Выберите день, чтобы увидеть список постов:"
+        )
+        await message.answer(
+            text,
+            reply_markup=get_content_plan_week_keyboard(week_monday, counts, back_cb="content_plan_mgr"),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception:
+        logger.error(f"Error in btn_content_plan: {traceback.format_exc()}")
+        await message.answer("❌ Ошибка загрузки контент-плана")
+
+
+@router.callback_query(F.data == "content_plan_mgr")
+async def content_plan_mgr(callback: CallbackQuery):
+    """Возврат к контент-плану менеджера (текущая неделя)"""
+    from datetime import date, timedelta
+    from keyboards import get_content_plan_week_keyboard
+    from sqlalchemy import func as sa_func
+    from database.models import ScheduledPost
+    from config import LOCAL_TZ_OFFSET
+    from utils.helpers import utc_now
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = result.scalar_one_or_none()
+
+    if not manager:
+        await callback.answer("❌ Вы не менеджер", show_alert=True)
+        return
+
+    await callback.answer()
+
+    today = (utc_now() + LOCAL_TZ_OFFSET).date()
+    week_monday = today - timedelta(days=today.weekday())
+    week_sunday = week_monday + timedelta(days=6)
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(ScheduledPost)
+                .where(
+                    ScheduledPost.created_by == callback.from_user.id,
+                    ScheduledPost.status.in_(["pending", "moderation", "error"]),
+                    sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) >= week_monday,
+                    sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) <= week_sunday,
+                )
+                .order_by(ScheduledPost.scheduled_time.asc())
+            )
+            posts = result.scalars().all()
+
+        counts: dict = {}
+        for post in posts:
+            d = (post.scheduled_time + LOCAL_TZ_OFFSET).date()
+            counts[d] = counts.get(d, 0) + 1
+
+        total = sum(counts.values())
+        text = (
+            "📋 **Контент план**\n\n"
+            f"Ваших запланированных постов на неделю: **{total}**\n\n"
+            "Выберите день, чтобы увидеть список постов:"
+        )
+        from aiogram.exceptions import TelegramBadRequest
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=get_content_plan_week_keyboard(week_monday, counts, back_cb="content_plan_mgr"),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                text,
+                reply_markup=get_content_plan_week_keyboard(week_monday, counts, back_cb="content_plan_mgr"),
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception:
+        logger.error(f"Error in content_plan_mgr: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки контент-плана")
