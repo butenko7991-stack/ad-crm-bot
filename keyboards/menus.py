@@ -447,7 +447,7 @@ def get_time_picker_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_times_keyboard(slots: list, channel_prices: dict) -> InlineKeyboardMarkup:
+def get_times_keyboard(slots: list) -> InlineKeyboardMarkup:
     """Клавиатура выбора времени"""
     buttons = []
     

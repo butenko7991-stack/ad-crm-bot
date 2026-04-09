@@ -21,6 +21,7 @@ from keyboards import (
 from handlers.admin import authenticated_admins
 from handlers.manager import _build_manager_cabinet_text
 from utils import channel_link
+from utils.constants import MSG_NOT_MANAGER
 
 
 logger = logging.getLogger(__name__)
@@ -371,7 +372,7 @@ async def btn_sales(message: Message):
         manager = result.scalar_one_or_none()
         
         if not manager:
-            await message.answer("❌ Вы не менеджер")
+            await message.answer(MSG_NOT_MANAGER)
             return
         
         result = await session.execute(
@@ -448,7 +449,7 @@ async def btn_balance(message: Message):
             manager = result.scalar_one_or_none()
         
         if not manager:
-            await message.answer("❌ Вы не менеджер")
+            await message.answer(MSG_NOT_MANAGER)
             return
         
         balance = float(manager.balance or 0)
@@ -491,7 +492,7 @@ async def btn_templates(message: Message):
             manager = result.scalar_one_or_none()
         
         if not manager:
-            await message.answer("❌ Вы не менеджер")
+            await message.answer(MSG_NOT_MANAGER)
             return
         
         text = "📋 **Шаблоны для продаж**\n\n"
@@ -573,7 +574,7 @@ async def btn_change_role(message: Message):
         manager = result.scalar_one_or_none()
 
     if not manager:
-        await message.answer("❌ Вы не менеджер")
+        await message.answer(MSG_NOT_MANAGER)
         return
 
     await message.answer(
@@ -780,7 +781,7 @@ async def content_plan_mgr(callback: CallbackQuery):
         manager = result.scalar_one_or_none()
 
     if not manager:
-        await callback.answer("❌ Вы не менеджер", show_alert=True)
+        await callback.answer(MSG_NOT_MANAGER, show_alert=True)
         return
 
     await callback.answer()

@@ -8,7 +8,6 @@ import json
 import logging
 import traceback
 from datetime import datetime, timedelta
-from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -27,6 +26,7 @@ from services.settings import get_manager_group_chat_id
 from services.crosspost import crosspost_post_to_max
 from services.error_library import lookup_error, record_unknown_error
 from utils.helpers import format_channel_stats_for_group, format_daily_schedule, utc_now
+from utils.constants import FMT_DATETIME
 
 
 # Настройка логирования
@@ -296,7 +296,7 @@ async def _do_publish_scheduled_posts(bot: Bot):
                 notify_text = (
                     f"✅ Пост #{post.id} опубликован!\n\n"
                     f"📢 Канал: {ch_name}\n"
-                    f"🕐 Время публикации: {posted_at.strftime('%d.%m.%Y %H:%M')} UTC\n"
+                    f"🕐 Время публикации: {posted_at.strftime(FMT_DATETIME)} UTC\n"
                     f"📝 Превью: {text_preview}"
                 )
                 for admin_id in ADMIN_IDS:

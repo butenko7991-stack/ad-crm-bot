@@ -1,7 +1,7 @@
 """
 Клавиатуры для бота в сети Max
 """
-from maxapi.types import CallbackButton, LinkButton
+from maxapi.types import CallbackButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
 from config import CHANNEL_CATEGORIES
