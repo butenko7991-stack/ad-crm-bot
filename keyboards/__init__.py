@@ -11,6 +11,7 @@ from keyboards.menus import (
     get_post_analytics_keyboard, get_post_analytics_actions_keyboard,
     get_free_calendar_keyboard, get_time_picker_keyboard,
     get_timezone_keyboard, get_role_selection_keyboard,
+    get_content_plan_week_keyboard, get_content_plan_day_keyboard,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "get_post_analytics_keyboard", "get_post_analytics_actions_keyboard",
     "get_free_calendar_keyboard", "get_time_picker_keyboard",
     "get_timezone_keyboard", "get_role_selection_keyboard",
+    "get_content_plan_week_keyboard", "get_content_plan_day_keyboard",
 ]

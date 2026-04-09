@@ -18,7 +18,7 @@ from sqlalchemy import select, func
 from config import ADMIN_IDS, ADMIN_PASSWORD, CHANNEL_CATEGORIES, AUTOPOST_ENABLED, CLAUDE_API_KEY, TELEMETR_API_TOKEN, MAX_BOT_TOKEN, MANAGER_LEVELS, MANAGER_GROUP_CHAT_ID, LOCAL_TZ_OFFSET, LOCAL_TZ_LABEL
 from database import async_session_maker, Channel, Manager, Order, ScheduledPost, Competition, Slot, Client, CategoryCPM, PostAnalytics, PostViewSnapshot, PromoCode
 from keyboards import get_admin_panel_menu, get_channel_settings_keyboard, get_category_keyboard
-from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard
+from keyboards.menus import get_cpm_categories_keyboard, get_autoposting_menu, get_post_analytics_keyboard, get_post_analytics_actions_keyboard, get_free_calendar_keyboard, get_time_picker_keyboard, get_content_plan_week_keyboard, get_content_plan_day_keyboard
 from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates, AdminPromoStates, format_channel_stats_for_group, format_daily_schedule, format_slot_booking, AdminSettingsStates, channel_link
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates, AdminCrosspostSettingsStates
 from utils.helpers import escape_md, utc_now
@@ -6214,3 +6214,218 @@ async def adm_send_daily_schedule(callback: CallbackQuery, bot: Bot):
     except Exception as e:
         logger.error(f"Error in adm_send_daily_schedule: {traceback.format_exc()}")
         await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+
+
+# ==================== КОНТЕНТ ПЛАН ====================
+
+async def _build_content_plan_week(session, week_monday: date_type):
+    """Собрать посты за неделю начиная с week_monday и вернуть словарь {дата: [посты]}."""
+    from sqlalchemy import func as sa_func
+    week_sunday = week_monday + timedelta(days=6)
+    result = await session.execute(
+        select(ScheduledPost)
+        .where(
+            ScheduledPost.status.in_(["pending", "moderation", "error"]),
+            sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) >= week_monday,
+            sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) <= week_sunday,
+        )
+        .order_by(ScheduledPost.scheduled_time.asc())
+    )
+    posts = result.scalars().all()
+
+    posts_by_date: dict = {}
+    for post in posts:
+        local_dt = post.scheduled_time + LOCAL_TZ_OFFSET
+        d = local_dt.date()
+        posts_by_date.setdefault(d, []).append(post)
+    return posts_by_date
+
+
+@router.callback_query(F.data == "adm_content_plan")
+async def adm_content_plan(callback: CallbackQuery):
+    """Раздел Контент план — текущая неделя"""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    today = (utc_now() + LOCAL_TZ_OFFSET).date()
+    week_monday = today - timedelta(days=today.weekday())
+
+    try:
+        async with async_session_maker() as session:
+            posts_by_date = await _build_content_plan_week(session, week_monday)
+
+        counts = {d: len(posts) for d, posts in posts_by_date.items()}
+        total = sum(counts.values())
+
+        text = (
+            "📋 **Контент план**\n\n"
+            f"Запланированных постов на неделю: **{total}**\n\n"
+            "Выберите день, чтобы увидеть список постов:"
+        )
+        await safe_edit_message(
+            callback.message, text,
+            get_content_plan_week_keyboard(week_monday, counts)
+        )
+    except Exception:
+        logger.error(f"Error in adm_content_plan: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки контент-плана")
+
+
+@router.callback_query(F.data.startswith("content_plan_week:"))
+async def content_plan_week(callback: CallbackQuery):
+    """Навигация по неделям контент-плана"""
+    is_admin = (
+        callback.from_user.id in authenticated_admins
+        or callback.from_user.id in ADMIN_IDS
+    )
+
+    # Проверяем доступ: админ или менеджер
+    async with async_session_maker() as session:
+        mgr_result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = mgr_result.scalar_one_or_none()
+
+    if not is_admin and not manager:
+        await callback.answer("🔐 Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        monday_iso = callback.data.split(":", 1)[1]
+        week_monday = date_type.fromisoformat(monday_iso)
+    except (IndexError, ValueError):
+        await callback.answer("Неверный формат даты", show_alert=True)
+        return
+
+    back_cb = "adm_content_plan" if is_admin else "content_plan_mgr"
+
+    try:
+        async with async_session_maker() as session:
+            if is_admin:
+                posts_by_date = await _build_content_plan_week(session, week_monday)
+            else:
+                # Для менеджера показываем его собственные посты
+                from sqlalchemy import func as sa_func
+                week_sunday = week_monday + timedelta(days=6)
+                result = await session.execute(
+                    select(ScheduledPost)
+                    .where(
+                        ScheduledPost.created_by == callback.from_user.id,
+                        ScheduledPost.status.in_(["pending", "moderation", "error"]),
+                        sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) >= week_monday,
+                        sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) <= week_sunday,
+                    )
+                    .order_by(ScheduledPost.scheduled_time.asc())
+                )
+                posts = result.scalars().all()
+                posts_by_date = {}
+                for post in posts:
+                    local_dt = post.scheduled_time + LOCAL_TZ_OFFSET
+                    d = local_dt.date()
+                    posts_by_date.setdefault(d, []).append(post)
+
+        counts = {d: len(posts) for d, posts in posts_by_date.items()}
+        total = sum(counts.values())
+
+        text = (
+            "📋 **Контент план**\n\n"
+            f"Запланированных постов на неделю: **{total}**\n\n"
+            "Выберите день, чтобы увидеть список постов:"
+        )
+        await safe_edit_message(
+            callback.message, text,
+            get_content_plan_week_keyboard(week_monday, counts, back_cb=back_cb)
+        )
+    except Exception:
+        logger.error(f"Error in content_plan_week: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки контент-плана")
+
+
+@router.callback_query(F.data.startswith("content_plan_day:"))
+async def content_plan_day(callback: CallbackQuery):
+    """Детальный вид постов за конкретный день"""
+    is_admin = (
+        callback.from_user.id in authenticated_admins
+        or callback.from_user.id in ADMIN_IDS
+    )
+
+    async with async_session_maker() as session:
+        mgr_result = await session.execute(
+            select(Manager).where(Manager.telegram_id == callback.from_user.id)
+        )
+        manager = mgr_result.scalar_one_or_none()
+
+    if not is_admin and not manager:
+        await callback.answer("�� Требуется авторизация", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        day_iso = callback.data.split(":", 1)[1]
+        target_date = date_type.fromisoformat(day_iso)
+    except (IndexError, ValueError):
+        await callback.answer("Неверный формат даты", show_alert=True)
+        return
+
+    back_cb = "adm_content_plan" if is_admin else "content_plan_mgr"
+
+    try:
+        from sqlalchemy import func as sa_func
+
+        async with async_session_maker() as session:
+            query = (
+                select(ScheduledPost)
+                .where(
+                    ScheduledPost.status.in_(["pending", "moderation", "error"]),
+                    sa_func.date(ScheduledPost.scheduled_time + LOCAL_TZ_OFFSET) == target_date,
+                )
+                .order_by(ScheduledPost.scheduled_time.asc())
+            )
+            if not is_admin:
+                query = query.where(ScheduledPost.created_by == callback.from_user.id)
+
+            result = await session.execute(query)
+            posts = result.scalars().all()
+
+            status_labels = {
+                "moderation": "🔍",
+                "pending": "⏳",
+                "error": "⚠️",
+            }
+
+            day_name = _WEEKDAY_NAMES[target_date.weekday()]
+            text = f"📋 **Контент план — {day_name}, {target_date.strftime('%d.%m.%Y')}**\n\n"
+
+            if not posts:
+                text += "Постов на этот день нет."
+            else:
+                for post in posts:
+                    channel = await session.get(Channel, post.channel_id)
+                    ch_name = channel.name if channel else f"#{post.channel_id}"
+                    local_time = (post.scheduled_time + LOCAL_TZ_OFFSET).strftime("%H:%M")
+                    status_icon = status_labels.get(post.status, "❓")
+                    preview = (post.content[:40] + "…") if post.content else "📎 медиа"
+                    fmt = f" [{post.format_type}]" if post.format_type else ""
+                    price_str = f" • {float(post.price):,.0f}₽" if post.price else ""
+                    text += (
+                        f"{status_icon} **{ch_name}** | {local_time}{fmt}{price_str}\n"
+                        f"   _{preview}_\n\n"
+                    )
+
+        await safe_edit_message(
+            callback.message, text,
+            get_content_plan_day_keyboard(target_date, back_cb=back_cb)
+        )
+    except Exception:
+        logger.error(f"Error in content_plan_day: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка загрузки постов")
+
+
+# Полные названия дней недели для заголовков
+_WEEKDAY_NAMES = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]

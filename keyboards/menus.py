@@ -2,8 +2,8 @@
 Клавиатуры и меню
 """
 import calendar
-from typing import List, Optional
-from datetime import date
+from typing import List, Optional, Dict
+from datetime import date, timedelta
 
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -61,7 +61,8 @@ def get_main_menu(
         buttons = [
             [KeyboardButton(text="📅 Мои посты"), KeyboardButton(text="✍️ Подать пост")],
             [KeyboardButton(text="📈 Аналитика постов"), KeyboardButton(text="🤖 Автопостинг")],
-            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🔄 Сменить роль")],
+            [KeyboardButton(text="📋 Контент план"), KeyboardButton(text="👤 Профиль")],
+            [KeyboardButton(text="🔄 Сменить роль")],
         ]
     elif is_manager:
         # Менеджер по продажам (роль 'manager' или без роли)
@@ -120,6 +121,9 @@ def get_admin_panel_menu() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🎟 Промокоды", callback_data="adm_promo"),
             InlineKeyboardButton(text="📅 Расписание дня", callback_data="adm_send_daily_schedule"),
+        ],
+        [
+            InlineKeyboardButton(text="📋 Контент план", callback_data="adm_content_plan"),
         ],
     ])
 
@@ -612,3 +616,93 @@ def get_post_analytics_actions_keyboard(analytics_id: int, has_ai: bool = False,
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="autopost_analytics")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
+# ==================== КОНТЕНТ ПЛАН ====================
+
+def get_content_plan_week_keyboard(
+    week_monday: date,
+    posts_by_date: Dict[date, int],
+    back_cb: str = "adm_back",
+) -> InlineKeyboardMarkup:
+    """Клавиатура недельного контент-плана.
+
+    week_monday      — первый день (понедельник) отображаемой недели.
+    posts_by_date    — словарь {дата: количество запланированных постов}.
+    back_cb          — callback_data кнопки «Назад».
+    """
+    today = date.today()
+    week_sunday = week_monday + timedelta(days=6)
+
+    prev_monday = week_monday - timedelta(days=7)
+    next_monday = week_monday + timedelta(days=7)
+
+    buttons: list = []
+
+    # ── Строка навигации: ◀️ Неделя ДД.ММ – ДД.ММ ▶️ ─────────────────
+    # Запрещаем уходить в прошлое дальше текущей недели
+    current_week_monday = today - timedelta(days=today.weekday())
+    prev_cb = (
+        f"content_plan_week:{prev_monday.isoformat()}"
+        if prev_monday >= current_week_monday
+        else "cal_ignore"
+    )
+    header = f"{week_monday.strftime('%d.%m')} – {week_sunday.strftime('%d.%m.%Y')}"
+    buttons.append([
+        InlineKeyboardButton(text="◀️", callback_data=prev_cb),
+        InlineKeyboardButton(text=header, callback_data="cal_ignore"),
+        InlineKeyboardButton(text="▶️", callback_data=f"content_plan_week:{next_monday.isoformat()}"),
+    ])
+
+    # ── Дни недели ────────────────────────────────────────────────────
+    for i in range(7):
+        d = week_monday + timedelta(days=i)
+        day_label = _WEEKDAYS[i]
+        count = posts_by_date.get(d, 0)
+        today_marker = " 🔹" if d == today else ""
+
+        if count > 0:
+            n = count % 10
+            n100 = count % 100
+            if n == 1 and n100 != 11:
+                suffix = ""
+            elif 2 <= n <= 4 and n100 not in (12, 13, 14):
+                suffix = "а"
+            else:
+                suffix = "ов"
+            text = f"{day_label} {d.strftime('%d.%m')}{today_marker} — {count} пост{suffix}"
+            buttons.append([InlineKeyboardButton(
+                text=text,
+                callback_data=f"content_plan_day:{d.isoformat()}"
+            )])
+        else:
+            buttons.append([InlineKeyboardButton(
+                text=f"{day_label} {d.strftime('%d.%m')}{today_marker} — нет постов",
+                callback_data="cal_ignore"
+            )])
+
+    # ── Кнопки перехода к сегодня / назад ─────────────────────────────
+    nav_row = []
+    if week_monday != current_week_monday:
+        nav_row.append(InlineKeyboardButton(
+            text="📅 Текущая неделя",
+            callback_data=f"content_plan_week:{current_week_monday.isoformat()}"
+        ))
+    nav_row.append(InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb))
+    buttons.append(nav_row)
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_content_plan_day_keyboard(
+    day: date,
+    back_cb: str = "adm_content_plan",
+) -> InlineKeyboardMarkup:
+    """Клавиатура для детального просмотра постов на конкретный день."""
+    week_monday = day - timedelta(days=day.weekday())
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="◀️ К неделе",
+            callback_data=f"content_plan_week:{week_monday.isoformat()}"
+        )],
+        [InlineKeyboardButton(text="◀️ Контент план", callback_data=back_cb)],
+    ])
