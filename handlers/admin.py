@@ -4580,6 +4580,19 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                 _mgr = await session.get(Manager, order.manager_id)
                 if _mgr:
                     manager_first_name = _mgr.first_name
+            # Fallback: look up manager via ScheduledPost.created_by for this order
+            if not manager_first_name:
+                _post_res = await session.execute(
+                    select(ScheduledPost).where(ScheduledPost.order_id == order.id)
+                )
+                _post = _post_res.scalar_one_or_none()
+                if _post and _post.created_by:
+                    _mgr_res = await session.execute(
+                        select(Manager).where(Manager.telegram_id == _post.created_by)
+                    )
+                    _mgr = _mgr_res.scalar_one_or_none()
+                    if _mgr:
+                        manager_first_name = _mgr.first_name
             booking_price = float(order.final_price) if order.final_price else None
             booking_payment = order.payment_method
 
@@ -5441,6 +5454,29 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
                         _mgr = await session.get(Manager, order.manager_id)
                         if _mgr:
                             booking_manager_name = _mgr.first_name
+            # Fallback: look up manager by the telegram_id of whoever created the post
+            if not booking_manager_name and post.created_by:
+                _res = await session.execute(
+                    select(Manager).where(Manager.telegram_id == post.created_by)
+                )
+                _mgr = _res.scalar_one_or_none()
+                if _mgr:
+                    booking_manager_name = _mgr.first_name
+
+            # Обновляем статистику менеджера для постов, поданных напрямую (без заказа)
+            if not post.order_id and post.created_by and post.price:
+                _mgr_res = await session.execute(
+                    select(Manager).where(Manager.telegram_id == post.created_by)
+                )
+                _mgr = _mgr_res.scalar_one_or_none()
+                if _mgr and _mgr.is_active:
+                    commission = post.price * (_mgr.commission_rate or Decimal("10")) / 100
+                    _mgr.total_sales = (_mgr.total_sales or 0) + 1
+                    _mgr.total_revenue = (_mgr.total_revenue or Decimal("0")) + post.price
+                    _mgr.balance = (_mgr.balance or Decimal("0")) + commission
+                    _mgr.total_earned = (_mgr.total_earned or Decimal("0")) + commission
+                    if not booking_price:
+                        booking_price = float(post.price)
 
             await session.commit()
 
