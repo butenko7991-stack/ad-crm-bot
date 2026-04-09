@@ -1627,6 +1627,8 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
                 status="pending" if is_owner else "moderation",
                 created_by=message.from_user.id,
                 payment_screenshot=file_id,
+                price=Decimal(str(data.get("mgr_price", 0))) if data.get("mgr_price") else None,
+                format_type=data.get("mgr_format_type"),
             )
             session.add(post)
             await session.commit()

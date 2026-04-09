@@ -5463,6 +5463,21 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
                 if _mgr:
                     booking_manager_name = _mgr.first_name
 
+            # Обновляем статистику менеджера для постов, поданных напрямую (без заказа)
+            if not post.order_id and post.created_by and post.price:
+                _mgr_res = await session.execute(
+                    select(Manager).where(Manager.telegram_id == post.created_by)
+                )
+                _mgr = _mgr_res.scalar_one_or_none()
+                if _mgr and _mgr.is_active:
+                    commission = post.price * (_mgr.commission_rate or Decimal("10")) / 100
+                    _mgr.total_sales = (_mgr.total_sales or 0) + 1
+                    _mgr.total_revenue = (_mgr.total_revenue or Decimal("0")) + post.price
+                    _mgr.balance = (_mgr.balance or Decimal("0")) + commission
+                    _mgr.total_earned = (_mgr.total_earned or Decimal("0")) + commission
+                    if not booking_price:
+                        booking_price = float(post.price)
+
             await session.commit()
 
         await callback.answer("✅ Пост одобрен и поставлен в очередь!", show_alert=True)

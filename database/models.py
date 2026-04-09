@@ -208,6 +208,10 @@ class ScheduledPost(Base):
     
     signature = Column(String(512))  # Текст подписи; формат «Текст | URL» для кликабельной ссылки в теле поста
 
+    # Цена и формат (заполняется при прямой подаче менеджером без заказа)
+    price = Column(Numeric(12, 2))
+    format_type = Column(String(20))
+
     status = Column(String(20), default="pending")
     payment_screenshot = Column(String(500))
     message_id = Column(BigInteger)

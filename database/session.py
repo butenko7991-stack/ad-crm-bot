@@ -115,6 +115,9 @@ async def init_db():
         "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS max_post_id VARCHAR(100)",
         "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS max_posted_at TIMESTAMP",
         "CREATE INDEX IF NOT EXISTS idx_scheduled_posts_max_posted ON scheduled_posts(crosspost_to_max, max_posted_at)",
+        # Цена и формат для прямой подачи постов менеджером
+        "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS price NUMERIC(12, 2)",
+        "ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS format_type VARCHAR(20)",
     ]
 
     for migration in migrations:
