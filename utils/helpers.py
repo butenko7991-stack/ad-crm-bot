@@ -306,19 +306,24 @@ def format_slot_booking(
 
     Формат:
         🧠 Название канала
-        🔅10:10 бронь 55р пдп (Даня)
+        🔅09.04 10:10 бронь 55р пдп (Даня)
         -
         -
         Комментарий:
     """
     ch_emoji = _category_emoji(channel_category)
 
-    time_str = slot_time.strftime("%H:%M") if slot_time else "--:--"
+    if slot_time:
+        date_str = slot_time.strftime("%d.%m")
+        time_str = slot_time.strftime("%H:%M")
+        datetime_str = f"{date_str} {time_str}"
+    else:
+        datetime_str = "--.--.--:--"
     price_str = f"{int(price)}р" if price else ""
     payment = payment_method or ""
     manager_part = f" ({manager_name})" if manager_name else ""
 
-    booking_parts = [time_str, "бронь"]
+    booking_parts = [datetime_str, "бронь"]
     if price_str:
         booking_parts.append(price_str)
     if payment:
