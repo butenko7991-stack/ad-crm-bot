@@ -71,6 +71,7 @@ class ManagerPostStates(StatesGroup):
     entering_content = State()
     entering_signature = State()
     confirming = State()
+    entering_price = State()
     uploading_payment = State()
 
 

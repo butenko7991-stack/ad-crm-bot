@@ -1548,9 +1548,30 @@ async def mgr_post_signature_enter(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "mgr_post_confirm", ManagerPostStates.confirming)
 async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Запрос скрина оплаты перед отправкой поста на модерацию"""
+    """Запрос цены перед загрузкой скриншота оплаты"""
     await callback.answer()
 
+    data = await state.get_data()
+    default_price = data.get("mgr_price", 0)
+
+    await callback.message.edit_text(
+        f"💰 **Укажите цену размещения**\n\n"
+        f"Цена по прайсу канала: **{default_price:,}₽**\n\n"
+        f"Введите сумму вручную или нажмите кнопку, чтобы использовать цену по прайсу.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"✅ Использовать {default_price:,}₽",
+                callback_data="mgr_price_use_default"
+            )],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(ManagerPostStates.entering_price)
+
+
+async def _mgr_ask_payment_screenshot(target, state: FSMContext) -> None:
+    """Показать запрос скриншота оплаты (общий для кнопки и текстового ввода)."""
     payment_link = await get_setting(PAYMENT_LINK_KEY)
     if payment_link:
         safe_link = payment_link.replace("`", "'")
@@ -1558,16 +1579,55 @@ async def mgr_post_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot)
     else:
         payment_info = ""
 
-    await callback.message.edit_text(
+    text = (
         f"💳 **Загрузите скриншот оплаты**\n{payment_info}\n"
         "Оплатите размещение и отправьте фото или документ с подтверждением перевода.\n\n"
-        "После проверки скриншота ваш пост будет передан на модерацию.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")]
-        ]),
-        parse_mode=ParseMode.MARKDOWN
+        "После проверки скриншота ваш пост будет передан на модерацию."
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")]
+    ])
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await target.answer(text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
     await state.set_state(ManagerPostStates.uploading_payment)
+
+
+@router.callback_query(F.data == "mgr_price_use_default", ManagerPostStates.entering_price)
+async def mgr_price_use_default(callback: CallbackQuery, state: FSMContext):
+    """Использовать цену по прайсу канала"""
+    await callback.answer()
+    # mgr_price is already the default; nothing to update
+    await _mgr_ask_payment_screenshot(callback, state)
+
+
+@router.message(ManagerPostStates.entering_price)
+async def mgr_price_enter(message: Message, state: FSMContext):
+    """Принять введённую менеджером цену вручную"""
+    text = (message.text or "").strip().replace(",", "").replace(" ", "")
+    try:
+        custom_price = int(float(text))
+        if custom_price < 0:
+            raise ValueError("negative")
+    except (ValueError, TypeError):
+        data = await state.get_data()
+        default_price = data.get("mgr_price", 0)
+        await message.answer(
+            "❌ Введите корректную сумму (целое число, например `5000`).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"✅ Использовать {default_price:,}₽",
+                    callback_data="mgr_price_use_default"
+                )],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="mgr_back")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await state.update_data(mgr_price=custom_price)
+    await _mgr_ask_payment_screenshot(message, state)
 
 
 @router.message(ManagerPostStates.uploading_payment)
