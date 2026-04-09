@@ -4580,6 +4580,19 @@ async def adm_confirm_payment(callback: CallbackQuery, bot: Bot):
                 _mgr = await session.get(Manager, order.manager_id)
                 if _mgr:
                     manager_first_name = _mgr.first_name
+            # Fallback: look up manager via ScheduledPost.created_by for this order
+            if not manager_first_name:
+                _post_res = await session.execute(
+                    select(ScheduledPost).where(ScheduledPost.order_id == order.id)
+                )
+                _post = _post_res.scalar_one_or_none()
+                if _post and _post.created_by:
+                    _mgr_res = await session.execute(
+                        select(Manager).where(Manager.telegram_id == _post.created_by)
+                    )
+                    _mgr = _mgr_res.scalar_one_or_none()
+                    if _mgr:
+                        manager_first_name = _mgr.first_name
             booking_price = float(order.final_price) if order.final_price else None
             booking_payment = order.payment_method
 
@@ -5441,6 +5454,14 @@ async def adm_approve_post(callback: CallbackQuery, bot: Bot):
                         _mgr = await session.get(Manager, order.manager_id)
                         if _mgr:
                             booking_manager_name = _mgr.first_name
+            # Fallback: look up manager by the telegram_id of whoever created the post
+            if not booking_manager_name and post.created_by:
+                _res = await session.execute(
+                    select(Manager).where(Manager.telegram_id == post.created_by)
+                )
+                _mgr = _res.scalar_one_or_none()
+                if _mgr:
+                    booking_manager_name = _mgr.first_name
 
             await session.commit()
 

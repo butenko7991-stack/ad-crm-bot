@@ -306,7 +306,8 @@ def format_slot_booking(
 
     Формат:
         🧠 Название канала
-        🔅09.04 10:10 бронь 55р пдп (Даня)
+        🔅09.04 10:10 бронь 55р пдп
+        👤 Менеджер: Даня
         -
         -
         Комментарий:
@@ -321,7 +322,6 @@ def format_slot_booking(
         datetime_str = "--.--.--:--"
     price_str = f"{int(price)}р" if price else ""
     payment = payment_method or ""
-    manager_part = f" ({manager_name})" if manager_name else ""
 
     booking_parts = [datetime_str, "бронь"]
     if price_str:
@@ -329,13 +329,13 @@ def format_slot_booking(
     if payment:
         booking_parts.append(payment)
 
-    booking_line = "🔅" + " ".join(booking_parts) + manager_part
+    booking_line = "🔅" + " ".join(booking_parts)
 
     lines = [
         f"{ch_emoji} {channel_name}",
         booking_line,
-        "-",
-        "-",
-        "Комментарий:",
     ]
+    if manager_name:
+        lines.append(f"👤 Менеджер: {manager_name}")
+    lines += ["-", "-", "Комментарий:"]
     return "\n".join(lines)
