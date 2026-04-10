@@ -5558,6 +5558,21 @@ async def adm_reject_post(callback: CallbackQuery, bot: Bot):
             creator_id = post.created_by
             channel = await session.get(Channel, post.channel_id)
             channel_name = channel.name if channel else "—"
+
+            # Освобождаем слот, если он был забронирован менеджером
+            if post.channel_id and post.scheduled_time:
+                post_local_datetime = post.scheduled_time + LOCAL_TZ_OFFSET
+                slot_res = await session.execute(
+                    select(Slot).where(
+                        Slot.channel_id == post.channel_id,
+                        Slot.slot_date == post_local_datetime.date(),
+                        Slot.slot_time == post_local_datetime.time(),
+                    )
+                )
+                slot = slot_res.scalar_one_or_none()
+                if slot and slot.status == "booked":
+                    slot.status = "available"
+
             await session.commit()
 
         await callback.answer("❌ Пост отклонён", show_alert=True)

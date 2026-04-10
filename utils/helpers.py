@@ -165,13 +165,16 @@ def channel_link(name: str, username: Optional[str]) -> str:
     return f"[{safe_name}](https://t.me/{username})"
 
 
-def format_channel_stats_for_group(channel, order_id: Optional[int] = None) -> str:
+def format_channel_stats_for_group(
+    channel, order_id: Optional[int] = None, manager_name: Optional[str] = None
+) -> str:
     """Форматировать карточку статистики канала для чата менеджеров.
 
     Формат:
         📣 [Название канала](https://t.me/username) 👥 6,991
         👁 24ч: 403 | 48ч: 545 | 72ч: 564
         📈 ER24: 6.22%
+        👤 Менеджер: Имя  ← присутствует только если передан manager_name
     """
     name = channel.name or "Канал"
     username = getattr(channel, "username", None)
@@ -187,6 +190,9 @@ def format_channel_stats_for_group(channel, order_id: Optional[int] = None) -> s
 
     if order_id:
         text += f"\n\n💼 Заказ #{order_id}"
+
+    if manager_name:
+        text += f"\n👤 Менеджер: {manager_name}"
 
     return text
 

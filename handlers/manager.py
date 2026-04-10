@@ -1692,6 +1692,8 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
                 format_type=data.get("mgr_format_type"),
             )
             session.add(post)
+            # Помечаем слот как забронированный, чтобы предотвратить двойное бронирование
+            slot.status = "booked"
             await session.commit()
             post_id = post.id
 
