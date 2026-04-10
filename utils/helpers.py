@@ -174,7 +174,7 @@ def format_channel_stats_for_group(
         📣 [Название канала](https://t.me/username) 👥 6,991
         👁 24ч: 403 | 48ч: 545 | 72ч: 564
         📈 ER24: 6.22%
-        👤 Менеджер: Имя
+        👤 Менеджер: Имя  ← присутствует только если передан manager_name
     """
     name = channel.name or "Канал"
     username = getattr(channel, "username", None)

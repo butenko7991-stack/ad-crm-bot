@@ -5561,12 +5561,12 @@ async def adm_reject_post(callback: CallbackQuery, bot: Bot):
 
             # Освобождаем слот, если он был забронирован менеджером
             if post.channel_id and post.scheduled_time:
-                local_dt = post.scheduled_time + LOCAL_TZ_OFFSET
+                post_local_datetime = post.scheduled_time + LOCAL_TZ_OFFSET
                 slot_res = await session.execute(
                     select(Slot).where(
                         Slot.channel_id == post.channel_id,
-                        Slot.slot_date == local_dt.date(),
-                        Slot.slot_time == local_dt.time(),
+                        Slot.slot_date == post_local_datetime.date(),
+                        Slot.slot_time == post_local_datetime.time(),
                     )
                 )
                 slot = slot_res.scalar_one_or_none()
