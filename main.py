@@ -18,7 +18,7 @@ from sqlalchemy import select, update as sa_update
 
 from config import BOT_TOKEN, MAX_BOT_TOKEN, ADMIN_IDS, ADMIN_PASSWORD, LOCAL_TZ_OFFSET
 from database import init_db, async_session_maker
-from database.models import Slot, ScheduledPost, Channel, PostAnalytics
+from database.models import Slot, ScheduledPost, Channel, PostAnalytics, Manager
 from handlers import setup_routers
 from services.broadcast import send_update_broadcast
 from services.channel_collector import refresh_all_channels
@@ -66,7 +66,7 @@ async def cleanup_expired_slots():
         logger.error(f"Ошибка очистки слотов: {traceback.format_exc()}")
 
 
-async def _reset_stale_publishing_posts():
+async def _reset_stale_publishing_posts(bot: Bot = None):
     """Переводим «застрявшие» посты из publishing → error при старте бота.
 
     Такие посты возникают, если предыдущий запуск завершился аварийно между
@@ -92,6 +92,21 @@ async def _reset_stale_publishing_posts():
                     f"Предыдущий запуск бота, вероятно, завершился в процессе "
                     f"публикации. При необходимости перезапустите посты вручную."
                 )
+                if bot:
+                    notify_text = (
+                        f"⚠️ При запуске найдено {len(stale_ids)} поста(ов) "
+                        f"в статусе 'publishing' (ID: {stale_ids}).\n\n"
+                        f"Они переведены в статус 'error'. "
+                        f"Проверьте и при необходимости перезапустите их вручную."
+                    )
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(admin_id, notify_text, parse_mode=None)
+                        except Exception:
+                            logger.warning(
+                                f"Не удалось уведомить админа {admin_id} о застрявших постах",
+                                exc_info=True,
+                            )
     except Exception:
         logger.error(f"Ошибка сброса застрявших постов: {traceback.format_exc()}")
 
@@ -141,9 +156,29 @@ async def _do_publish_scheduled_posts(bot: Bot):
                     logger.warning(f"Канал #{post.channel_id} не найден для поста #{post.id}")
                     post.status = "error"
                     await session.commit()
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(
+                                admin_id,
+                                f"⚠️ Пост #{post.id} не опубликован: канал #{post.channel_id} не найден.\n"
+                                f"Проверьте настройки канала.",
+                                parse_mode=None,
+                            )
+                        except Exception:
+                            pass
                     continue
 
                 channel_tg_id = channel.telegram_id
+
+                # Ищем менеджера, создавшего пост
+                post_manager_name = None
+                if post.created_by:
+                    mgr_result = await session.execute(
+                        select(Manager).where(Manager.telegram_id == post.created_by)
+                    )
+                    mgr = mgr_result.scalar_one_or_none()
+                    if mgr:
+                        post_manager_name = mgr.first_name
 
                 # Строим текст/подпись поста с учётом подписи со скрытой ссылкой
                 post_parse_mode = None
@@ -233,12 +268,32 @@ async def _do_publish_scheduled_posts(bot: Bot):
                     logger.error(f"Ошибка публикации поста #{post.id}: {traceback.format_exc()}")
                     post.status = "error"
                     await session.commit()
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(
+                                admin_id,
+                                f"⚠️ Пост #{post.id} не опубликован в канале {channel.name}.\n"
+                                f"Проверьте пост и при необходимости перезапустите его вручную.",
+                                parse_mode=None,
+                            )
+                        except Exception:
+                            pass
                     continue
 
                 if sent is None:
                     logger.error(f"Пост #{post.id}: sent=None после отправки — пропускаем")
                     post.status = "error"
                     await session.commit()
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(
+                                admin_id,
+                                f"⚠️ Пост #{post.id} не опубликован в канале {channel.name} (нет ответа от Telegram).\n"
+                                f"Проверьте пост и при необходимости перезапустите его вручную.",
+                                parse_mode=None,
+                            )
+                        except Exception:
+                            pass
                     continue
 
                 # Пост отправлен — фиксируем статус «опубликован» немедленно.
@@ -313,7 +368,7 @@ async def _do_publish_scheduled_posts(bot: Bot):
                     try:
                         await bot.send_message(
                             mgr_chat_id,
-                            format_channel_stats_for_group(channel),
+                            format_channel_stats_for_group(channel, manager_name=post_manager_name),
                             parse_mode="Markdown",
                         )
                     except Exception:
@@ -598,7 +653,7 @@ async def main():
     await init_db()
 
     # Сброс «застрявших» постов из предыдущего запуска
-    await _reset_stale_publishing_posts()
+    await _reset_stale_publishing_posts(bot)
 
     # Планировщик задач
     scheduler = AsyncIOScheduler()
