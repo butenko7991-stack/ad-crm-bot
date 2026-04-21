@@ -57,7 +57,7 @@ async def back_to_channels(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in back_to_channels: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== ВЫБОР КАНАЛА ====================
@@ -136,7 +136,7 @@ async def select_channel(callback: CallbackQuery, state: FSMContext):
         await state.set_state(BookingStates.selecting_date)
     except Exception as e:
         logger.error(f"Error in select_channel: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== ВЫБОР ДАТЫ ====================
@@ -176,7 +176,11 @@ async def cal_nav(callback: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError):
         logger.warning(f"cal_nav: malformed callback data: {callback.data!r}")
         return
+
+    data = await state.get_data()
+    channel_id = data.get("channel_id")
     if not channel_id:
+        logger.warning("cal_nav: channel_id missing from FSM state — cannot navigate calendar")
         return
 
     try:
@@ -193,7 +197,7 @@ async def cal_nav(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_reply_markup(
             reply_markup=get_calendar_keyboard(slots, year, month)
         )
-    except Exception as e:
+    except Exception:
         logger.error(f"Error in cal_nav: {traceback.format_exc()}")
 
 
@@ -234,7 +238,7 @@ async def select_date(callback: CallbackQuery, state: FSMContext):
         await state.set_state(BookingStates.selecting_time)
     except Exception as e:
         logger.error(f"Error in select_date: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== ВЫБОР ВРЕМЕНИ ====================
@@ -643,7 +647,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in confirm_order: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
         await state.clear()
 
 
@@ -734,5 +738,5 @@ async def receive_payment_screenshot(message: Message, state: FSMContext, bot: B
                 pass
     except Exception as e:
         logger.error(f"Error in receive_payment_screenshot: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
         await state.clear()

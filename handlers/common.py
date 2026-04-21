@@ -232,7 +232,7 @@ async def cmd_catalog(message: Message):
         )
     except Exception as e:
         logger.error(f"Error in cmd_catalog: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(Command("training"))
@@ -312,7 +312,7 @@ async def btn_my_orders(message: Message):
         await message.answer(text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_my_orders: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "💼 Стать менеджером")
@@ -435,7 +435,7 @@ async def btn_leaderboard(message: Message):
         await message.answer(text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_leaderboard: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "💰 Баланс")
@@ -478,7 +478,7 @@ async def btn_balance(message: Message):
         )
     except Exception as e:
         logger.error(f"Error in btn_balance: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "📋 Шаблоны")
@@ -520,7 +520,7 @@ async def btn_templates(message: Message):
         )
     except Exception as e:
         logger.error(f"Error in btn_templates: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== ВЫБОР РОЛИ ====================
@@ -615,7 +615,7 @@ async def btn_buyer_analytics(message: Message):
         await message.answer(text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_buyer_analytics: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== КНОПКИ КОНТЕНЩИКА ====================

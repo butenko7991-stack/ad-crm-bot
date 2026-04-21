@@ -126,7 +126,7 @@ async def manager_register(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in manager_register: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("mgr_tz_register:"), ManagerRegisterStates.selecting_timezone)
@@ -181,7 +181,7 @@ async def manager_register_tz_selected(callback: CallbackQuery, state: FSMContex
     except Exception as e:
         logger.error(f"Error in manager_register_tz_selected: {traceback.format_exc()}")
         await state.clear()
-        await callback.message.answer(f"❌ Ошибка регистрации: {str(e)[:100]}")
+        await callback.message.answer("❌ Ошибка регистрации. Попробуйте ещё раз.")
 
 
 # ==================== КАБИНЕТ МЕНЕДЖЕРА / НАСТРОЙКИ ====================
@@ -216,7 +216,7 @@ async def mgr_settings(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_settings: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data == "mgr_change_timezone")
@@ -245,7 +245,7 @@ async def mgr_change_timezone(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in mgr_change_timezone: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("mgr_tz_settings:"), ManagerSettingsStates.selecting_timezone)
@@ -284,7 +284,7 @@ async def mgr_settings_tz_selected(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         logger.error(f"Error in mgr_settings_tz_selected: {traceback.format_exc()}")
         await state.clear()
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 @router.callback_query(F.data == "mgr_back")
 async def mgr_back(callback: CallbackQuery):
@@ -309,7 +309,7 @@ async def mgr_back(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_back: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== АНАЛИЗ КАНАЛА ДЛЯ МЕНЕДЖЕРА ====================
@@ -380,7 +380,7 @@ async def analyze_channel_for_manager(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in analyze_channel_for_manager: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data == "back_to_sales")
@@ -437,7 +437,7 @@ async def back_to_sales(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in back_to_sales: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== КАК РАБОТАЕТ СХЕМА ====================
@@ -579,7 +579,7 @@ async def mgr_my_sales(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_my_sales: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== МОИ КЛИЕНТЫ ====================
@@ -631,7 +631,7 @@ async def mgr_my_clients(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_my_clients: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== ШАБЛОНЫ ====================
@@ -707,7 +707,7 @@ async def mgr_leaderboard(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_leaderboard: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("lb:"))
@@ -758,7 +758,7 @@ async def leaderboard_by_metric(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in leaderboard_by_metric: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== РЕФ-ССЫЛКА ====================
@@ -792,7 +792,7 @@ async def copy_ref_link(callback: CallbackQuery, bot: Bot):
         )
     except Exception as e:
         logger.error(f"Error in copy_ref_link: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== ВЫВОД СРЕДСТВ ====================
@@ -840,7 +840,7 @@ async def request_payout(callback: CallbackQuery, state: FSMContext):
         await state.set_state(ManagerStates.payout_amount)
     except Exception as e:
         logger.error(f"Error in request_payout: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.message(ManagerStates.payout_amount)
@@ -878,7 +878,7 @@ async def receive_payout_amount(message: Message, state: FSMContext):
         await state.set_state(ManagerStates.payout_method)
     except Exception as e:
         logger.error(f"Error in receive_payout_amount: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("payout:"), ManagerStates.payout_method)
@@ -946,7 +946,7 @@ async def receive_payout_details(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in receive_payout_details: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
         await state.clear()
 
 
@@ -1000,7 +1000,7 @@ async def payout_history(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in payout_history: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== МОИ ПОСТЫ ====================
@@ -1069,7 +1069,7 @@ async def mgr_my_posts(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in mgr_my_posts: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 # ==================== ПОДАЧА ПОСТА НА МОДЕРАЦИЮ ====================
@@ -1120,7 +1120,7 @@ async def mgr_submit_post_start(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in mgr_submit_post_start: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("mgr_submit_post:"))
@@ -1185,7 +1185,7 @@ async def mgr_submit_post_channel(callback: CallbackQuery, state: FSMContext):
         await state.set_state(ManagerPostStates.selecting_date)
     except Exception as e:
         logger.error(f"Error in mgr_submit_post_channel: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("mgr_cal_nav:"), ManagerPostStates.selecting_date)
@@ -1293,7 +1293,7 @@ async def mgr_post_select_date(callback: CallbackQuery, state: FSMContext):
         await state.set_state(ManagerPostStates.selecting_time)
     except Exception as e:
         logger.error(f"Error in mgr_post_select_date: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("mgr_post_time:"))
@@ -1762,5 +1762,5 @@ async def mgr_post_receive_payment(message: Message, state: FSMContext, bot: Bot
 
     except Exception as e:
         logger.error(f"Error in mgr_post_receive_payment: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:200]}")
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
         await state.clear()

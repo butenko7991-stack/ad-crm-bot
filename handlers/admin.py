@@ -23,6 +23,7 @@ from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates, AdminCrosspostSettingsStates
 from utils.helpers import escape_md, utc_now
 from utils.constants import MSG_AUTH_REQUIRED, FMT_DATETIME
+from utils.auth import BruteForceGuard, BRUTE_FORCE_MAX_ATTEMPTS
 from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY, CROSSPOST_ENABLED_KEY, CROSSPOST_DAILY_LIMIT_KEY, MAX_CROSSPOST_CHAT_ID_KEY, DAILY_SCHEDULE_EMPTY_REMINDER_ENABLED_KEY, is_daily_schedule_empty_reminder_enabled
 from services.crosspost import is_crosspost_enabled, get_crosspost_daily_limit, get_daily_crosspost_count, get_max_crosspost_chat_id
 from services.ai_trainer import ai_trainer_service
@@ -62,6 +63,11 @@ class _TimedAuthSet:
 
 
 authenticated_admins = _TimedAuthSet()
+
+
+# ==================== ЗАЩИТА ОТ БРУТФОРСА ====================
+
+_admin_brute_guard = BruteForceGuard()
 
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -162,6 +168,16 @@ async def _notify_manager_group(bot: Bot, channel, order_id: int = None):
 async def request_admin_password(callback: CallbackQuery, state: FSMContext):
     """Запросить пароль админа"""
     await callback.answer()
+
+    user_id = callback.from_user.id
+    if _admin_brute_guard.is_locked(user_id):
+        remaining = _admin_brute_guard.unlock_in(user_id)
+        mins = int(remaining.total_seconds() // 60) + 1
+        await callback.message.answer(
+            f"🔒 Слишком много неверных попыток. Попробуйте через {mins} мин."
+        )
+        return
+
     await callback.message.answer("🔐 Введите пароль администратора:")
     await state.set_state(AdminPasswordState.waiting_admin_password)
 
@@ -173,9 +189,21 @@ async def check_admin_password(message: Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
-    
+
+    user_id = message.from_user.id
+
+    if _admin_brute_guard.is_locked(user_id):
+        remaining = _admin_brute_guard.unlock_in(user_id)
+        mins = int(remaining.total_seconds() // 60) + 1
+        await state.clear()
+        await message.answer(
+            f"🔒 Слишком много неверных попыток. Попробуйте через {mins} мин."
+        )
+        return
+
     if message.text == ADMIN_PASSWORD:
-        authenticated_admins.add(message.from_user.id)
+        _admin_brute_guard.clear(user_id)
+        authenticated_admins.add(user_id)
         await state.clear()
         await message.answer(
             "✅ **Добро пожаловать в админ-панель!**",
@@ -183,8 +211,17 @@ async def check_admin_password(message: Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN
         )
     else:
-        await message.answer("❌ Неверный пароль")
+        attempts = _admin_brute_guard.record_failure(user_id)
+        remaining_tries = max(0, BRUTE_FORCE_MAX_ATTEMPTS - attempts)
         await state.clear()
+        if remaining_tries > 0:
+            await message.answer(
+                f"❌ Неверный пароль. Осталось попыток: {remaining_tries}"
+            )
+        else:
+            await message.answer(
+                "🔒 Доступ заблокирован на 5 минут из-за превышения числа попыток."
+            )
 
 
 @router.callback_query(F.data == "admin_logout")
@@ -248,7 +285,7 @@ async def adm_channels(callback: CallbackQuery):
         await safe_edit_message(callback.message, text, InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as e:
         logger.error(f"Error in adm_channels: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data.startswith("adm_ch:"))
@@ -275,7 +312,7 @@ async def adm_channel_settings(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in adm_channel_settings: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== ИЗМЕНЕНИЕ ЦЕН ====================
@@ -331,7 +368,7 @@ async def adm_channel_prices(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in adm_channel_prices: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data.startswith("set_price:"))
@@ -408,7 +445,7 @@ async def receive_new_price(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in receive_new_price: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
         await state.clear()
 
 
@@ -474,7 +511,7 @@ async def auto_calculate_prices(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in auto_calculate_prices: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data.startswith("set_channel_cpm:"))
@@ -554,7 +591,7 @@ async def receive_channel_cpm(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in receive_channel_cpm: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
         await state.clear()
 
 
@@ -650,7 +687,7 @@ async def receive_channel_username(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in receive_channel_username: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
         await state.clear()
 
 
@@ -942,7 +979,7 @@ async def adm_slots_gen_create(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in adm_slots_gen_create: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка: {str(e)[:100]}")
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
 
 
 @router.callback_query(F.data.startswith("adm_slots_clear:"))
@@ -1160,7 +1197,7 @@ async def select_channel_category(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error adding channel: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
         await state.clear()
 
 
@@ -1899,7 +1936,7 @@ async def adm_cpm_receive_value(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error saving CPM: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
         await state.clear()
 
 
@@ -2587,7 +2624,7 @@ async def pa_receive_comments(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in pa_receive_comments: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data.startswith("pa_ai:"))
@@ -3590,7 +3627,7 @@ async def autopost_create_confirm(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         await state.clear()
         logger.error(f"Error in autopost_create_confirm: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка при создании поста:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== НАСТРОЙКИ ====================
@@ -5795,7 +5832,7 @@ async def adm_competition_metric(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in adm_competition_metric: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode="Markdown")
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode="Markdown")
         await state.clear()
 
 
@@ -5831,7 +5868,7 @@ async def btn_adm_channels(message: Message):
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_channels: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "💳 Оплаты")
@@ -5861,7 +5898,7 @@ async def btn_adm_payments(message: Message):
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_payments: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "👥 Менеджеры")
@@ -5889,7 +5926,7 @@ async def btn_adm_managers(message: Message):
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_managers: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "📊 Статистика")
@@ -5903,7 +5940,7 @@ async def btn_adm_stats(message: Message):
         await message.answer(text, reply_markup=get_metrics_menu(), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_stats: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "📝 Модерация")
@@ -5936,7 +5973,7 @@ async def btn_adm_moderation(message: Message):
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_moderation: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "🏆 Лидерборд")
@@ -5966,7 +6003,7 @@ async def btn_adm_leaderboard(message: Message):
         ]), parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in btn_adm_leaderboard: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка:\n`{str(e)[:200]}`", parse_mode=ParseMode.MARKDOWN)
+        await message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.message(F.text == "⚙️ Настройки")
@@ -6167,7 +6204,7 @@ async def adm_promo_receive_max_uses(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error creating promo: {traceback.format_exc()}")
-        await message.answer(f"❌ Ошибка при создании промокода: {str(e)[:100]}")
+        await message.answer("❌ Ошибка при создании промокода. Попробуйте ещё раз.")
         await state.clear()
 
 
@@ -6258,7 +6295,7 @@ async def adm_send_daily_schedule(callback: CallbackQuery, bot: Bot):
         logger.info(f"Расписание на {today} отправлено вручную ({len(posts_data)} постов)")
     except Exception as e:
         logger.error(f"Error in adm_send_daily_schedule: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== КОНТЕНТ ПЛАН ====================
