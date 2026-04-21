@@ -523,9 +523,10 @@ async def send_daily_schedule(bot: Bot):
                     "status": post.status,
                 })
 
-        if not posts_data and not await is_daily_schedule_empty_reminder_enabled():
-            logger.info(f"Расписание на {today} пустое — уведомление в чат менеджеров отключено")
-            return
+        if not posts_data:
+            if not await is_daily_schedule_empty_reminder_enabled():
+                logger.info(f"Расписание на {today} пустое — уведомление в чат менеджеров отключено")
+                return
 
         text = format_daily_schedule(posts_data, today)
         await bot.send_message(mgr_chat_id, text, parse_mode=None)
