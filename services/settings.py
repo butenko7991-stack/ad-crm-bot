@@ -20,6 +20,7 @@ PAYMENT_LINK_KEY = "payment_link"
 CROSSPOST_ENABLED_KEY = "crosspost_enabled"
 CROSSPOST_DAILY_LIMIT_KEY = "crosspost_daily_limit"
 MAX_CROSSPOST_CHAT_ID_KEY = "max_crosspost_chat_id"
+DAILY_SCHEDULE_EMPTY_REMINDER_ENABLED_KEY = "daily_schedule_empty_reminder_enabled"
 
 
 async def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
@@ -69,3 +70,9 @@ async def get_manager_group_chat_id() -> Optional[int]:
         except (ValueError, TypeError):
             logger.warning(f"Некорректное значение manager_group_chat_id в БД: {db_val!r}")
     return _env_val
+
+
+async def is_daily_schedule_empty_reminder_enabled() -> bool:
+    """Нужно ли отправлять в чат менеджеров утреннее сообщение при пустом расписании."""
+    val = await get_setting(DAILY_SCHEDULE_EMPTY_REMINDER_ENABLED_KEY, default="true")
+    return (val or "").lower() in ("1", "true", "yes")

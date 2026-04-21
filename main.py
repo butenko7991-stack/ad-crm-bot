@@ -22,7 +22,7 @@ from database.models import Slot, ScheduledPost, Channel, PostAnalytics, Manager
 from handlers import setup_routers
 from services.broadcast import send_update_broadcast
 from services.channel_collector import refresh_all_channels
-from services.settings import get_manager_group_chat_id
+from services.settings import get_manager_group_chat_id, is_daily_schedule_empty_reminder_enabled
 from services.crosspost import crosspost_post_to_max
 from services.error_library import lookup_error, record_unknown_error
 from utils.helpers import format_channel_stats_for_group, format_daily_schedule, utc_now
@@ -522,6 +522,11 @@ async def send_daily_schedule(bot: Bot):
                     "manager_name": manager.first_name if manager else None,
                     "status": post.status,
                 })
+
+        if not posts_data:
+            if not await is_daily_schedule_empty_reminder_enabled():
+                logger.info(f"Расписание на {today} пустое — уведомление в чат менеджеров отключено")
+                return
 
         text = format_daily_schedule(posts_data, today)
         await bot.send_message(mgr_chat_id, text, parse_mode=None)

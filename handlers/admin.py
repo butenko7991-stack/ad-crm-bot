@@ -23,7 +23,7 @@ from utils import AdminChannelStates, AdminPasswordState, AdminCompetitionStates
 from utils.states import AdminCPMStates, AdminAutopostingStates, AdminCreatePostStates, AdminSlotStates, AdminManagerStates, AdminEditPostStates, AdminImprovementStates, AdminCrosspostSettingsStates
 from utils.helpers import escape_md, utc_now
 from utils.constants import MSG_AUTH_REQUIRED, FMT_DATETIME
-from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY, CROSSPOST_ENABLED_KEY, CROSSPOST_DAILY_LIMIT_KEY, MAX_CROSSPOST_CHAT_ID_KEY
+from services import gamification_service, get_manager_group_chat_id, set_setting, MANAGER_GROUP_CHAT_ID_KEY, get_setting, PAYMENT_LINK_KEY, CROSSPOST_ENABLED_KEY, CROSSPOST_DAILY_LIMIT_KEY, MAX_CROSSPOST_CHAT_ID_KEY, DAILY_SCHEDULE_EMPTY_REMINDER_ENABLED_KEY, is_daily_schedule_empty_reminder_enabled
 from services.crosspost import is_crosspost_enabled, get_crosspost_daily_limit, get_daily_crosspost_count, get_max_crosspost_chat_id
 from services.ai_trainer import ai_trainer_service
 from services.diagnostics import run_diagnostics, run_deep_diagnostics, gather_business_metrics, get_improvement_suggestions
@@ -3644,18 +3644,22 @@ async def adm_manager_chat_settings(callback: CallbackQuery):
     await callback.answer()
 
     chat_id = await get_manager_group_chat_id()
+    empty_reminder_enabled = await is_daily_schedule_empty_reminder_enabled()
+    empty_reminder_status = "🟢 Включено" if empty_reminder_enabled else "🔴 Выключено"
 
     if chat_id:
         status = (
             f"🟢 **Чат менеджеров подключён**\n\n"
             f"ID чата: `{chat_id}`\n\n"
             f"Бот будет отправлять статистику канала в этот чат при каждом "
-            f"подтверждении оплаты и автопубликации поста."
+            f"подтверждении оплаты и автопубликации поста.\n\n"
+            f"Утреннее сообщение «нет запланированных публикаций»: {empty_reminder_status}"
         )
     else:
         status = (
             "🔴 **Чат менеджеров не настроен**\n\n"
             "Статистика каналов при публикации не отправляется.\n\n"
+            f"Утреннее сообщение «нет запланированных публикаций»: {empty_reminder_status}\n\n"
             "**Как подключить:**\n"
             "1️⃣ Создайте группу в Telegram\n"
             "2️⃣ Добавьте этого бота в группу как администратора\n"
@@ -3663,10 +3667,17 @@ async def adm_manager_chat_settings(callback: CallbackQuery):
             "4️⃣ Нажмите «✏️ Изменить» и введите полученный ID"
         )
 
+    toggle_label = (
+        "🔴 Выключить напоминание «нет постов»"
+        if empty_reminder_enabled
+        else "🟢 Включить напоминание «нет постов»"
+    )
+
     await safe_edit_message(
         callback.message,
         status,
         InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=toggle_label, callback_data="adm_toggle_empty_schedule_reminder")],
             [InlineKeyboardButton(text="✏️ Изменить ID чата", callback_data="adm_manager_chat_input")],
             [InlineKeyboardButton(text="🗑 Сбросить", callback_data="adm_manager_chat_clear")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_settings")],
@@ -3739,6 +3750,24 @@ async def adm_manager_chat_clear(callback: CallbackQuery):
             [InlineKeyboardButton(text="◀️ К настройкам", callback_data="adm_settings")]
         ])
     )
+
+
+@router.callback_query(F.data == "adm_toggle_empty_schedule_reminder")
+async def adm_toggle_empty_schedule_reminder(callback: CallbackQuery):
+    """Включить/выключить утреннее уведомление о пустом расписании в чате менеджеров."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
+        return
+
+    await callback.answer()
+    current = await is_daily_schedule_empty_reminder_enabled()
+    new_val = "false" if current else "true"
+    await set_setting(
+        DAILY_SCHEDULE_EMPTY_REMINDER_ENABLED_KEY,
+        new_val,
+        updated_by=callback.from_user.id,
+    )
+    await adm_manager_chat_settings(callback)
 
 
 # ==================== ПЛАТЁЖНЫЕ РЕКВИЗИТЫ ====================
