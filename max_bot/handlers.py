@@ -665,7 +665,6 @@ def setup_max_dispatcher() -> Dispatcher:
         else:
             attempts = _max_brute_guard.record_failure(max_user_id)
             remaining_tries = max(0, BRUTE_FORCE_MAX_ATTEMPTS - attempts)
-            await context.clear()
             if remaining_tries > 0:
                 await event.message.answer(
                     f"❌ Неверный пароль. Осталось попыток: {remaining_tries}"
@@ -674,6 +673,7 @@ def setup_max_dispatcher() -> Dispatcher:
                 await event.message.answer(
                     "🔒 Доступ заблокирован на 5 минут из-за превышения числа попыток."
                 )
+            await context.clear()
 
     @dp.message_callback(F.callback.payload == "adm_logout")
     async def cb_adm_logout(event: MessageCallback):

@@ -213,7 +213,6 @@ async def check_admin_password(message: Message, state: FSMContext):
     else:
         attempts = _admin_brute_guard.record_failure(user_id)
         remaining_tries = max(0, BRUTE_FORCE_MAX_ATTEMPTS - attempts)
-        await state.clear()
         if remaining_tries > 0:
             await message.answer(
                 f"❌ Неверный пароль. Осталось попыток: {remaining_tries}"
@@ -222,6 +221,7 @@ async def check_admin_password(message: Message, state: FSMContext):
             await message.answer(
                 "🔒 Доступ заблокирован на 5 минут из-за превышения числа попыток."
             )
+        await state.clear()
 
 
 @router.callback_query(F.data == "admin_logout")

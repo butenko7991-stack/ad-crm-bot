@@ -199,6 +199,10 @@ async def cal_nav(callback: CallbackQuery, state: FSMContext):
         )
     except Exception:
         logger.error(f"Error in cal_nav: {traceback.format_exc()}")
+        try:
+            await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.")
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("date:"), BookingStates.selecting_date)
