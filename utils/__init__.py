@@ -20,6 +20,7 @@ from utils.constants import (
     MSG_AUTH_REQUIRED,
     MSG_NOT_MANAGER,
     MSG_CHANNEL_NOT_FOUND,
+    MSG_INTERNAL_ERROR,
     FMT_DATETIME,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "AdminCreatePostStates", "AdminPromoStates", "AdminSlotStates",
     "AdminManagerStates", "AdminSettingsStates", "AdminImprovementStates",
     "ManagerRegisterStates", "ManagerSettingsStates", "AdminCrosspostSettingsStates",
-    "MSG_AUTH_REQUIRED", "MSG_NOT_MANAGER", "MSG_CHANNEL_NOT_FOUND", "FMT_DATETIME",
+    "MSG_AUTH_REQUIRED", "MSG_NOT_MANAGER", "MSG_CHANNEL_NOT_FOUND",
+    "MSG_INTERNAL_ERROR", "FMT_DATETIME",
 ]

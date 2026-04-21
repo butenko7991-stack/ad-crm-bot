@@ -81,7 +81,7 @@ async def show_lessons(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Error in show_lessons: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data == "completed_lessons")
@@ -121,7 +121,7 @@ async def completed_lessons(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in completed_lessons: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data.startswith("lesson:"))
@@ -293,7 +293,7 @@ async def training_progress(callback: CallbackQuery):
         )
     except Exception as e:
         logger.error(f"Error in training_progress: {traceback.format_exc()}")
-        await callback.message.answer(f"❌ Ошибка:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer("❌ Произошла внутренняя ошибка. Попробуйте ещё раз.", parse_mode=ParseMode.MARKDOWN)
 
 
 # ==================== AI ТРЕНЕР ====================

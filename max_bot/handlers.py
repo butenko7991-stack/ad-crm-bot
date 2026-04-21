@@ -35,12 +35,18 @@ from max_bot.keyboards import (
     get_admin_login_markup,
 )
 from utils.constants import MSG_AUTH_REQUIRED, MSG_NOT_MANAGER, MSG_CHANNEL_NOT_FOUND
+from utils.helpers import utc_now
+from utils.auth import BruteForceGuard, BRUTE_FORCE_MAX_ATTEMPTS
 
 
 logger = logging.getLogger(__name__)
 
 # Множество авторизованных админов (по аналогии с Telegram-ботом)
 authenticated_admins_max: set = set()
+
+# ==================== ЗАЩИТА ОТ БРУТФОРСА (Max-бот) ====================
+
+_max_brute_guard = BruteForceGuard()
 
 
 # ==================== FSM СОСТОЯНИЯ ====================
@@ -621,6 +627,11 @@ def setup_max_dispatcher() -> Dispatcher:
         if max_user_id not in ADMIN_IDS:
             await event.answer(new_text="❌ Нет доступа")
             return
+        if _max_brute_guard.is_locked(max_user_id):
+            remaining = _max_brute_guard.unlock_in(max_user_id)
+            mins = int(remaining.total_seconds() // 60) + 1
+            await event.answer(new_text=f"🔒 Заблокировано. Попробуйте через {mins} мин.")
+            return
         await context.set_state(AdminStates.waiting_password)
         await event.answer(new_text="Введите пароль администратора")
         await event.bot.send_message(
@@ -634,8 +645,17 @@ def setup_max_dispatcher() -> Dispatcher:
         if max_user_id not in ADMIN_IDS:
             await context.clear()
             return
+        if _max_brute_guard.is_locked(max_user_id):
+            remaining = _max_brute_guard.unlock_in(max_user_id)
+            mins = int(remaining.total_seconds() // 60) + 1
+            await context.clear()
+            await event.message.answer(
+                f"🔒 Слишком много неверных попыток. Попробуйте через {mins} мин."
+            )
+            return
         entered = event.message.body.text.strip()
         if entered == ADMIN_PASSWORD:
+            _max_brute_guard.clear(max_user_id)
             authenticated_admins_max.add(max_user_id)
             await context.clear()
             await event.message.answer(
@@ -643,7 +663,17 @@ def setup_max_dispatcher() -> Dispatcher:
                 attachments=get_admin_panel_markup(),
             )
         else:
-            await event.message.answer("❌ Неверный пароль. Попробуйте ещё раз:")
+            attempts = _max_brute_guard.record_failure(max_user_id)
+            remaining_tries = max(0, BRUTE_FORCE_MAX_ATTEMPTS - attempts)
+            if remaining_tries > 0:
+                await event.message.answer(
+                    f"❌ Неверный пароль. Осталось попыток: {remaining_tries}"
+                )
+            else:
+                await event.message.answer(
+                    "🔒 Доступ заблокирован на 5 минут из-за превышения числа попыток."
+                )
+            await context.clear()
 
     @dp.message_callback(F.callback.payload == "adm_logout")
     async def cb_adm_logout(event: MessageCallback):
