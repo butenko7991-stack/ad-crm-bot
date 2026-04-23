@@ -146,8 +146,9 @@ async def _do_publish_scheduled_posts(bot: Bot):
                     .values(status="publishing")
                     .returning(ScheduledPost.id)
                 )
+                claimed_post_id = claim.scalar_one_or_none()
                 await session.commit()
-                if claim.scalar_one_or_none() is None:
+                if claimed_post_id is None:
                     logger.info(f"Пост #{post.id} уже обрабатывается другим процессом — пропускаем")
                     continue
 
