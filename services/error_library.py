@@ -151,6 +151,28 @@ KNOWN_ERRORS: list[dict] = [
         ),
     },
     {
+        "id": "tg_no_admin_rights",
+        "category": "telegram",
+        "match_type": ["TelegramBadRequest", "TelegramForbiddenError"],
+        "patterns": [
+            "need administrator rights",
+            "not enough rights",
+            "CHAT_ADMIN_REQUIRED",
+            "user is an administrator",
+            "administrator rights in the channel",
+        ],
+        "title": "Бот не является администратором канала",
+        "description": (
+            "Бот не имеет прав администратора в канале и не может публиковать сообщения."
+        ),
+        "solution": (
+            "1. Откройте настройки канала → Администраторы.\n"
+            "2. Добавьте бота как администратора с правом «Публикация сообщений».\n"
+            "3. После добавления бот сможет публиковать посты автоматически.\n"
+            "4. Убедитесь, что используется правильный канал (telegram_id совпадает)."
+        ),
+    },
+    {
         "id": "tg_rate_limit",
         "category": "telegram",
         "match_type": ["TelegramRetryAfter", "RetryAfter"],
