@@ -6,6 +6,7 @@ import asyncio
 import html as html_module
 import json
 import logging
+import re
 import traceback
 from datetime import datetime, timedelta
 
@@ -183,9 +184,13 @@ async def _do_publish_scheduled_posts(bot: Bot):
 
                 # Строим текст/подпись поста с учётом подписи со скрытой ссылкой
                 post_parse_mode = None
+                _content = post.content or ""
+                # Content stored by new code via message.html_text is already HTML-escaped
+                # (e.g. contains <a href="...">, &amp;, &lt;). Old plain-text content doesn't.
+                _content_is_html = bool(re.search(r'<[a-zA-Z]|&amp;|&lt;|&gt;', _content))
                 if post.signature:
-                    # Экранируем основной контент для HTML-режима
-                    escaped_content = html_module.escape(post.content or "")
+                    # Escape only plain-text content; HTML content must NOT be double-escaped.
+                    content_part = _content if _content_is_html else html_module.escape(_content)
                     # Формат «Текст | URL» — кликабельная подпись с произвольной ссылкой
                     if " | " in post.signature:
                         parts = post.signature.split(" | ", 1)
@@ -208,10 +213,12 @@ async def _do_publish_scheduled_posts(bot: Bot):
                             )
                         else:
                             sig_html = html_module.escape(post.signature)
-                    post_text = f"{escaped_content}\n\n{sig_html}" if escaped_content else sig_html
+                    post_text = f"{content_part}\n\n{sig_html}" if content_part else sig_html
                     post_parse_mode = "HTML"
                 else:
-                    post_text = post.content or ""
+                    post_text = _content
+                    if _content_is_html:
+                        post_parse_mode = "HTML"
                 caption = post_text or None
 
                 # Build inline keyboard from saved buttons (if any)

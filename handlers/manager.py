@@ -1390,7 +1390,9 @@ def _mgr_signature_keyboard(has_signature: bool) -> InlineKeyboardMarkup:
 @router.message(ManagerPostStates.entering_content)
 async def mgr_post_receive_content(message: Message, state: FSMContext):
     """Получение рекламного контента от менеджера"""
-    content_text = message.text or message.caption or ""
+    # html_text preserves Telegram inline formatting entities (bold, links, etc.)
+    # as proper HTML tags/entities so they survive storage and republishing.
+    content_text = message.html_text or ""
     file_id = None
     file_type = None
 

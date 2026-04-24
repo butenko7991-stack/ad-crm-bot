@@ -3292,7 +3292,8 @@ async def autopost_create_delete_hours_text(message: Message, state: FSMContext)
 @router.message(AdminCreatePostStates.entering_content)
 async def autopost_create_content(message: Message, state: FSMContext):
     """Шаг 4 — получение контента, показ превью и подтверждение"""
-    content_text = message.text or message.caption or ""
+    # html_text preserves Telegram inline formatting entities (bold, links, etc.)
+    content_text = message.html_text or ""
     file_id = None
     file_type = None
 
@@ -5259,7 +5260,8 @@ async def adm_post_edit_content_start(callback: CallbackQuery, state: FSMContext
 @router.message(AdminEditPostStates.editing_content)
 async def adm_post_edit_content_receive(message: Message, state: FSMContext):
     """Получить новый контент и сохранить в БД"""
-    content_text = message.text or message.caption or ""
+    # html_text preserves Telegram inline formatting entities (bold, links, etc.)
+    content_text = message.html_text or ""
     file_id = None
     file_type = None
 
