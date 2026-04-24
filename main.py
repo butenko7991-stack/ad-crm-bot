@@ -231,6 +231,28 @@ async def _do_publish_scheduled_posts(bot: Bot):
                             exc_info=True,
                         )
 
+                # Защита: текстовый пост без контента не может быть опубликован.
+                # Такой пост переводим в «error» немедленно, чтобы не получить
+                # «message text is empty» от Telegram API.
+                if not post.file_id and not post_text.strip():
+                    logger.error(
+                        f"Пост #{post.id}: нет контента и медиафайла — публикация невозможна"
+                    )
+                    post.status = "error"
+                    await session.commit()
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(
+                                admin_id,
+                                f"⚠️ Пост #{post.id} не опубликован в канале {channel.name}.\n"
+                                f"Причина: пост не содержит ни текста, ни медиафайла.\n"
+                                f"Удалите пост и создайте новый с содержимым.",
+                                parse_mode=None,
+                            )
+                        except Exception:
+                            pass
+                    continue
+
                 # Отправляем пост в канал — только ошибки отправки меняют статус
                 sent = None
                 try:
@@ -265,15 +287,29 @@ async def _do_publish_scheduled_posts(bot: Bot):
                             parse_mode=post_parse_mode,
                             reply_markup=post_markup,
                         )
-                except Exception:
-                    logger.error(f"Ошибка публикации поста #{post.id}: {traceback.format_exc()}")
+                except Exception as send_exc:
+                    tb_text = traceback.format_exc()
+                    logger.error(f"Ошибка публикации поста #{post.id}: {tb_text}")
                     post.status = "error"
                     await session.commit()
+
+                    # Пытаемся найти известную причину ошибки в библиотеке
+                    known = lookup_error(send_exc, tb_text)
+                    if known:
+                        error_hint = known["title"]
+                    else:
+                        error_hint = str(send_exc).splitlines()[0][:120]
+                        record_unknown_error(
+                            send_exc, tb_text,
+                            context=f"publish post #{post.id} to channel {channel.name}",
+                        )
+
                     for admin_id in ADMIN_IDS:
                         try:
                             await bot.send_message(
                                 admin_id,
                                 f"⚠️ Пост #{post.id} не опубликован в канале {channel.name}.\n"
+                                f"Причина: {error_hint}\n"
                                 f"Проверьте пост и при необходимости перезапустите его вручную.",
                                 parse_mode=None,
                             )
