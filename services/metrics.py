@@ -1144,3 +1144,40 @@ def format_daily_reach_report_text(data: dict, date_str: str, bold: str = "**") 
             f" | ERR: {b}{p['err24']}%{b}\n\n"
         )
     return text
+
+
+def format_daily_reach_report_compact_text(data: dict, date_str: str, bold: str = "**") -> str:
+    """Компактный формат отчёта об охватах за сутки."""
+    b = bold
+    posts = data.get("posts", [])
+
+    text = f"⚡ {b}Быстрый отчёт по автопостингу{b} · {date_str}\n\n"
+
+    if not posts:
+        return text + "_За последние 24 часа рекламных постов не было._"
+
+    text += (
+        f"📝 Постов: {b}{data.get('count', 0)}{b} | "
+        f"👁 24ч: {b}{data.get('total_views_24h', 0):,}{b} | "
+        f"❗ ERR: {b}{data.get('avg_err24', 0)}%{b}\n\n"
+    )
+
+    top_posts = sorted(
+        posts,
+        key=lambda p: (int(p.get("views_24h") or 0), int(p.get("views") or 0)),
+        reverse=True,
+    )[:12]
+
+    for idx, post in enumerate(top_posts, start=1):
+        channel = _md_escape(str(post.get("channel_name") or "—"))
+        views_24h = int(post.get("views_24h") or 0)
+        err24 = post.get("err24") or 0.0
+        posted_at = post.get("posted_at")
+        posted_str = posted_at.strftime("%d.%m %H:%M") if posted_at else "—"
+        text += f"{idx:>2}. {channel} · 👁 {b}{views_24h:,}{b} · ERR {b}{err24}%{b} · 🕒 {posted_str}\n"
+
+    extra_posts = len(posts) - len(top_posts)
+    if extra_posts > 0:
+        text += f"\n… и ещё {extra_posts} пост."
+
+    return text

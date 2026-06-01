@@ -2401,7 +2401,7 @@ async def pa_view(callback: CallbackQuery):
         await callback.message.answer("❌ Ошибка")
 
 
-@router.callback_query(F.data == "daily_reach_report")
+@router.callback_query(F.data.in_({"autopost_quick_report", "daily_reach_report"}))
 async def daily_reach_report_handler(callback: CallbackQuery):
     """Отчёт об охватах рекламных постов за последние 24 часа"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
@@ -2411,7 +2411,7 @@ async def daily_reach_report_handler(callback: CallbackQuery):
     await callback.answer()
 
     try:
-        from services.metrics import get_daily_reach_report, format_daily_reach_report_text
+        from services.metrics import get_daily_reach_report, format_daily_reach_report_compact_text
         from datetime import datetime, timezone
 
         data = await get_daily_reach_report()
@@ -2420,7 +2420,7 @@ async def daily_reach_report_handler(callback: CallbackQuery):
             return
 
         date_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
-        text = format_daily_reach_report_text(data, date_str, bold="**")
+        text = format_daily_reach_report_compact_text(data, date_str, bold="**")
 
         await safe_edit_message(
             callback.message,

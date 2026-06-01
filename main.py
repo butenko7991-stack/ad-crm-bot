@@ -500,17 +500,17 @@ async def delete_posted_posts(bot: Bot):
 async def send_daily_reach_report(bot: Bot):
     """Ежедневный отчёт об охватах рекламных постов за последние 24 часа.
 
-    Отправляется всем администраторам и в чат менеджеров (если настроен).
+    Отправляется всем администраторам раз в сутки и в чат менеджеров (если настроен).
     """
     try:
-        from services.metrics import get_daily_reach_report, format_daily_reach_report_text
+        from services.metrics import get_daily_reach_report, format_daily_reach_report_compact_text
 
         data = await get_daily_reach_report()
         if data is None:
             return
 
         date_str = utc_now().strftime("%d.%m.%Y")
-        text = format_daily_reach_report_text(data, date_str, bold="*")
+        text = format_daily_reach_report_compact_text(data, date_str, bold="*")
 
         mgr_chat_id = await get_manager_group_chat_id()
         if mgr_chat_id:
