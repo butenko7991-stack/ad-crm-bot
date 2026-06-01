@@ -2401,7 +2401,7 @@ async def pa_view(callback: CallbackQuery):
         await callback.message.answer("❌ Ошибка")
 
 
-@router.callback_query(F.data == "daily_reach_report")
+@router.callback_query(F.data.in_({"autopost_quick_report", "daily_reach_report"}))
 async def daily_reach_report_handler(callback: CallbackQuery):
     """Отчёт об охватах рекламных постов за последние 24 часа"""
     if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
@@ -2411,7 +2411,7 @@ async def daily_reach_report_handler(callback: CallbackQuery):
     await callback.answer()
 
     try:
-        from services.metrics import get_daily_reach_report, format_daily_reach_report_text
+        from services.metrics import get_daily_reach_report, format_daily_reach_report_compact_text
         from datetime import datetime, timezone
 
         data = await get_daily_reach_report()
@@ -2420,7 +2420,7 @@ async def daily_reach_report_handler(callback: CallbackQuery):
             return
 
         date_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
-        text = format_daily_reach_report_text(data, date_str, bold="**")
+        text = format_daily_reach_report_compact_text(data, date_str, bold="**")
 
         await safe_edit_message(
             callback.message,
@@ -2809,6 +2809,10 @@ async def _render_channel_analytics_page(message, channel_id: int, back_callback
 
     buttons = [
         [InlineKeyboardButton(
+            text="⚡ Быстрая статистика",
+            callback_data=f"ch_quick_stats:{channel_id}:48"
+        )],
+        [InlineKeyboardButton(
             text="🔄 Обновить данные",
             callback_data=f"ch_analytics_refresh:{channel_id}"
         )],
@@ -2899,6 +2903,57 @@ async def ch_analytics_detail(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in ch_analytics_detail: {traceback.format_exc()}")
         await callback.message.answer("❌ Ошибка при загрузке аналитики")
+
+
+@router.callback_query(F.data.startswith("ch_quick_stats:"))
+async def ch_quick_stats(callback: CallbackQuery):
+    """Быстрая статистика по размещениям канала за последние часы."""
+    if callback.from_user.id not in authenticated_admins and callback.from_user.id not in ADMIN_IDS:
+        await callback.answer(MSG_AUTH_REQUIRED, show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        _, channel_id_raw, hours_raw = callback.data.split(":")
+        channel_id = int(channel_id_raw)
+        hours = max(24, min(168, int(hours_raw)))
+
+        from services.metrics import get_channel_quick_stats, format_channel_quick_stats_text
+
+        data = await get_channel_quick_stats(channel_id, period_hours=hours)
+        if not data:
+            await callback.message.answer("❌ Не удалось загрузить быструю статистику")
+            return
+
+        buttons = [[
+            InlineKeyboardButton(
+                text=("✅ " if hours == 24 else "") + "24ч",
+                callback_data=f"ch_quick_stats:{channel_id}:24",
+            ),
+            InlineKeyboardButton(
+                text=("✅ " if hours == 48 else "") + "48ч",
+                callback_data=f"ch_quick_stats:{channel_id}:48",
+            ),
+            InlineKeyboardButton(
+                text=("✅ " if hours == 72 else "") + "72ч",
+                callback_data=f"ch_quick_stats:{channel_id}:72",
+            ),
+        ], [
+            InlineKeyboardButton(
+                text="◀️ К аналитике канала",
+                callback_data=f"ch_analytics:{channel_id}",
+            )
+        ]]
+
+        await safe_edit_message(
+            callback.message,
+            format_channel_quick_stats_text(data),
+            InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+    except Exception:
+        logger.error(f"Error in ch_quick_stats: {traceback.format_exc()}")
+        await callback.message.answer("❌ Ошибка при загрузке быстрой статистики")
 
 
 @router.callback_query(F.data.startswith("ch_analytics_refresh:"))

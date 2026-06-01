@@ -16,9 +16,51 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from sqlalchemy import select, func
 
 from database import async_session_maker, Channel, PostAnalytics
-from database.models import ScheduledPost, PostViewSnapshot
+from database.models import ScheduledPost, PostViewSnapshot, ChannelSubscriberSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+async def record_channel_subscriber_snapshot(
+    channel_id: int,
+    subscribers: int,
+    *,
+    recorded_at: Optional[datetime] = None,
+    source: str = "refresh",
+    scheduled_post_id: Optional[int] = None,
+) -> None:
+    """Сохранить снимок подписчиков канала."""
+    if subscribers is None:
+        return
+
+    snapshot_time = recorded_at or datetime.now(timezone.utc).replace(tzinfo=None)
+
+    async with async_session_maker() as session:
+        last_snapshot = (
+            await session.execute(
+                select(ChannelSubscriberSnapshot)
+                .where(ChannelSubscriberSnapshot.channel_id == channel_id)
+                .order_by(ChannelSubscriberSnapshot.recorded_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+
+        if (
+            last_snapshot
+            and last_snapshot.subscribers == subscribers
+            and last_snapshot.scheduled_post_id == scheduled_post_id
+            and last_snapshot.recorded_at >= snapshot_time - timedelta(minutes=15)
+        ):
+            return
+
+        session.add(ChannelSubscriberSnapshot(
+            channel_id=channel_id,
+            scheduled_post_id=scheduled_post_id,
+            subscribers=int(subscribers),
+            source=source,
+            recorded_at=snapshot_time,
+        ))
+        await session.commit()
 
 
 async def refresh_channel_subscribers(bot: Bot, channel: Channel) -> Optional[int]:
@@ -35,6 +77,14 @@ async def refresh_channel_subscribers(bot: Bot, channel: Channel) -> Optional[in
                 ch.subscribers = member_count
                 ch.analytics_updated = datetime.now(timezone.utc).replace(tzinfo=None)
                 await session.commit()
+        try:
+            await record_channel_subscriber_snapshot(
+                channel.id,
+                member_count,
+                source="refresh",
+            )
+        except Exception:
+            logger.exception("Не удалось сохранить снимок подписчиков канала %s", channel.id)
         logger.info(f"Канал «{channel.name}»: обновлено подписчиков → {member_count:,}")
         return member_count
     except (TelegramForbiddenError, TelegramBadRequest) as e:
@@ -158,6 +208,17 @@ async def refresh_channel_from_telemetr(channel: Channel) -> Optional[dict]:
                 ch.err24_percent = err24
             ch.analytics_updated = datetime.now(timezone.utc).replace(tzinfo=None)
             await session.commit()
+
+        try:
+            subscribers = stats.get("subscribers")
+            if subscribers is not None:
+                await record_channel_subscriber_snapshot(
+                    channel.id,
+                    int(subscribers),
+                    source="telemetr",
+                )
+        except Exception:
+            logger.exception("Не удалось сохранить Telemetr-снимок канала %s", channel.id)
 
         logger.info(
             f"Канал «{channel.name}»: Telemetr — охват 24ч {avg_24h:,}, "
