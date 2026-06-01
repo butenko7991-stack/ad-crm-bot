@@ -292,6 +292,18 @@ class PostViewSnapshot(Base):
     recorded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
+class ChannelSubscriberSnapshot(Base):
+    """История количества подписчиков канала во времени"""
+    __tablename__ = "channel_subscriber_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    scheduled_post_id = Column(Integer, ForeignKey("scheduled_posts.id"), nullable=True)
+    subscribers = Column(Integer, nullable=False, default=0)
+    source = Column(String(50), nullable=False, default="refresh")
+    recorded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 class PromoCode(Base):
     """Промокоды для скидок на размещение рекламы"""
     __tablename__ = "promo_codes"

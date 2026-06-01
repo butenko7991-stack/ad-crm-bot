@@ -1,7 +1,9 @@
 """
 Сервис комплексных метрик (TG Stat-подобная аналитика)
 """
+import html as html_module
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -9,7 +11,7 @@ from sqlalchemy import select, func, case
 from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from database import async_session_maker, Channel, Manager, Order, Client, PostAnalytics
-from database.models import ScheduledPost, PostViewSnapshot
+from database.models import ScheduledPost, PostViewSnapshot, ChannelSubscriberSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,69 @@ def _delta_str(current: float, previous: float) -> str:
     change = (current - previous) / previous * 100
     arrow = "▲" if change >= 0 else "▼"
     return f" {arrow}{abs(change):.1f}%"
+
+
+def _md_escape(text: str) -> str:
+    text = str(text or "")
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
+def _format_money(value: Optional[float], decimals: int = 0) -> str:
+    if value is None:
+        return "—"
+    if decimals <= 0:
+        return f"{value:,.0f}₽"
+    return f"{value:,.{decimals}f}₽"
+
+
+def _format_signed(value: Optional[int]) -> str:
+    if value is None:
+        return "—"
+    if value > 0:
+        return f"+{value:,}"
+    return f"{value:,}"
+
+
+def _extract_creative_title(content: Optional[str], signature: Optional[str] = None, limit: int = 72) -> str:
+    raw = content or signature or ""
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    raw = html_module.unescape(raw)
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    title = lines[0] if lines else "Без названия"
+    title = re.sub(r"\s+", " ", title).strip()
+    if len(title) <= limit:
+        return title
+    return title[: limit - 1].rstrip() + "…"
+
+
+def _resolve_snapshot_subscribers(snapshots: list, anchor: datetime) -> Optional[int]:
+    before = None
+    after = None
+
+    for snapshot in snapshots:
+        recorded_at = getattr(snapshot, "recorded_at", None)
+        if not recorded_at:
+            continue
+        if recorded_at <= anchor:
+            before = snapshot
+            continue
+        after = snapshot
+        break
+
+    chosen = before or after
+    if not chosen:
+        return None
+    return int(getattr(chosen, "subscribers", 0) or 0)
+
+
+def _build_quick_stat_numbers(delta: Optional[int]) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    if delta is None:
+        return None, None, None
+    subscribed = max(delta, 0)
+    unsubscribed = abs(min(delta, 0))
+    return subscribed, unsubscribed, delta
 
 
 async def get_sales_metrics(period: str = "month") -> Optional[dict]:
@@ -800,6 +865,244 @@ async def get_daily_reach_report() -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_daily_reach_report error: {e}", exc_info=True)
         return None
+
+
+async def get_channel_quick_stats(channel_id: int, period_hours: int = 48) -> Optional[dict]:
+    """Быстрая статистика размещений по каналу за последние N часов."""
+    try:
+        hours = max(24, min(168, int(period_hours or 48)))
+        now = _utcnow()
+        period_start = now - timedelta(hours=hours)
+        snapshot_start = period_start - timedelta(hours=24)
+
+        async with async_session_maker() as session:
+            channel = await session.get(Channel, channel_id)
+            if not channel:
+                return None
+
+            post_rows = (
+                await session.execute(
+                    select(
+                        ScheduledPost.id.label("post_id"),
+                        ScheduledPost.posted_at,
+                        ScheduledPost.content,
+                        ScheduledPost.signature,
+                        ScheduledPost.price,
+                        ScheduledPost.order_id,
+                        ScheduledPost.created_by,
+                        func.max(PostAnalytics.views).label("views"),
+                        Order.final_price.label("order_price"),
+                        Manager.first_name.label("order_manager_name"),
+                    )
+                    .select_from(ScheduledPost)
+                    .outerjoin(PostAnalytics, PostAnalytics.scheduled_post_id == ScheduledPost.id)
+                    .outerjoin(Order, Order.id == ScheduledPost.order_id)
+                    .outerjoin(Manager, Manager.id == Order.manager_id)
+                    .where(
+                        ScheduledPost.channel_id == channel_id,
+                        ScheduledPost.posted_at.is_not(None),
+                        ScheduledPost.posted_at >= period_start,
+                        ScheduledPost.posted_at <= now,
+                    )
+                    .group_by(
+                        ScheduledPost.id,
+                        ScheduledPost.posted_at,
+                        ScheduledPost.content,
+                        ScheduledPost.signature,
+                        ScheduledPost.price,
+                        ScheduledPost.order_id,
+                        ScheduledPost.created_by,
+                        Order.final_price,
+                        Manager.first_name,
+                    )
+                    .order_by(ScheduledPost.posted_at.desc(), ScheduledPost.id.desc())
+                )
+            ).all()
+
+            created_by_ids = {row.created_by for row in post_rows if row.created_by}
+            creator_names = {}
+            if created_by_ids:
+                creator_rows = (
+                    await session.execute(
+                        select(Manager.telegram_id, Manager.first_name).where(Manager.telegram_id.in_(created_by_ids))
+                    )
+                ).all()
+                creator_names = {
+                    row.telegram_id: row.first_name
+                    for row in creator_rows
+                    if row.telegram_id is not None and row.first_name
+                }
+
+            older_snapshot = (
+                await session.execute(
+                    select(ChannelSubscriberSnapshot)
+                    .where(
+                        ChannelSubscriberSnapshot.channel_id == channel_id,
+                        ChannelSubscriberSnapshot.recorded_at < snapshot_start,
+                    )
+                    .order_by(ChannelSubscriberSnapshot.recorded_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+            recent_snapshots = (
+                await session.execute(
+                    select(ChannelSubscriberSnapshot)
+                    .where(
+                        ChannelSubscriberSnapshot.channel_id == channel_id,
+                        ChannelSubscriberSnapshot.recorded_at >= snapshot_start,
+                    )
+                    .order_by(ChannelSubscriberSnapshot.recorded_at.asc())
+                )
+            ).scalars().all()
+
+        snapshots = ([older_snapshot] if older_snapshot else []) + list(recent_snapshots)
+        current_subscribers = int(snapshots[-1].subscribers) if snapshots else int(channel.subscribers or 0)
+
+        posts = []
+        total_views = 0
+        total_cost = 0.0
+        total_subscribed = 0
+        total_unsubscribed = 0
+        tracked_deltas = 0
+
+        for row in post_rows:
+            posted_at = row.posted_at
+            raw_cost = row.price if row.price is not None else row.order_price
+            cost = float(raw_cost) if raw_cost is not None else None
+            views = int(row.views or 0)
+            baseline_subscribers = _resolve_snapshot_subscribers(snapshots, posted_at) if posted_at else None
+            subscriber_delta = (
+                int(current_subscribers - baseline_subscribers)
+                if baseline_subscribers is not None
+                else None
+            )
+            subscribed, unsubscribed, current_left = _build_quick_stat_numbers(subscriber_delta)
+
+            if subscriber_delta is not None:
+                tracked_deltas += 1
+                total_subscribed += subscribed or 0
+                total_unsubscribed += unsubscribed or 0
+
+            total_views += views
+            if cost is not None:
+                total_cost += cost
+
+            cpm = round(cost * 1000 / views, 2) if cost is not None and views > 0 else None
+            cost_per_view = round(cost / views, 2) if cost is not None and views > 0 else None
+
+            posts.append({
+                "post_id": row.post_id,
+                "posted_at": posted_at,
+                "creative": _extract_creative_title(row.content, row.signature),
+                "manager_name": row.order_manager_name or creator_names.get(row.created_by) or "—",
+                "views": views,
+                "cost": cost,
+                "cpm": cpm,
+                "cost_per_view": cost_per_view,
+                "baseline_subscribers": baseline_subscribers,
+                "current_subscribers": current_subscribers,
+                "subscribed": subscribed,
+                "unsubscribed": unsubscribed,
+                "current_left": current_left,
+            })
+
+        total_current_left = total_subscribed - total_unsubscribed if tracked_deltas else None
+        avg_cpm = round(total_cost * 1000 / total_views, 2) if total_views > 0 else None
+
+        return {
+            "channel": {
+                "id": channel.id,
+                "name": channel.name,
+                "username": channel.username,
+                "subscribers": int(channel.subscribers or 0),
+                "current_subscribers": current_subscribers,
+                "analytics_updated": channel.analytics_updated,
+            },
+            "period_hours": hours,
+            "generated_at": now,
+            "posts": posts,
+            "posts_count": len(posts),
+            "total_views": total_views,
+            "total_cost": round(total_cost, 2),
+            "avg_cpm": avg_cpm,
+            "total_subscribed": total_subscribed if tracked_deltas else None,
+            "total_unsubscribed": total_unsubscribed if tracked_deltas else None,
+            "total_current_left": total_current_left,
+            "tracked_deltas": tracked_deltas,
+            "has_snapshot_history": bool(snapshots),
+        }
+    except Exception as e:
+        logger.error(f"get_channel_quick_stats error: {e}", exc_info=True)
+        return None
+
+
+def format_channel_quick_stats_text(data: dict, bold: str = "**") -> str:
+    """Форматировать быструю статистику канала."""
+    b = bold
+    channel = data["channel"]
+    posts = data.get("posts", [])
+    generated_at = data.get("generated_at")
+    updated_at = generated_at.strftime("%d.%m.%Y %H:%M") if generated_at else "—"
+
+    text = (
+        f"⚡ {b}Быстрая статистика канала{b}\n"
+        f"📢 {_md_escape(channel.get('name') or '—')}\n"
+        f"🕒 Период: последние {data.get('period_hours', 48)} ч.\n"
+        f"🔄 Актуально на: {updated_at}\n\n"
+        f"👥 Подписчиков сейчас: {b}{channel.get('current_subscribers', 0):,}{b}\n"
+        f"📝 Размещений: {b}{data.get('posts_count', 0)}{b}\n"
+        f"👁 Просмотров: {b}{data.get('total_views', 0):,}{b}\n"
+        f"💰 Расход: {b}{_format_money(data.get('total_cost'))}{b}\n"
+        f"📊 CPM: {b}{_format_money(data.get('avg_cpm'))}{b}\n"
+    )
+
+    if data.get("tracked_deltas"):
+        text += (
+            f"📈 Подписалось ≈ {b}{_format_signed(data.get('total_subscribed'))}{b}\n"
+            f"📉 Отписалось ≈ {b}{_format_signed(data.get('total_unsubscribed'))}{b}\n"
+            f"👤 Осталось сейчас: {b}{_format_signed(data.get('total_current_left'))}{b}\n"
+        )
+    else:
+        text += "📈 Дельта подписчиков: _появится после накопления истории._\n"
+
+    text += "\nℹ️ _Подписки и отписки рассчитываются приблизительно по снимкам аудитории канала._\n"
+
+    if not posts:
+        text += "\n_За выбранный период размещений нет._"
+        return text
+
+    current_day = None
+    for post in posts:
+        posted_at = post.get("posted_at")
+        post_day = posted_at.date() if posted_at else None
+        if post_day != current_day:
+            if current_day is not None:
+                text += "\n"
+            day_title = posted_at.strftime("%d.%m.%Y") if posted_at else "Без даты"
+            text += f"\n📅 {b}{day_title}{b}\n"
+            current_day = post_day
+
+        posted_str = posted_at.strftime("%H:%M") if posted_at else "—"
+        text += (
+            f"\n🧾 {_md_escape(post.get('creative') or 'Без названия')}\n"
+            f"🕒 Выход: {b}{posted_str}{b}\n"
+            f"👤 Менеджер: {_md_escape(post.get('manager_name') or '—')}\n"
+            f"👁 Просмотры: {b}{post.get('views', 0):,}{b}\n"
+            f"💰 Стоимость: {b}{_format_money(post.get('cost'))}{b}\n"
+            f"📊 CPM: {b}{_format_money(post.get('cpm'))}{b}\n"
+            f"💵 Цена просмотра: {b}{_format_money(post.get('cost_per_view'), decimals=2)}{b}\n"
+        )
+
+        if post.get("current_left") is not None:
+            text += (
+                f"📈 Подписалось ≈ {b}{_format_signed(post.get('subscribed'))}{b}\n"
+                f"📉 Отписалось ≈ {b}{_format_signed(post.get('unsubscribed'))}{b}\n"
+                f"👤 Осталось сейчас: {b}{_format_signed(post.get('current_left'))}{b}\n"
+            )
+        else:
+            text += "📈 Дельта подписчиков: _недостаточно истории._\n"
+
+    return text
 
 
 def format_daily_reach_report_text(data: dict, date_str: str, bold: str = "**") -> str:

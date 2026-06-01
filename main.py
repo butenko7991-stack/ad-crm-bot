@@ -365,6 +365,23 @@ async def _do_publish_scheduled_posts(bot: Bot):
                 await session.commit()
                 logger.info(f"Пост #{post.id} опубликован в канале {channel.name} (msg_id={sent.message_id})")
 
+                try:
+                    from services.channel_collector import record_channel_subscriber_snapshot
+
+                    if channel.subscribers is not None:
+                        await record_channel_subscriber_snapshot(
+                            channel.id,
+                            int(channel.subscribers),
+                            recorded_at=posted_at,
+                            source="post_publish",
+                            scheduled_post_id=post.id,
+                        )
+                except Exception:
+                    logger.warning(
+                        f"Не удалось сохранить снимок подписчиков в момент публикации поста #{post.id}",
+                        exc_info=True,
+                    )
+
                 # Создаём начальную запись аналитики в отдельной сессии,
                 # чтобы любой сбой при её создании не переводил основную сессию
                 # в состояние «нужен откат» и не прерывал обработку следующих
