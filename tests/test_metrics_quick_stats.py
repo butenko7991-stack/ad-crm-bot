@@ -10,11 +10,11 @@ from services.metrics import (
 
 def test_extract_creative_title_strips_html_and_truncates():
     title = _extract_creative_title(
-        "<b>Новый</b> оффер\n\nПодробности внутри и ещё немного текста для обрезки",
+        "<b>Новый</b> оффер и длинное описание для обрезки\n\nПодробности внутри",
         limit=18,
     )
 
-    assert title == "Новый оффер…"
+    assert title == "Новый оффер и дли…"
 
 
 def test_resolve_snapshot_subscribers_prefers_latest_before_anchor():
